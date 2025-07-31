@@ -67,7 +67,7 @@ if tool == "Analyze single SIF":
                     file_path = os.path.join("temp", uploaded_file.name)
                     with open(file_path, "wb") as f:
                         f.write(uploaded_file.getbuffer())
-                    df, image_data_cps = integrate_sif(f)
+                    df, image_data_cps = integrate_sif(file_path)
                     plot_container = st.container()
                     with plot_container:
                         fig_image = plot_brightness(image_data_cps, df, show_fits=True, normalization=LogNorm(), pix_size_um=0.1)
