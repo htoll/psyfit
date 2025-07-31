@@ -55,8 +55,6 @@ def HWT_aesthetic():
     sns.set_palette("muted6")  #pref'd are colorblind , tab20c , muted6 ,
     sns.despine()
 
-#mount files from drive
-drive.mount('/content/drive/', force_remount = True)
 
 #global variables:
 pix_size_um = 0.1
