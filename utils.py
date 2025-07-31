@@ -156,29 +156,76 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP'):
 
     df = pd.DataFrame(results)
     return df, image_data_cps
+    
+def gaussian(x, amp, mu, sigma):
+  return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
-
-def plot_brightness(image_data_cps, df, ax=None):
+def plot_brightness(image_data_cps, df, image_data, ex_df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False):
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 10))
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=LogNorm(), origin='lower')
     plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
-
-    for _, row in df.iterrows():
-        x_px = row['x_pix']
-        y_px = row['y_pix']
-        brightness_kpps = row['brightness_fit'] / 1000
-        radius_px = 2 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
-
-        circle = Circle((x_px, y_px), radius_px, color='white', fill=False, linewidth=1.5, alpha=0.7)
-        ax.add_patch(circle)
-
-        ax.text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
-                color='white', fontsize=10, ha='center', va='center')
+    if show_fits:
+        for _, row in df.iterrows():
+            x_px = row['x_pix']
+            y_px = row['y_pix']
+            brightness_kpps = row['brightness_fit'] / 1000
+            radius_px = 2 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
+    
+            circle = Circle((x_px, y_px), radius_px, color='white', fill=False, linewidth=1.5, alpha=0.7)
+            ax.add_patch(circle)
+    
+            ax.text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
+                    color='white', fontsize=10, ha='center', va='center')
 
     ax.set_xlabel('x (px)')
     ax.set_ylabel('y (px)')
     st.pyplot(fig)
+
+    if plot_brightness_histogram:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        bins = np.linspace(np.min(ex_sif_brightness), np.max(ex_sif_brightness), 50)
+        counts, edges, patches = ax.hist(ex_sif_brightness, bins=bins, edgecolor='black', color = '#bc5090')
+        bin_centers = 0.5 * (edges[:-1] + edges[1:])
+
+        p0 = [np.max(counts), np.mean(ex_sif_brightness), np.std(ex_sif_brightness)]
+        try:
+            popt, _ = curve_fit(gaussian, bin_centers, counts, p0=p0)
+            amp, ucnp_mu, sigma = popt
+            x_fit = np.linspace(edges[0], edges[-1], 500)
+            y_fit = gaussian(x_fit, *popt)
+            ax.plot(x_fit, y_fit, color = 'dodgerblue', label=f"Gaussian Fit\nμ = {ucnp_mu:.1f}, σ = {sigma:.1f}")
+            ax.legend()
+        except RuntimeError:
+            print("Gaussian fit failed.")
+        
+        ax.set_title("UCNP Brightness  Histogram")
+        ax.set_xlabel("Brightness (pps)")
+        ax.set_ylabel("Count")
+        plt.tight_layout()
+        st.pyplot(fig)
+
+
+
+
+
+p0 = [np.max(counts), np.mean(ex_sif_brightness), np.std(ex_sif_brightness)]
+try:
+    popt, _ = curve_fit(gaussian, bin_centers, counts, p0=p0)
+    amp, ucnp_mu, sigma = popt
+    x_fit = np.linspace(edges[0], edges[-1], 500)
+    y_fit = gaussian(x_fit, *popt)
+    ax.plot(x_fit, y_fit, color = 'dodgerblue', label=f"Gaussian Fit\nμ = {ucnp_mu:.1f}, σ = {sigma:.1f}")
+    ax.legend()
+except RuntimeError:
+    print("Gaussian fit failed.")
+
+ax.set_title("UCNP Brightness  Histogram")
+ax.set_xlabel("Brightness (pps)")
+ax.set_ylabel("Count")
+plt.tight_layout()
+plt.show()
+
 
 
 
@@ -292,6 +339,7 @@ def match_ucnp_dye_files(ucnps, dyes):
 
     return pairs
 
+    
 def coloc_subplots(ucnps, dyes, df_dict, colocalization_radius=2, show_fits=True, save_SVG = False):
     n_pairs = min(len(ucnps), len(dyes))
     #per_file_matched = []
