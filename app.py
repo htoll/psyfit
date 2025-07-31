@@ -27,31 +27,38 @@ import os
 #    3 | 4
 
 
-st.markdown("### Upload and Analyze a SIF File")
+# Step control
+if "analyze_started" not in st.session_state:
+    st.session_state.analyze_started = False
 
-# File uploader appears first
-uploaded_file = st.file_uploader("Choose a .sif file", type=["sif"])
+# STEP 1: Initial button
+if not st.session_state.analyze_started:
+    if st.button("Analyze single SIF"):
+        st.session_state.analyze_started = True
+else:
+    # STEP 2: Show file uploader and parameter inputs
+    st.markdown("### Upload your `.sif` file and set parameters")
+    
+    uploaded_file = st.file_uploader("Choose a .sif file", type=["sif"])
+    threshold = st.number_input("Threshold", min_value=0, value=2)
+    region = st.text_input("Region", value="1")
+    signal = st.text_input("Signal", value="UCNP")
 
-# Input parameters
-threshold = st.number_input("Threshold", min_value=0, value=2)
-region = st.text_input("Region", value="1")
-signal = st.text_input("Signal", value="UCNP")
+    # STEP 3: Final analysis button
+    if st.button("Run Analysis"):
+        if uploaded_file is not None:
+            try:
+                # Save uploaded file
+                os.makedirs("temp", exist_ok=True)
+                file_path = os.path.join("temp", uploaded_file.name)
+                with open(file_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
 
-# Combine into a single action button
-if st.button("Analyze single SIF"):
-    if uploaded_file is not None:
-        try:
-            # Save uploaded file
-            file_path = os.path.join("temp", uploaded_file.name)
-            os.makedirs("temp", exist_ok=True)
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
+                # Run your analysis
+                ex_df, image_data = integrate_sif(file_path, threshold=threshold, region=region, signal=signal)
+                plot_brightness(image_data, ex_df)
 
-            # Run your analysis
-            ex_df, image_data = integrate_sif(file_path, threshold=threshold, region=region, signal=signal)
-            plot_brightness(image_data, ex_df)
-
-        except Exception as e:
-            st.error(f"Error processing file: {e}")
-    else:
-        st.warning("Please upload a .sif file before clicking 'Analyze'.")
+            except Exception as e:
+                st.error(f"Error processing file: {e}")
+        else:
+            st.warning("Please upload a .sif file before running analysis.")
