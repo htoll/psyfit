@@ -170,10 +170,10 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
     scale = fig_width / 10  
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-    im = axs[0].imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
-    axs[0].tick_params(axis='both', labelsize=8*scale)
+    im = ax.imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
+    ax.tick_params(axis='both', labelsize=8*scale)
 
-    cbar = plt.colorbar(im, ax=axs[0], fraction=0.046, pad=0.04)
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.ax.tick_params(labelsize=8*scale) 
     cbar.set_label('pps', fontsize=10*scale)  
 
@@ -185,13 +185,13 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
             radius_px = 2 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
     
             circle = Circle((x_px, y_px), radius_px, color='white', fill=False, linewidth=1.5*scale, alpha=0.7)
-            axs[0].add_patch(circle)
+            ax.add_patch(circle)
     
-            axs[0].text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
+            ax.text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
                     color='white', fontsize=10*scale, ha='center', va='center')
 
-    axs[0].set_xlabel('x (px)', fontsize = 10*scale)
-    axs[0].set_ylabel('y (px)', fontsize = 10*scale)
+    ax.set_xlabel('x (px)', fontsize = 10*scale)
+    ax.set_ylabel('y (px)', fontsize = 10*scale)
     plt.tightlayout()
     HWT_aesthetic()
     return fig
