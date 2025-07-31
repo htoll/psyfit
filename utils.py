@@ -158,11 +158,15 @@ def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
-    fig, ax = plt.subplots(figsize=(1, 1))
-    plt.rcParams["figure.dpi"] = 600  
+
+    plt.rcParams["figure.dpi"] = 10^4  
     fig_width, fig_height = 5, 5
     scale = fig_width / 10  
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
+    ax.tick_params(axis='both', labelsize=8*scale)
+
     cbar = plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
     cbar.ax.tick_params(labelsize=8*scale) # Set the desired font size here
 
@@ -235,33 +239,6 @@ def sort_UCNP_dye_sifs(directory, signal_ucnp=976, signal_dye=638):
 
 def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
-# def match_ucnp_dye_files(ucnps, dyes):
-#     # Sort files naturally to ensure proper order
-#     ucnps.sort(key=natural_sort_key)
-#     dyes.sort(key=natural_sort_key)
-
-#     pairs = []
-#     warnings = []
-
-#     # Pair files based on sorted order
-#     for ucnp_file, dye_file in zip(ucnps, dyes):
-#         ucnp_idx = int(re.search(r'(\d+)\.sif$', ucnp_file).group(1))
-#         dye_idx = int(re.search(r'(\d+)\.sif$', dye_file).group(1))
-
-#         # Check if the files are sequential
-#         if abs(ucnp_idx - dye_idx) == 1:
-#             pairs.append((ucnp_file, dye_file))
-#         else:
-#             ucnp_file_name = os.path.basename(ucnp_file)
-#             dye_file_name = os.path.basename(dye_file)
-#             warnings.append(f"Potential mismatch: UCNP {ucnp_file_name} and Dye {dye_file_name} are not sequential.")
-
-#     # Print warnings for non-sequential files
-#     for warning in warnings:
-#         print(warning)
-
-#     return pairs
-
 
 def match_ucnp_dye_files(ucnps, dyes):
     # 1. deterministic sorting
