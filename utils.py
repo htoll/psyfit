@@ -174,7 +174,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
     ax.tick_params(axis='both',length=0, labelleft=False, labelright=False, labeltop=False, labelbottom=False)
 
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.ax.tick_params(labelsize = 6*scale)
+    cbar.ax.tick_params(labelsize = 10*scale)
     cbar.set_label('pps', fontsize=10*scale)  
 
     if show_fits:
@@ -214,7 +214,7 @@ def plot_histogram(df):
         mu, sigma = popt[1], popt[2]
         x_fit = np.linspace(edges[0], edges[-1], 500)
         y_fit = gaussian(x_fit, *popt)
-        ax.plot(x_fit, y_fit, color='dodgerblue', label=f"μ = {mu:.1f}, σ = {sigma:.1f}")
+        ax.plot(x_fit, y_fit, color='dodgerblue', label=f"μ = {mu:.0f} ± {sigma:.0f} pps")
         ax.legend(fontsize=10*scale)
     except RuntimeError:
         st.warning("Gaussian fit failed.")
