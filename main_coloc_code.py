@@ -21,8 +21,8 @@ import sif_parser
 
 import pandas as pd
 import matplotlib.pyplot as plt
-from IPython.display import display
-import ipywidgets as widgets
+import streamlit as st
+
 
 from skimage.feature import peak_local_max
 from skimage.feature import blob_log
