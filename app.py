@@ -48,14 +48,11 @@ if tool == "Analyze single SIF":
     st.markdown("""
 **Region breakdown:**  
 ┌─────┬─────┐
-│ 1 │ 2 │
-├─────┼─────┤
-│ 3 │ 4 │
-└─────┴─────┘
+  │  1  │  2  │
+  ├─────┼─────┤
+  │  3  │  4  │
+  └─────┴─────┘
 
-bash
-Copy
-Edit
 """)
     signal = st.text_input("Signal", value="UCNP")
 
