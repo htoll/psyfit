@@ -118,7 +118,6 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
                 model = A * np.exp(-((x - x0)**2 / (2 * sx**2) + (y - y0)**2 / (2 * sy**2))) + offset
                 return model - z
 
-            # Set bounds similar to MATLAB
             lb = [1, x0_guess - 1, 0.0, y0_guess - 1, 0.0, offset_guess * 0.5]
             ub = [2 * amp_guess, x0_guess + 1, 0.175, y0_guess + 1, 0.175, offset_guess * 1.2]
 
@@ -159,7 +158,7 @@ def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, pix_size_um = 0.1):
-    fig, ax = plt.subplots(figsize=(6, 6))
+    fig, ax = plt.subplots(figsize=(4, 4))
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=LogNorm(), origin='lower')
     plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
     if show_fits:
@@ -182,7 +181,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
     if plot_brightness_histogram:
         brightness_vals = df['brightness_fit'].values
 
-        fig, ax = plt.subplots(figsize=(5, 5))
+        fig, ax = plt.subplots(figsize=(3, 3))
         bins = np.linspace(np.min(brightness_vals), np.max(brightness_vals), 50)
         counts, edges, _ = ax.hist(brightness_vals, bins=bins, edgecolor='black', color='#bc5090')
         bin_centers = 0.5 * (edges[:-1] + edges[1:])
@@ -198,7 +197,6 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
         except RuntimeError:
             st.warning("Gaussian fit failed.")
 
-        ax.set_title("UCNP Brightness Histogram")
         ax.set_xlabel("Brightness (pps)")
         ax.set_ylabel("Count")
         plt.tight_layout()
