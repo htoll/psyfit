@@ -1,3 +1,5 @@
+import sif_parser
+
 def integrate_sif(sif, threshold=1, region='all', signal='UCNP'):
     image_data, metadata = sif_parser.np_open(sif)
     image_data = image_data[0]  # (H, W)
