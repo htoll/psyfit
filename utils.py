@@ -159,15 +159,16 @@ def gaussian(x, amp, mu, sigma):
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
 
-    fig_width, fig_height = 6, 6
+    fig_width, fig_height = 3, 3
     scale = fig_width / 10  
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
     ax.tick_params(axis='both', labelsize=8*scale)
 
-    cbar = plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
-    cbar.ax.tick_params(labelsize=8*scale) # Set the desired font size here
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.ax.tick_params(labelsize=8*scale) 
+    cbar.set_label('pps', fontsize=10*scale)  
 
     if show_fits:
         for _, row in df.iterrows():
