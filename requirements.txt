@@ -10,8 +10,9 @@ datetime
 os
 re
 ipywidgets
-skimage
+skimage.feature 
 sklearn
 scipy
 datetime
 seaborn
+IPython.display
