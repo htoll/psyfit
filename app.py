@@ -68,13 +68,14 @@ if tool == "Analyze single SIF":
                     with open(file_path, "wb") as f:
                         f.write(uploaded_file.getbuffer())
                     df, image_data_cps = integrate_sif(file_path, region = region)
-                    plot_container = st.container()
-                    with plot_container:
+                    plot_col1, plot_col2 = st.columns(2)
+    
+                    with plot_col1:
                         fig_image = plot_brightness(image_data_cps, df, show_fits=True, normalization=LogNorm(), pix_size_um=0.1)
                         st.pyplot(fig_image)
-                    
-                        # Only plot the histogram if the flag is set
-                        if plot_brightness_histogram:
+    
+                    if plot_brightness_histogram:
+                        with plot_col2:
                             fig_hist = plot_histogram(df)
                             st.pyplot(fig_hist)
 
