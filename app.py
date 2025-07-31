@@ -56,6 +56,8 @@ if tool == "Analyze single SIF":
     """, unsafe_allow_html=True)
         signal = st.selectbox("Signal", options=["UCNP", "dye"])
     with col2:
+        st.header(" ")
+
         st.markdown("<div style='margin-top: 40px;'></div>", unsafe_allow_html=True)
 
         show_fits = st.checkbox("Show fits")
