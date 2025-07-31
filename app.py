@@ -2,6 +2,14 @@ import streamlit as st
 from utils import integrate_sif, plot_brightness, sort_UCNP_dye_sifs, natural_sort_key, match_ucnp_dye_files, coloc_subplots, extract_subregion, gaussian2d, HWT_aesthetic
 import sif_parser
 
+#global variables:
+pix_size_um = 0.1
+sig_threshold = 0.3 #threshold to remove psfs greater than this sigma
+
+# Region breakdown:
+#    1 | 2
+#    -----
+#    3 | 4
 
 def main():
     st.title("psfit analysis")
