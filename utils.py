@@ -160,7 +160,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
     fig_width, fig_height = 12, 6
     scale = fig_width / 10  
 
-    fig, axs = plt.subplots(1, 2, figsize=(fig_width, fig_height)) 
+    fig, axs = plt.subplots(2, 1, figsize=(fig_width, fig_height)) 
     im = axs[0].imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
     axs[0].tick_params(axis='both', labelsize=8*scale)
 
@@ -183,7 +183,6 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
 
     axs[0].set_xlabel('x (px)', fontsize = 10*scale)
     axs[0].set_ylabel('y (px)', fontsize = 10*scale)
-    st.pyplot(fig)
 
     if plot_brightness_histogram:
         brightness_vals = df['brightness_fit'].values
