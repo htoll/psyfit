@@ -1,5 +1,6 @@
 import streamlit as st
 from utils import integrate_sif, plot_brightness, sort_UCNP_dye_sifs, natural_sort_key, match_ucnp_dye_files, coloc_subplots, extract_subregion, gaussian2d, HWT_aesthetic
+import sif_parser
 
 
 def main():
