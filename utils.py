@@ -165,16 +165,16 @@ def gaussian(x, amp, mu, sigma):
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
 
-    fig_width, fig_height = 5, 5
+    fig_width, fig_height = 3, 3
     
-    scale = fig_width / 10  
+    scale = fig_width / 5  
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
     ax.tick_params(axis='both', labelsize=8*scale)
 
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.ax.tick_params(labelsize=6*scale) 
+    cbar.ax.tick_params(labelsize=10*scale) 
     cbar.set_label('pps', fontsize=10*scale)  
 
     if show_fits:
@@ -199,7 +199,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
 
 def plot_histogram(df):
     """Plots the brightness histogram with a gaussian fit."""
-    fig_width, fig_height = 6, 4
+    fig_width, fig_height = 3, 3
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     scale = fig_width / 10
 
