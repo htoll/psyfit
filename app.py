@@ -53,7 +53,7 @@ if tool == "Analyze single SIF":
 │ 3 │ 4 │<br>
 └─────┴─────┘
 
-""")
+""", unsafe_allow_html=True)
     signal = st.text_input("Signal", value="UCNP")
 
     if st.button("Run Analysis"):
