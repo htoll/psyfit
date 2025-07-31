@@ -46,7 +46,6 @@ if tool == "Analyze single SIF":
     threshold = st.number_input("Threshold", min_value=0, value=2)
     region = st.text_input("Region", value="1")
     st.markdown("""
-**Region breakdown:**  
 ┌─┬─┐<br>
 │ 1 │ 2 │<br>
 ├─┼─┤<br>
@@ -54,7 +53,7 @@ if tool == "Analyze single SIF":
 └─┴─┘
 
 """, unsafe_allow_html=True)
-    signal = st.text_input("Signal", value="UCNP")
+    signal = st.selectbox("Signal", options=["UCNP", "dye"])
 
     if st.button("Run Analysis"):
         if uploaded_file is not None:
