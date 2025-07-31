@@ -21,7 +21,14 @@ from datetime import date
 
 import streamlit as st
 
-
+def HWT_aesthetic():
+    sns.set_style("ticks")
+    sns.set_context("notebook", font_scale=1.5,
+                    rc={"lines.linewidth": 2.5,
+                        "axes.labelsize": 14,
+                        "axes.titlesize": 16})
+    sns.set_palette("tab20c")  #pref'd are colorblind , tab20c , muted6 ,
+    sns.despine()
 
 def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3):
     image_data, metadata = sif_parser.np_open(sif)
@@ -157,7 +164,7 @@ def gaussian(x, amp, mu, sigma):
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
 
-    fig_width, fig_height = 6, 12
+    fig_width, fig_height = 4, 8
     scale = fig_width / 10  
 
     fig, axs = plt.subplots(2, 1, figsize=(fig_width, fig_height)) 
@@ -196,7 +203,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
             amp, mu, sigma = popt
             x_fit = np.linspace(edges[0], edges[-1], 500)
             y_fit = gaussian(x_fit, *popt)
-            axs[1].plot(x_fit, y_fit, color='dodgerblue', label=f"Gaussian Fit\nμ = {mu:.1f}, σ = {sigma:.1f}")
+            axs[1].plot(x_fit, y_fit, color='dodgerblue', label=f"μ = {mu:.1f}, σ = {sigma:.1f}")
             axs[1].legend(fontsize=10*scale)
         except RuntimeError:
             st.warning("Gaussian fit failed.")
@@ -204,7 +211,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
         axs[1].set_xlabel("Brightness (pps)")
         axs[1].set_ylabel("Count")
         axs[1].tick_params(axis='both', labelsize=8*scale)
-
+        HWT_aesthetic()
         plt.tight_layout()
         st.pyplot(fig)
 
@@ -505,11 +512,4 @@ def gaussian2d(xy, amp, x0, sigma_x, y0, sigma_y, offset):
                  np.exp(-((y - y0)**2)/(2*sigma_y**2)) + offset).ravel()
 
 
-def HWT_aesthetic():
-    sns.set_style("ticks")
-    sns.set_context("notebook", font_scale=1.5,
-                    rc={"lines.linewidth": 2.5,
-                        "axes.labelsize": 14,
-                        "axes.titlesize": 16})
-    sns.set_palette("tab20c")  #pref'd are colorblind , tab20c , muted6 ,
-    sns.despine()
+
