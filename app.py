@@ -69,7 +69,7 @@ if tool == "Analyze single SIF":
                         f.write(uploaded_file.getbuffer())
                     plot_container = st.container()
                     with plot_container:
-                        fig_image = plot_brightness_image(image_data_cps, df, show_fits=True, normalization=LogNorm(), pix_size_um=0.1)
+                        fig_image = plot_brightness(image_data_cps, df, show_fits=True, normalization=LogNorm(), pix_size_um=0.1)
                         st.pyplot(fig_image)
                     
                         # Only plot the histogram if the flag is set
