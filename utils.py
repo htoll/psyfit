@@ -157,15 +157,15 @@ def gaussian(x, amp, mu, sigma):
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
 
-    fig_width, fig_height = 6, 6
+    fig_width, fig_height = 12, 6
     scale = fig_width / 10  
 
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-    im = ax.imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
-    ax.tick_params(axis='both', labelsize=8*scale)
+    fig, axs = plt.subplots(1, 2, figsize=(fig_width, fig_height)) 
+    im = axs[0].imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
+    axs[0].tick_params(axis='both', labelsize=8*scale)
 
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.ax.tick_params(labelsize=8*scale) 
+    cbar.axs[0].tick_params(labelsize=8*scale) 
     cbar.set_label('pps', fontsize=10*scale)  
 
     if show_fits:
@@ -176,9 +176,9 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
             radius_px = 2 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
     
             circle = Circle((x_px, y_px), radius_px, color='white', fill=False, linewidth=1.5*scale, alpha=0.7)
-            ax.add_patch(circle)
+            axs[0].add_patch(circle)
     
-            ax.text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
+            axs[0].text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
                     color='white', fontsize=10*scale, ha='center', va='center')
 
     ax.set_xlabel('x (px)', fontsize = 10*scale)
@@ -187,8 +187,6 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
 
     if plot_brightness_histogram:
         brightness_vals = df['brightness_fit'].values
-
-        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
         bins = np.linspace(np.min(brightness_vals), np.max(brightness_vals), 50)
         counts, edges, _ = ax.hist(brightness_vals, bins=bins, edgecolor='black', color='#bc5090')
         bin_centers = 0.5 * (edges[:-1] + edges[1:])
@@ -204,9 +202,9 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
         except RuntimeError:
             st.warning("Gaussian fit failed.")
 
-        ax.set_xlabel("Brightness (pps)")
-        ax.set_ylabel("Count")
-        ax.tick_params(axis='both', labelsize=8*scale)
+        axs[1].set_xlabel("Brightness (pps)")
+        axs[1].set_ylabel("Count")
+        axs[1].tick_params(axis='both', labelsize=8*scale)
 
         plt.tight_layout()
         st.pyplot(fig)
