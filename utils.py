@@ -174,7 +174,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
     ax.tick_params(axis='both', labelsize=8*scale)
 
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.ax.tick_params(labelsize=10*scale) 
+    cbar.ax.tick_params(left=False, right=False, top=False, bottom=False)
     cbar.set_label('pps', fontsize=10*scale)  
 
     if show_fits:
@@ -190,8 +190,8 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
             ax.text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
                     color='white', fontsize=7*scale, ha='center', va='center')
 
-    ax.set_xlabel('x (px)', fontsize = 10*scale)
-    ax.set_ylabel('y (px)', fontsize = 10*scale)
+    #ax.set_xlabel('x (px)', fontsize = 10*scale)
+    #ax.set_ylabel('y (px)', fontsize = 10*scale)
     plt.tight_layout()
     HWT_aesthetic()
     return fig
