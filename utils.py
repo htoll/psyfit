@@ -1,5 +1,10 @@
 import sif_parser
 
+#global variables:
+pix_size_um = 0.1
+sig_threshold = 0.3 #threshold to remove psfs greater than this sigma
+
+
 def integrate_sif(sif, threshold=1, region='all', signal='UCNP'):
     image_data, metadata = sif_parser.np_open(sif)
     image_data = image_data[0]  # (H, W)
