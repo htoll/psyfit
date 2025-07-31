@@ -159,6 +159,7 @@ def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
 def plot_brightness(image_data_cps, df, image_data, ex_df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, pix_size_um = 0.1):
+    fig, ax = plt.subplots(figsize=(10, 10))
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=LogNorm(), origin='lower')
     plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
     if show_fits:
@@ -179,30 +180,30 @@ def plot_brightness(image_data_cps, df, image_data, ex_df, show_fits = True, sav
     st.pyplot(fig)
 
     if plot_brightness_histogram:
-        ex_sif_brightness = []
-        if 'brightness_fit' in ex_df.columns:
-            ex_sif_brightness.append(ex_df['brightness_fit'].values)
+        brightness_vals = df['brightness_fit'].values
+
         fig, ax = plt.subplots(figsize=(8, 5))
-        bins = np.linspace(np.min(ex_sif_brightness), np.max(ex_sif_brightness), 50)
-        counts, edges, patches = ax.hist(ex_sif_brightness, bins=bins, edgecolor='black', color = '#bc5090')
+        bins = np.linspace(np.min(brightness_vals), np.max(brightness_vals), 50)
+        counts, edges, _ = ax.hist(brightness_vals, bins=bins, edgecolor='black', color='#bc5090')
         bin_centers = 0.5 * (edges[:-1] + edges[1:])
 
-        p0 = [np.max(counts), np.mean(ex_sif_brightness), np.std(ex_sif_brightness)]
+        p0 = [np.max(counts), np.mean(brightness_vals), np.std(brightness_vals)]
         try:
             popt, _ = curve_fit(gaussian, bin_centers, counts, p0=p0)
-            amp, ucnp_mu, sigma = popt
+            amp, mu, sigma = popt
             x_fit = np.linspace(edges[0], edges[-1], 500)
             y_fit = gaussian(x_fit, *popt)
-            ax.plot(x_fit, y_fit, color = 'dodgerblue', label=f"Gaussian Fit\nμ = {ucnp_mu:.1f}, σ = {sigma:.1f}")
+            ax.plot(x_fit, y_fit, color='dodgerblue', label=f"Gaussian Fit\nμ = {mu:.1f}, σ = {sigma:.1f}")
             ax.legend()
         except RuntimeError:
-            print("Gaussian fit failed.")
-        
-        ax.set_title("UCNP Brightness  Histogram")
+            st.warning("Gaussian fit failed.")
+
+        ax.set_title("UCNP Brightness Histogram")
         ax.set_xlabel("Brightness (pps)")
         ax.set_ylabel("Count")
         plt.tight_layout()
         st.pyplot(fig)
+
 
 
 
