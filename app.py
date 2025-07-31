@@ -56,28 +56,26 @@ if tool == "Analyze single SIF":
     """, unsafe_allow_html=True)
         signal = st.selectbox("Signal", options=["UCNP", "dye"])
     with col2:
-        st.header('''
-        
-        ''')
+        st.header(" ")
         show_fits = st.checkbox("Show fits")
         save_as_svg = st.checkbox("Save as SVG")
         plot_brightness_histogram = st.checkbox("Plot brightness histogram")
 
-    if st.button("Fit PSFs"):
-        if uploaded_file is not None:
-            try:
-                os.makedirs("temp", exist_ok=True)
-                file_path = os.path.join("temp", uploaded_file.name)
-                with open(file_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-
-                ex_df, image_data = integrate_sif(file_path, threshold=threshold, region=region, signal=signal)
-                plot_brightness(image_data, ex_df)
-
-            except Exception as e:
-                st.error(f"Error processing file: {e}")
-        else:
-            st.warning("Please upload a .sif file.")
+        if st.button("Fit PSFs"):
+            if uploaded_file is not None:
+                try:
+                    os.makedirs("temp", exist_ok=True)
+                    file_path = os.path.join("temp", uploaded_file.name)
+                    with open(file_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+    
+                    ex_df, image_data = integrate_sif(file_path, threshold=threshold, region=region, signal=signal)
+                    plot_brightness(image_data, ex_df)
+    
+                except Exception as e:
+                    st.error(f"Error processing file: {e}")
+            else:
+                st.warning("Please upload a .sif file.")
 
 # Tool: Analyze Colocalization Set
 elif tool == "Colocalization Set":
