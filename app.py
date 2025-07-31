@@ -27,36 +27,31 @@ import os
 #    3 | 4
 
 
-# Create a session state flag
-if "show_upload" not in st.session_state:
-    st.session_state.show_upload = False
+st.markdown("### Upload and Analyze a SIF File")
 
-# First, show the Analyze button
+# File uploader appears first
+uploaded_file = st.file_uploader("Choose a .sif file", type=["sif"])
+
+# Input parameters
+threshold = st.number_input("Threshold", min_value=0, value=2)
+region = st.text_input("Region", value="1")
+signal = st.text_input("Signal", value="UCNP")
+
+# Combine into a single action button
 if st.button("Analyze single SIF"):
-    st.session_state.show_upload = True
-
-# Only show file uploader and inputs after the button is clicked
-if st.session_state.show_upload:
-    st.markdown("### Upload SIF file")
-    uploaded_file = st.file_uploader("Upload .sif file", type=["sif"])
-
-    threshold = st.number_input("Threshold", min_value=0, value=2)
-    region = st.text_input("Region", value="1")
-    signal = st.text_input("Signal", value="UCNP")
-
-    # When file is uploaded, process it immediately
     if uploaded_file is not None:
         try:
-            # Save to disk
+            # Save uploaded file
             file_path = os.path.join("temp", uploaded_file.name)
             os.makedirs("temp", exist_ok=True)
             with open(file_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
 
-            # Call your analysis
+            # Run your analysis
             ex_df, image_data = integrate_sif(file_path, threshold=threshold, region=region, signal=signal)
             plot_brightness(image_data, ex_df)
 
         except Exception as e:
             st.error(f"Error processing file: {e}")
-    
+    else:
+        st.warning("Please upload a .sif file before clicking 'Analyze'.")
