@@ -1,5 +1,6 @@
 import sif_parser
 import numpy as np
+import pandas as pd
 from skimage.feature import peak_local_max
 from skimage.feature import blob_log
 
