@@ -75,7 +75,7 @@ if tool == "Analyze single SIF":
                     
                         # Only plot the histogram if the flag is set
                         if plot_brightness_histogram:
-                            fig_hist = plot_brightness_histogram(df)
+                            fig_hist = plot_histogram(df)
                             st.pyplot(fig_hist)
 
     
