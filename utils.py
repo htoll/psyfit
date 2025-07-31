@@ -192,7 +192,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
 
     ax.set_xlabel('x (px)', fontsize = 10*scale)
     ax.set_ylabel('y (px)', fontsize = 10*scale)
-    plt.tightlayout()
+    plt.tight_layout()
     HWT_aesthetic()
     return fig
 
