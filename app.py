@@ -56,6 +56,8 @@ if tool == "Analyze single SIF":
     """, unsafe_allow_html=True)
         signal = st.selectbox("Signal", options=["UCNP", "dye"])
     with col2:
+        st.write("")  # blank line for spacing
+        st.write("")
         show_fits = st.checkbox("Show fits")
         save_as_svg = st.checkbox("Save as SVG")
         plot_brightness_histogram = st.checkbox("Plot brightness histogram")
