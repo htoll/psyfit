@@ -175,9 +175,8 @@ def plot_brightness(image_data_cps, df, ax=None):
 
     ax.set_xlabel('x (px)')
     ax.set_ylabel('y (px)')
+    st.pyplot(fig)
 
-    if ax is None:
-        plt.show()
 
 
 
