@@ -44,7 +44,7 @@ if tool == "Analyze single SIF":
 
     uploaded_file = st.file_uploader("Upload .sif file", type=["sif"])
     threshold = st.number_input("Threshold", min_value=0, value=2)
-    region = st.text_input("Region", value="1")
+    region = st.selectbox("Signal", options=["1", "2", "3", "4", "all"])
     st.markdown("""
 ┌─┬─┐<br>
 │ 1 │ 2 │<br>
