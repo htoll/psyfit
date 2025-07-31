@@ -555,7 +555,6 @@ def HWT_aesthetic():
 
 file_path = r'/content/drive/Shared drives/PengLab_Data_2025/Microscopy/HWT/202507/20250731/Tm06Yb94_PMAO_KM_1to1k_976nm1500mA'
 #file_path = r'/content/drive/Shareddrives/PengLab_Data_2024/Microscopy/HWT/202409/20240918/HWT04_019_Tm03Yb20@Si@N3@DBCO-DNA-Cy5_stock_976nm100mA_638nm80mA/Compiled_data_HWT_250609/' #best spaac result
-print(os.listdir(file_path))
 
 """# Check Thresholds"""
 
