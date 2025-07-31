@@ -160,7 +160,7 @@ def gaussian(x, amp, mu, sigma):
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
 
     plt.rcParams["figure.dpi"] = 10^4  
-    fig_width, fig_height = 5, 5
+    fig_width, fig_height = 3, 3
     scale = fig_width / 10  
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
@@ -190,7 +190,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
     if plot_brightness_histogram:
         brightness_vals = df['brightness_fit'].values
 
-        fig, ax = plt.subplots(figsize=(3, 3))
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
         bins = np.linspace(np.min(brightness_vals), np.max(brightness_vals), 50)
         counts, edges, _ = ax.hist(brightness_vals, bins=bins, edgecolor='black', color='#bc5090')
         bin_centers = 0.5 * (edges[:-1] + edges[1:])
@@ -201,13 +201,15 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
             amp, mu, sigma = popt
             x_fit = np.linspace(edges[0], edges[-1], 500)
             y_fit = gaussian(x_fit, *popt)
-            ax.plot(x_fit, y_fit, color='dodgerblue', label=f"Gaussian Fit\nμ = {mu:.1f}, σ = {sigma:.1f}")
-            ax.legend()
+            ax.plot(x_fit, y_fit, color='dodgerblue', label=f"Gaussian Fit\nμ = {mu:.1f}, σ = {sigma:.1f}, fontsize=10*scale")
+            ax.legend(fontsize=10*scale)
         except RuntimeError:
             st.warning("Gaussian fit failed.")
 
-        ax.set_xlabel("Brightness (pps)")
-        ax.set_ylabel("Count")
+        ax.set_xlabel("Brightness (pps)", fontsize=10*scale)
+        ax.set_ylabel("Count", fontsize=10*scale)
+        ax.tick_params(axis='both', labelsize=8*scale)
+
         plt.tight_layout()
         st.pyplot(fig)
 
