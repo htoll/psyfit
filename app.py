@@ -28,6 +28,7 @@ import os
 
 import streamlit as st
 import os
+st.set_page_config(layout="wide")
 
 # Sidebar navigation
 st.sidebar.title("Navigation")
