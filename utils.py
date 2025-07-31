@@ -163,7 +163,9 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
     fig_width, fig_height = 5, 5
     scale = fig_width / 10  
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
-    plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04, fontsize = 10*scale)
+    cbar = plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
+    cbar.ax.tick_params(labelsize=8*scale) # Set the desired font size here
+
     if show_fits:
         for _, row in df.iterrows():
             x_px = row['x_pix']
