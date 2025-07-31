@@ -540,6 +540,10 @@ def gaussian2d(xy, amp, x0, sigma_x, y0, sigma_y, offset):
                  np.exp(-((y - y0)**2)/(2*sigma_y**2)) + offset).ravel()
 
 
+def gaussian(x, amp, mu, sigma):
+    return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
+
+
 def HWT_aesthetic():
     sns.set_style("ticks")
     sns.set_context("notebook", font_scale=1.5,
@@ -570,47 +574,42 @@ if uploaded_file is not None:
     plot_brightness(image_data, ex_df, show_fits = False)
 
 
-ex_sif_brightness = []
-
-if 'brightness_fit' in ex_df.columns:
-    ex_sif_brightness.append(ex_df['brightness_fit'].values)
-
-def gaussian(x, amp, mu, sigma):
-    return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
-
-
-
-# Clip outliers
-# lower = np.percentile(sif_brightness, 1)
-# upper = 3*10**4#np.percentile(all_brightness, 99)
-# brightness_clipped = sif_brightness[(sif_brightness >= lower) & (sif_brightness <= upper)]
-fig, ax = plt.subplots(figsize=(8, 5))
-
-bins = np.linspace(np.min(ex_sif_brightness), np.max(ex_sif_brightness), 50)
-counts, edges, patches = ax.hist(ex_sif_brightness, bins=bins, edgecolor='black', color = '#bc5090')
-
-
-bin_centers = 0.5 * (edges[:-1] + edges[1:])
+    ex_sif_brightness = []
+    
+    if 'brightness_fit' in ex_df.columns:
+        ex_sif_brightness.append(ex_df['brightness_fit'].values)
 
 
 
 
-p0 = [np.max(counts), np.mean(ex_sif_brightness), np.std(ex_sif_brightness)]
-try:
-    popt, _ = curve_fit(gaussian, bin_centers, counts, p0=p0)
-    amp, ucnp_mu, sigma = popt
-    x_fit = np.linspace(edges[0], edges[-1], 500)
-    y_fit = gaussian(x_fit, *popt)
-    ax.plot(x_fit, y_fit, color = 'dodgerblue', label=f"Gaussian Fit\nμ = {ucnp_mu:.1f}, σ = {sigma:.1f}")
-    ax.legend()
-except RuntimeError:
-    print("Gaussian fit failed.")
-
-ax.set_title("UCNP Brightness  Histogram")
-ax.set_xlabel("Brightness (pps)")
-ax.set_ylabel("Count")
-plt.tight_layout()
-plt.show()
+    # Clip outliers
+    # lower = np.percentile(sif_brightness, 1)
+    # upper = 3*10**4#np.percentile(all_brightness, 99)
+    # brightness_clipped = sif_brightness[(sif_brightness >= lower) & (sif_brightness <= upper)]
+    fig, ax = plt.subplots(figsize=(8, 5))
+    
+    bins = np.linspace(np.min(ex_sif_brightness), np.max(ex_sif_brightness), 50)
+    counts, edges, patches = ax.hist(ex_sif_brightness, bins=bins, edgecolor='black', color = '#bc5090')
+    
+    
+    bin_centers = 0.5 * (edges[:-1] + edges[1:])
+    
+    p0 = [np.max(counts), np.mean(ex_sif_brightness), np.std(ex_sif_brightness)]
+    try:
+        popt, _ = curve_fit(gaussian, bin_centers, counts, p0=p0)
+        amp, ucnp_mu, sigma = popt
+        x_fit = np.linspace(edges[0], edges[-1], 500)
+        y_fit = gaussian(x_fit, *popt)
+        ax.plot(x_fit, y_fit, color = 'dodgerblue', label=f"Gaussian Fit\nμ = {ucnp_mu:.1f}, σ = {sigma:.1f}")
+        ax.legend()
+    except RuntimeError:
+        print("Gaussian fit failed.")
+    
+    ax.set_title("UCNP Brightness  Histogram")
+    ax.set_xlabel("Brightness (pps)")
+    ax.set_ylabel("Count")
+    plt.tight_layout()
+    plt.show()
 
 file = os.path.join(file_path, 'HWT05_155A_stock__638nm75mA_6.sif')
 dye_region = 'custom'
