@@ -165,11 +165,11 @@ def gaussian(x, amp, mu, sigma):
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
 
-    fig_width, fig_height = 3, 6
+    fig_width, fig_height = 5, 5
     
     scale = fig_width / 10  
 
-    fig, axs = plt.subplots(2, 1, figsize=(fig_width, fig_height)) 
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     im = axs[0].imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
     axs[0].tick_params(axis='both', labelsize=8*scale)
 
@@ -192,34 +192,39 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
 
     axs[0].set_xlabel('x (px)', fontsize = 10*scale)
     axs[0].set_ylabel('y (px)', fontsize = 10*scale)
+    plt.tightlayout()
+    HWT_aesthetic()
+    return fig
 
-    if plot_brightness_histogram:
-        brightness_vals = df['brightness_fit'].values
-        bins = np.linspace(np.min(brightness_vals), np.max(brightness_vals), 50)
-        counts, edges, _ = axs[1].hist(brightness_vals, bins=bins, edgecolor='black', color='#bc5090')
-        bin_centers = 0.5 * (edges[:-1] + edges[1:])
 
-        p0 = [np.max(counts), np.mean(brightness_vals), np.std(brightness_vals)]
-        try:
-            popt, _ = curve_fit(gaussian, bin_centers, counts, p0=p0)
-            amp, mu, sigma = popt
-            x_fit = np.linspace(edges[0], edges[-1], 500)
-            y_fit = gaussian(x_fit, *popt)
-            axs[1].plot(x_fit, y_fit, color='dodgerblue', label=f"μ = {mu:.1f}, σ = {sigma:.1f}")
-            axs[1].legend(fontsize=10*scale)
-        except RuntimeError:
-            st.warning("Gaussian fit failed.")
+def plot_brightness_histogram(df):
+    """Plots the brightness histogram with a gaussian fit."""
+    fig_width, fig_height = 6, 4
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    scale = fig_width / 10
 
-        axs[1].set_xlabel("Brightness (pps)", fontsize = 10*scale)
-        axs[1].set_ylabel("Count", fontsize = 10*scale)
-        axs[1].tick_params(axis='both', labelsize=8*scale)
-        HWT_aesthetic()
-        plt.tight_layout()
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
-        buf.seek(0)
-        st.image(buf)
+    brightness_vals = df['brightness_fit'].values
+    bins = np.linspace(np.min(brightness_vals), np.max(brightness_vals), 50)
+    counts, edges, _ = ax.hist(brightness_vals, bins=bins, edgecolor='black', color='#bc5090')
+    bin_centers = 0.5 * (edges[:-1] + edges[1:])
 
+    p0 = [np.max(counts), np.mean(brightness_vals), np.std(brightness_vals)]
+    try:
+        popt, _ = curve_fit(gaussian, bin_centers, counts, p0=p0)
+        mu, sigma = popt[1], popt[2]
+        x_fit = np.linspace(edges[0], edges[-1], 500)
+        y_fit = gaussian(x_fit, *popt)
+        ax.plot(x_fit, y_fit, color='dodgerblue', label=f"μ = {mu:.1f}, σ = {sigma:.1f}")
+        ax.legend(fontsize=10*scale)
+    except RuntimeError:
+        st.warning("Gaussian fit failed.")
+    
+    ax.set_xlabel("Brightness (pps)", fontsize=10*scale)
+    ax.set_ylabel("Count", fontsize=10*scale)
+    ax.tick_params(axis='both', labelsize=8*scale)
+    HWT_aesthetic()
+    plt.tight_layout()
+    return fig
 
 
 
