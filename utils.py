@@ -159,7 +159,7 @@ def gaussian(x, amp, mu, sigma):
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
 
-    plt.rcParams["figure.dpi"] = 10**4  
+    plt.rcParams["figure.dpi"] = 100
     fig_width, fig_height = 6, 6
     scale = fig_width / 3  
 
