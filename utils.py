@@ -183,6 +183,9 @@ def plot_brightness(image_data_cps, df, image_data, ex_df, show_fits = True, sav
     st.pyplot(fig)
 
     if plot_brightness_histogram:
+        ex_sif_brightness = []
+        if 'brightness_fit' in ex_df.columns:
+            ex_sif_brightness.append(ex_df['brightness_fit'].values)
         fig, ax = plt.subplots(figsize=(8, 5))
         bins = np.linspace(np.min(ex_sif_brightness), np.max(ex_sif_brightness), 50)
         counts, edges, patches = ax.hist(ex_sif_brightness, bins=bins, edgecolor='black', color = '#bc5090')
