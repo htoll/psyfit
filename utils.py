@@ -10,7 +10,7 @@ from sklearn.metrics import r2_score
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from matplotlib.colors import LogNorm
-
+import seaborn as sns
 
 from scipy.ndimage import zoom
 from scipy.ndimage import gaussian_filter
