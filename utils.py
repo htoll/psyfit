@@ -208,28 +208,6 @@ def plot_brightness(image_data_cps, df, image_data, ex_df, show_fits = True, sav
 
 
 
-
-p0 = [np.max(counts), np.mean(ex_sif_brightness), np.std(ex_sif_brightness)]
-try:
-    popt, _ = curve_fit(gaussian, bin_centers, counts, p0=p0)
-    amp, ucnp_mu, sigma = popt
-    x_fit = np.linspace(edges[0], edges[-1], 500)
-    y_fit = gaussian(x_fit, *popt)
-    ax.plot(x_fit, y_fit, color = 'dodgerblue', label=f"Gaussian Fit\nμ = {ucnp_mu:.1f}, σ = {sigma:.1f}")
-    ax.legend()
-except RuntimeError:
-    print("Gaussian fit failed.")
-
-ax.set_title("UCNP Brightness  Histogram")
-ax.set_xlabel("Brightness (pps)")
-ax.set_ylabel("Count")
-plt.tight_layout()
-plt.show()
-
-
-
-
-
 def sort_UCNP_dye_sifs(directory, signal_ucnp=976, signal_dye=638):
     files = [f for f in os.listdir(directory) if f.endswith('.sif')]
     ucnp_files = []
