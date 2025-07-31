@@ -31,7 +31,13 @@ def main():
     # File uploader widget
     uploaded_file = st.file_uploader("Upload a .sif file", type=["sif"])
     
-    if uploaded_file is not None:
+   
+
+if __name__ == "__main__":
+    main()
+
+if st.button("Analyze single sif"):
+     if uploaded_file is not None:
         # Save the uploaded file to disk (Streamlit's file_uploader returns BytesIO)
         with open(uploaded_file.name, "wb") as f:
             f.write(uploaded_file.getbuffer())
@@ -47,7 +53,4 @@ def main():
             plot_brightness(image_data, ex_df)
         except Exception as e:
             st.error(f"Error processing file: {e}")
-
-if __name__ == "__main__":
-    main()
-
+    
