@@ -45,6 +45,18 @@ if tool == "Analyze single SIF":
     uploaded_file = st.file_uploader("Upload .sif file", type=["sif"])
     threshold = st.number_input("Threshold", min_value=0, value=2)
     region = st.text_input("Region", value="1")
+    st.markdown("""
+**Region breakdown:**  
+┌─────┬─────┐
+│ 1 │ 2 │
+├─────┼─────┤
+│ 3 │ 4 │
+└─────┴─────┘
+
+bash
+Copy
+Edit
+""")
     signal = st.text_input("Signal", value="UCNP")
 
     if st.button("Run Analysis"):
@@ -64,8 +76,8 @@ if tool == "Analyze single SIF":
             st.warning("Please upload a .sif file.")
 
 # Tool: Analyze Colocalization Set
-elif tool == "Analyze Colocalization Set":
-    st.header("Analyze Colocalization Set")
+elif tool == "Colocalization Set":
+    st.header("Colocalization Set")
     st.info("This feature is under construction — implement logic here.")
 
 # Tool: Batch Convert SIFs
@@ -77,3 +89,7 @@ elif tool == "Batch Convert SIFs":
 elif tool == "Visualize Data":
     st.header("Visualize Data")
     st.info("This feature is under construction — implement logic here.")
+
+
+
+
