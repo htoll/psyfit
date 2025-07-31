@@ -197,7 +197,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
     return fig
 
 
-def plot_brightness_histogram(df):
+def plot_histogram(df):
     """Plots the brightness histogram with a gaussian fit."""
     fig_width, fig_height = 6, 4
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
