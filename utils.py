@@ -158,8 +158,8 @@ def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
-    fig, ax = plt.subplots(figsize=(3, 3))
-    plt.rcParams["figure.dpi"] = 120  # Optional: make plots sharper
+    fig, ax = plt.subplots(figsize=(1, 1))
+    plt.rcParams["figure.dpi"] = 600  # Optional: make plots sharper
 
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
     plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
