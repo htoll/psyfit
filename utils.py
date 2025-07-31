@@ -160,7 +160,7 @@ def gaussian(x, amp, mu, sigma):
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
 
     plt.rcParams["figure.dpi"] = 10^4  
-    fig_width, fig_height = 3, 3
+    fig_width, fig_height = 1, 1
     scale = fig_width / 10  
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
@@ -206,8 +206,8 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
         except RuntimeError:
             st.warning("Gaussian fit failed.")
 
-        ax.set_xlabel("Brightness (pps)", fontsize=10*scale)
-        ax.set_ylabel("Count", fontsize=10*scale)
+        ax.set_xlabel("Brightness (pps)")
+        ax.set_ylabel("Count")
         ax.tick_params(axis='both', labelsize=8*scale)
 
         plt.tight_layout()
