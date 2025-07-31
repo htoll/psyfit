@@ -17,10 +17,6 @@ from datetime import datetime, timedelta
 import os
 from os import listdir, mkdir
 import re
-
-from google.colab import drive
-from google.colab import files
-
 import sif_parser
 
 import pandas as pd
