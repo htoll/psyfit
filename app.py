@@ -55,7 +55,7 @@ if tool == "Analyze single SIF":
 """, unsafe_allow_html=True)
     signal = st.selectbox("Signal", options=["UCNP", "dye"])
 
-    if st.button("Run Analysis"):
+    if st.button("Fit PSFs"):
         if uploaded_file is not None:
             try:
                 os.makedirs("temp", exist_ok=True)
