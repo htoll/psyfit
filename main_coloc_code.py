@@ -559,11 +559,15 @@ file_path = r'/content/drive/Shared drives/PengLab_Data_2025/Microscopy/HWT/2025
 """# Check Thresholds"""
 
 #check UCNP thresholding:
-file = os.path.join(file_path, 'Tm06Yb94_PMAO_KM_1to100k_976nm1500mA_3.sif')
-ucnp_region = '1'
-ucnp_threshold = 2
+uploaded_file = st.file_uploader("Choose a .sif file", type=['sif'])
+if uploaded_file is not None:
+    # Save the file temporarily to disk
+    with open(uploaded_file.name, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    st.write(f"Saved file: {uploaded_file.name}")
 
-ex_df, image_data = integrate_sif(file, threshold = ucnp_threshold, region = ucnp_region, signal = 'UCNP')
+    ex_df, image_data = integrate_sif(uploaded_file.name, threshold=ucnp_threshold, region=ucnp_region, signal='UCNP')
+
 plot_brightness(image_data, ex_df, show_fits = False)
 
 
