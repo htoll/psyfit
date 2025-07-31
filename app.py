@@ -41,22 +41,23 @@ tool = st.sidebar.radio("Select a tool:", [
 # Tool: Analyze single SIF
 if tool == "Analyze single SIF":
     st.header("Analyze Single SIF File")
-
-    uploaded_file = st.file_uploader("Upload .sif file", type=["sif"])
-    threshold = st.number_input("Threshold", min_value=0, value=2)
-    region = st.selectbox("Signal", options=["1", "2", "3", "4", "all"])
-    st.markdown("""
-┌─┬─┐<br>
-│ 1 │ 2 │<br>
-├─┼─┤<br>
-│ 3 │ 4 │<br>
-└─┴─┘
-
-""", unsafe_allow_html=True)
-    signal = st.selectbox("Signal", options=["UCNP", "dye"])
-    show_fits = st.checkbox("Show fits")
-    save_as_svg = st.checkbox("Save as SVG")
-    plot_brightness_histogram = st.checkbox("Plot brightness histogram")
+    with col1:
+        uploaded_file = st.file_uploader("Upload .sif file", type=["sif"])
+        threshold = st.number_input("Threshold", min_value=0, value=2)
+        region = st.selectbox("Signal", options=["1", "2", "3", "4", "all"])
+        st.markdown("""
+    ┌─┬─┐<br>
+    │ 1 │ 2 │<br>
+    ├─┼─┤<br>
+    │ 3 │ 4 │<br>
+    └─┴─┘
+    
+    """, unsafe_allow_html=True)
+        signal = st.selectbox("Signal", options=["UCNP", "dye"])
+    with col 2:
+        show_fits = st.checkbox("Show fits")
+        save_as_svg = st.checkbox("Save as SVG")
+        plot_brightness_histogram = st.checkbox("Plot brightness histogram")
 
     if st.button("Fit PSFs"):
         if uploaded_file is not None:
