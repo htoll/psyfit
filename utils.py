@@ -159,10 +159,11 @@ def gaussian(x, amp, mu, sigma):
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
     fig, ax = plt.subplots(figsize=(1, 1))
-    plt.rcParams["figure.dpi"] = 600  # Optional: make plots sharper
-
+    plt.rcParams["figure.dpi"] = 600  
+    fig_width, fig_height = 5, 5
+    scale = fig_width / 10  
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
-    plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
+    plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04, fontsize = 10*scale)
     if show_fits:
         for _, row in df.iterrows():
             x_px = row['x_pix']
@@ -170,14 +171,14 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
             brightness_kpps = row['brightness_fit'] / 1000
             radius_px = 2 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
     
-            circle = Circle((x_px, y_px), radius_px, color='white', fill=False, linewidth=1.5, alpha=0.7)
+            circle = Circle((x_px, y_px), radius_px, color='white', fill=False, linewidth=1.5*scale, alpha=0.7)
             ax.add_patch(circle)
     
             ax.text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
-                    color='white', fontsize=10, ha='center', va='center')
+                    color='white', fontsize=10*scale, ha='center', va='center')
 
-    ax.set_xlabel('x (px)')
-    ax.set_ylabel('y (px)')
+    ax.set_xlabel('x (px)', fontsize = 10*scale)
+    ax.set_ylabel('y (px)', fontsize = 10*scale)
     st.pyplot(fig)
 
     if plot_brightness_histogram:
