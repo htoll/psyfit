@@ -8,11 +8,8 @@ Original file is located at
 """
 
 #imports
-try:
-    import sif_parser
-except ImportError:
-    !pip install sif_parser
-    import sif_parser
+
+import sif_parser
 
 
 import numpy as np
