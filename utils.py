@@ -171,10 +171,12 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
-    ax.tick_params(axis='both', labelsize=8*scale)
+    ax.tick_params(axis='both', labelsize=6*scale)
 
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.ax.tick_params(left=False, right=False, top=False, bottom=False)
+    cbar.ax.tick_params(axis='both', which='both', length=0, labelleft=False, labelright=False, labeltop=False, labelbottom=False)
+
+
     cbar.set_label('pps', fontsize=10*scale)  
 
     if show_fits:
@@ -184,7 +186,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
             brightness_kpps = row['brightness_fit'] / 1000
             radius_px = 2 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
     
-            circle = Circle((x_px, y_px), radius_px, color='white', fill=False, linewidth=1.5*scale, alpha=0.7)
+            circle = Circle((x_px, y_px), radius_px, color='white', fill=False, linewidth=1*scale, alpha=0.7)
             ax.add_patch(circle)
     
             ax.text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
