@@ -73,7 +73,7 @@ if tool == "Analyze single SIF":
                     plot_col1, plot_col2 = st.columns(2)
     
                     with plot_col1:
-                        fig_image = plot_brightness(image_data_cps, df, show_fits=True, normalization=LogNorm(), pix_size_um=0.1, save_as_svg = save_as_svg, normalization = normalization)
+                        fig_image = plot_brightness(image_data_cps, df, show_fits=True, normalization=normalization, pix_size_um=0.1, save_as_svg = save_as_svg)
                         st.pyplot(fig_image)
     
                     if plot_brightness_histogram:
