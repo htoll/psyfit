@@ -165,7 +165,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
     axs[0].tick_params(axis='both', labelsize=8*scale)
 
     cbar = plt.colorbar(im, ax=axs[0], fraction=0.046, pad=0.04)
-    cbar.axs[0].tick_params(labelsize=8*scale) 
+    cbar.ax.tick_params(labelsize=8*scale) 
     cbar.set_label('pps', fontsize=10*scale)  
 
     if show_fits:
@@ -197,7 +197,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
             amp, mu, sigma = popt
             x_fit = np.linspace(edges[0], edges[-1], 500)
             y_fit = gaussian(x_fit, *popt)
-            axs[1].plot(x_fit, y_fit, color='dodgerblue', label=f"Gaussian Fit\nμ = {mu:.1f}, σ = {sigma:.1f}, fontsize=10*scale")
+            axs[1].plot(x_fit, y_fit, color='dodgerblue', label=f"Gaussian Fit\nμ = {mu:.1f}, σ = {sigma:.1f}")
             axs[1].legend(fontsize=10*scale)
         except RuntimeError:
             st.warning("Gaussian fit failed.")
