@@ -174,7 +174,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
     ax.tick_params(axis='both', labelsize=8*scale)
 
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.ax.tick_params(labelsize=8*scale) 
+    cbar.ax.tick_params(labelsize=6*scale) 
     cbar.set_label('pps', fontsize=10*scale)  
 
     if show_fits:
