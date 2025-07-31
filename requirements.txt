@@ -6,3 +6,12 @@ scikit-learn
 plotly
 pydeck
 sif_parser
+datetime
+os
+re
+ipywidgets
+skimage
+sklearn
+scipy
+datetime
+seaborn
