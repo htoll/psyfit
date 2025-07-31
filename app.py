@@ -67,9 +67,16 @@ if tool == "Analyze single SIF":
                     file_path = os.path.join("temp", uploaded_file.name)
                     with open(file_path, "wb") as f:
                         f.write(uploaded_file.getbuffer())
-    
-                    ex_df, image_data = integrate_sif(file_path, threshold=threshold, region=region, signal=signal)
-                    plot_brightness(image_data, ex_df, show_fits = show_fits, save_as_svg = save_as_svg, plot_brightness_histogram = plot_brightness_histogram)
+                    plot_container = st.container()
+                    with plot_container:
+                        fig_image = plot_brightness_image(image_data_cps, df, show_fits=True, normalization=LogNorm(), pix_size_um=0.1)
+                        st.pyplot(fig_image)
+                    
+                        # Only plot the histogram if the flag is set
+                        if plot_brightness_histogram:
+                            fig_hist = plot_brightness_histogram(df)
+                            st.pyplot(fig_hist)
+
     
                 except Exception as e:
                     st.error(f"Error processing file: {e}")
