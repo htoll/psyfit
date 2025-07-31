@@ -37,7 +37,7 @@ tool = st.sidebar.radio("Select a tool:", [
     "Batch Convert SIFs",
     "Visualize Data"
 ])
-col1, col2 = st.columns([3, 3])  # 3 parts for left, 1 part for right (adjust ratio as you like)
+col1, col2 = st.columns([1, 3])
 
 # Tool: Analyze single SIF
 if tool == "Analyze single SIF":
