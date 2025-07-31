@@ -163,13 +163,17 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
-def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
+def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = False, pix_size_um = 0.1):
 
     fig_width, fig_height = 5, 5
     
     scale = fig_width / 5  
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    if normalization:
+        normalization = LogNorm()
+    else:
+        normalization = None
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
     ax.tick_params(axis='both',length=0, labelleft=False, labelright=False, labeltop=False, labelbottom=False)
 
@@ -197,7 +201,7 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
     return fig
 
 
-def plot_histogram(df):
+def plot_histogram(df, save_as_svg = False):
     """Plots the brightness histogram with a gaussian fit."""
     fig_width, fig_height = 4, 4
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
