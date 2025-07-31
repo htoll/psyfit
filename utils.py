@@ -159,9 +159,9 @@ def gaussian(x, amp, mu, sigma):
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
 
-    plt.rcParams["figure.dpi"] = 10^4  
-    fig_width, fig_height = 1, 1
-    scale = fig_width / 10  
+    plt.rcParams["figure.dpi"] = 10**4  
+    fig_width, fig_height = 6, 6
+    scale = fig_width / 3  
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=normalization, origin='lower') #LogNorm()
