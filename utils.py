@@ -20,6 +20,7 @@ from scipy.optimize import least_squares
 from datetime import date
 
 import streamlit as st
+import io
 
 def HWT_aesthetic():
     sns.set_style("ticks")
@@ -164,7 +165,8 @@ def gaussian(x, amp, mu, sigma):
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
 
-    fig_width, fig_height = 3, 6
+    fig_width, fig_height = 4, 8
+    
     scale = fig_width / 10  
 
     fig, axs = plt.subplots(2, 1, figsize=(fig_width, fig_height)) 
@@ -213,7 +215,10 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
         axs[1].tick_params(axis='both', labelsize=8*scale)
         HWT_aesthetic()
         plt.tight_layout()
-        st.pyplot(fig, dpi = 200)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
+        buf.seek(0)
+        st.image(buf)
 
 
 
