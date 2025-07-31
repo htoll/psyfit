@@ -181,14 +181,14 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
             axs[0].text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
                     color='white', fontsize=10*scale, ha='center', va='center')
 
-    ax.set_xlabel('x (px)', fontsize = 10*scale)
-    ax.set_ylabel('y (px)', fontsize = 10*scale)
+    axs[0].set_xlabel('x (px)', fontsize = 10*scale)
+    axs[0].set_ylabel('y (px)', fontsize = 10*scale)
     st.pyplot(fig)
 
     if plot_brightness_histogram:
         brightness_vals = df['brightness_fit'].values
         bins = np.linspace(np.min(brightness_vals), np.max(brightness_vals), 50)
-        counts, edges, _ = ax.hist(brightness_vals, bins=bins, edgecolor='black', color='#bc5090')
+        counts, edges, _ = axs[1].hist(brightness_vals, bins=bins, edgecolor='black', color='#bc5090')
         bin_centers = 0.5 * (edges[:-1] + edges[1:])
 
         p0 = [np.max(counts), np.mean(brightness_vals), np.std(brightness_vals)]
@@ -197,8 +197,8 @@ def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, p
             amp, mu, sigma = popt
             x_fit = np.linspace(edges[0], edges[-1], 500)
             y_fit = gaussian(x_fit, *popt)
-            ax.plot(x_fit, y_fit, color='dodgerblue', label=f"Gaussian Fit\nμ = {mu:.1f}, σ = {sigma:.1f}, fontsize=10*scale")
-            ax.legend(fontsize=10*scale)
+            axs[1].plot(x_fit, y_fit, color='dodgerblue', label=f"Gaussian Fit\nμ = {mu:.1f}, σ = {sigma:.1f}, fontsize=10*scale")
+            axs[1].legend(fontsize=10*scale)
         except RuntimeError:
             st.warning("Gaussian fit failed.")
 
