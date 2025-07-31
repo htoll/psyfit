@@ -158,7 +158,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
-def plot_brightness(image_data_cps, df, image_data, ex_df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, pix_size_um = 0.1):
+def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, pix_size_um = 0.1):
     fig, ax = plt.subplots(figsize=(10, 10))
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=LogNorm(), origin='lower')
     plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
