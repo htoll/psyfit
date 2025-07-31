@@ -157,7 +157,7 @@ def gaussian(x, amp, mu, sigma):
 
 def plot_brightness(image_data_cps, df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, normalization = None, pix_size_um = 0.1):
 
-    fig_width, fig_height = 12, 6
+    fig_width, fig_height = 6, 12
     scale = fig_width / 10  
 
     fig, axs = plt.subplots(2, 1, figsize=(fig_width, fig_height)) 
