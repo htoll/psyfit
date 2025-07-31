@@ -69,7 +69,7 @@ if tool == "Analyze single SIF":
                         f.write(uploaded_file.getbuffer())
     
                     ex_df, image_data = integrate_sif(file_path, threshold=threshold, region=region, signal=signal)
-                    plot_brightness(image_data, ex_df, show_fits = show_fits, save_as_svg = save_as_svg, plot_brightness_histogram = plot_brightness_histogram)
+                    #plot_brightness(image_data, ex_df, show_fits = show_fits, save_as_svg = save_as_svg, plot_brightness_histogram = plot_brightness_histogram)
     
                 except Exception as e:
                     st.error(f"Error processing file: {e}")
