@@ -23,11 +23,9 @@ import streamlit as st
 
 
 #global variables:
-pix_size_um = 0.1
-sig_threshold = 0.3 #threshold to remove psfs greater than this sigma
 
 
-def integrate_sif(sif, threshold=1, region='all', signal='UCNP'):
+def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3):
     image_data, metadata = sif_parser.np_open(sif)
     image_data = image_data[0]  # (H, W)
 
@@ -160,9 +158,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP'):
 def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
-def plot_brightness(image_data_cps, df, image_data, ex_df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False):
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 10))
+def plot_brightness(image_data_cps, df, image_data, ex_df, show_fits = True, save_as_svg = False, plot_brightness_histogram = False, pix_size_um = 0.1):
     im = ax.imshow(image_data_cps + 1, cmap='magma', norm=LogNorm(), origin='lower')
     plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
     if show_fits:
