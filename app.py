@@ -41,8 +41,8 @@ col1, col2 = st.columns([3, 1])  # 3 parts for left, 1 part for right (adjust ra
 
 # Tool: Analyze single SIF
 if tool == "Analyze single SIF":
-    st.header("Analyze Single SIF File")
     with col1:
+        st.header("Analyze Single SIF File")
         uploaded_file = st.file_uploader("Upload .sif file", type=["sif"])
         threshold = st.number_input("Threshold", min_value=0, value=2)
         region = st.selectbox("Signal", options=["1", "2", "3", "4", "all"])
