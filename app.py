@@ -47,11 +47,11 @@ if tool == "Analyze single SIF":
     region = st.text_input("Region", value="1")
     st.markdown("""
 **Region breakdown:**  
-┌─────┬─────┐
-  │  1  │  2  │
-  ├─────┼─────┤
-  │  3  │  4  │
-  └─────┴─────┘
+┌─────┬─────┐<br>
+│ 1 │ 2 │<br>
+├─────┼─────┤<br>
+│ 3 │ 4 │<br>
+└─────┴─────┘
 
 """)
     signal = st.text_input("Signal", value="UCNP")
