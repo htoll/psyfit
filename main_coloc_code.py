@@ -567,8 +567,7 @@ if uploaded_file is not None:
     st.write(f"Saved file: {uploaded_file.name}")
 
     ex_df, image_data = integrate_sif(uploaded_file.name, threshold=ucnp_threshold, region=ucnp_region, signal='UCNP')
-
-plot_brightness(image_data, ex_df, show_fits = False)
+    plot_brightness(image_data, ex_df, show_fits = False)
 
 
 ex_sif_brightness = []
