@@ -44,7 +44,7 @@ def main():
         # Process file and plot
         try:
             ex_df, image_data = integrate_sif(uploaded_file.name, threshold=threshold, region=region, signal=signal)
-            plot_brightness(image_data, ex_df, show_fits=False)
+            plot_brightness(image_data, ex_df)
         except Exception as e:
             st.error(f"Error processing file: {e}")
 
