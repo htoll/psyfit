@@ -30,7 +30,7 @@ import streamlit as st
 import os
 
 # Sidebar navigation
-st.sidebar.title("🧭 Navigation")
+st.sidebar.title("Navigation")
 tool = st.sidebar.radio("Select a tool:", [
     "Analyze single SIF",
     "Analyze Colocalization Set",
@@ -40,7 +40,7 @@ tool = st.sidebar.radio("Select a tool:", [
 
 # Tool: Analyze single SIF
 if tool == "Analyze single SIF":
-    st.header("🧪 Analyze Single SIF File")
+    st.header("Analyze Single SIF File")
 
     uploaded_file = st.file_uploader("Upload .sif file", type=["sif"])
     threshold = st.number_input("Threshold", min_value=0, value=2)
@@ -65,15 +65,15 @@ if tool == "Analyze single SIF":
 
 # Tool: Analyze Colocalization Set
 elif tool == "Analyze Colocalization Set":
-    st.header("🔗 Analyze Colocalization Set")
+    st.header("Analyze Colocalization Set")
     st.info("This feature is under construction — implement logic here.")
 
 # Tool: Batch Convert SIFs
 elif tool == "Batch Convert SIFs":
-    st.header("🔁 Batch Convert SIFs")
+    st.header("Batch Convert SIFs")
     st.info("This feature is under construction — implement logic here.")
 
 # Tool: Visualize Data
 elif tool == "Visualize Data":
-    st.header("📊 Visualize Data")
+    st.header("Visualize Data")
     st.info("This feature is under construction — implement logic here.")
