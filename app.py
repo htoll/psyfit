@@ -1,4 +1,6 @@
 import streamlit as st
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+
 from tools import analyze_single_sif, analyze_set_sif#, analyze_colocalization, batch_convert, visualize_data
 import sif_parser
 
@@ -21,6 +23,8 @@ from scipy.optimize import least_squares
 from datetime import date
 import os
 import io
+
+
 
 # Region breakdown:
 #    1 | 2
