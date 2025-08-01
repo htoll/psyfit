@@ -85,7 +85,7 @@ if tool == "Analyze single SIF":
                         st.download_button(
                             label="Download PSFs",
                             data=svg_data,
-                            file_name=f"{file_path}.svg",
+                            file_name=f"{file_path[5:]}.svg",
                             mime="image/svg+xml"
                                             )
     
@@ -102,7 +102,7 @@ if tool == "Analyze single SIF":
                             st.download_button(
                                 label="Download histogram",
                                 data=svg_data,
-                                file_name=f"{filepath}.svg",
+                                file_name=f"{file_path}.svg",
                                 mime="image/svg+xml"
                                                 )
 
