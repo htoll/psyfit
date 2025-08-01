@@ -102,7 +102,7 @@ if tool == "Analyze single SIF":
                             st.download_button(
                                 label="Download histogram",
                                 data=svg_data,
-                                file_name=f"{filepath.svg",
+                                file_name=f"{filepath}.svg",
                                 mime="image/svg+xml"
                                                 )
 
