@@ -67,7 +67,7 @@ if tool == "Analyze single SIF":
             st.session_state.show_data_clicked = False
         
         with col2:
-            if st.button("Show me the data"):
+            if st.button("Analyze"):
                 st.session_state.show_data_clicked = True
         
         if st.session_state.show_data_clicked:
