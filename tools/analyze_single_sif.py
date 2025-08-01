@@ -33,7 +33,8 @@ def run():
         
         # This conditional block will only run if the button has been clicked AND there are files
         if st.session_state.analyze_clicked and uploaded_files:
-             try:
+            
+            try:
                 # Process all uploaded files
                 processed_data, combined_df = process_files(uploaded_files, region)
                 
