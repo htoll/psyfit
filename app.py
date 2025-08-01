@@ -1,4 +1,9 @@
 import streamlit as st
+import sys
+import os
+import io
+
+
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from tools import analyze_single_sif, analyze_set_sif#, analyze_colocalization, batch_convert, visualize_data
@@ -21,8 +26,6 @@ from scipy.optimize import curve_fit
 from scipy.optimize import least_squares
 
 from datetime import date
-import os
-import io
 
 
 
