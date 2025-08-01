@@ -85,7 +85,7 @@ def run():
                         )
             # else:
             #     st.error(f"Data for file '{selected_file_name}' not found.")
-
-        # except Exception as e:
-        #     st.error(f"Error processing files: {e}")
-        #     st.session_state.analyze_clicked = False
+        
+        except Exception as e:
+            st.error(f"Error processing files: {e}")
+            st.session_state.analyze_clicked = False
