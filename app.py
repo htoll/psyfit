@@ -63,6 +63,13 @@ if tool == "Analyze single SIF":
 
 
     with col2:
+        if "show_data_clicked" not in st.session_state:
+            st.session_state.show_data_clicked = False
+        
+        with col2:
+            if st.button("Show me the data"):
+                st.session_state.show_data_clicked = True
+                
         if st.button("Show me the data"):
             if uploaded_file is not None:
                 try:
