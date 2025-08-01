@@ -84,7 +84,7 @@ if tool == "Analyze single SIF":
 
                         st.download_button(
                             label="Download PSfs",
-                            data=fig_image,
+                            data=svg_data,
                             file_name="figure.svg",
                             mime="image/svg+xml"
                                             )
