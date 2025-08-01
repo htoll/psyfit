@@ -51,8 +51,13 @@ def run():
 
                 with plot_col1:
                     normalization_to_use = LogNorm() if normalization else None
-                    fig_image = plot_brightness(image_data_cps, df_selected, show_fits=show_fits,
-                                                normalization=normalization_to_use, pix_size_um=0.1)
+                    fig_image = plot_brightness(
+                        image_data_cps,
+                        df_selected,
+                        show_fits=show_fits,
+                        normalization=normalization_to_use,
+                        pix_size_um=0.1
+                    )
                     st.pyplot(fig_image)
 
                     svg_buffer = io.StringIO()
@@ -85,7 +90,7 @@ def run():
                         )
             else:
                 st.error(f"Data for file '{selected_file_name}' not found.")
-        
+
         except Exception as e:
             st.error(f"Error processing files: {e}")
             st.session_state.analyze_clicked = False
