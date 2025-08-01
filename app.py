@@ -59,12 +59,7 @@ if tool == "Analyze single SIF":
         show_fits = st.checkbox("Show fits")
         plot_brightness_histogram = st.checkbox("Plot brightness histogram")
         normalization = st.checkbox("Log Image Scaling")
-        st.download_button(
-            label="Download PSfs",
-            data=fig_image,
-            file_name="figure.svg",
-            mime="image/svg+xml"
-        )
+
 
     with col2:
         if st.button("Fit PSFs"):
@@ -80,6 +75,12 @@ if tool == "Analyze single SIF":
                     with plot_col1:
                         fig_image = plot_brightness(image_data_cps, df, show_fits=show_fits, normalization=normalization, pix_size_um=0.1, save_as_svg = save_as_svg)
                         st.pyplot(fig_image)
+                                st.download_button(
+                                label="Download PSfs",
+                                data=fig_image,
+                                file_name="figure.svg",
+                                mime="image/svg+xml"
+                                                    )
     
                     if plot_brightness_histogram:
                         with plot_col2:
