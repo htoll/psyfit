@@ -1,5 +1,5 @@
 import streamlit as st
-from tools import analyze_single_sif, analyze_colocalization, batch_convert, visualize_data
+from tools import analyze_single_sif#, analyze_colocalization, batch_convert, visualize_data
 import sif_parser
 
 from skimage.feature import peak_local_max
