@@ -3,8 +3,7 @@ import os
 import pandas as pd
 from matplotlib.colors import LogNorm
 import io
-from . import integrate_sif # Assuming integrate_sif is in a parent directory
-from . import plot_brightness, plot_histogram # Assuming these are in the same directory
+from utils import integrate_sif, plot_brightness, plot_histogram 
 
 
 @st.cache_data
