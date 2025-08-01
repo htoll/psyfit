@@ -63,7 +63,7 @@ if tool == "Analyze single SIF":
 
 
     with col2:
-        if st.button("Fit PSFs"):
+        if st.button("Show me the data"):
             if uploaded_file is not None:
                 try:
                     os.makedirs("temp", exist_ok=True)
@@ -83,9 +83,9 @@ if tool == "Analyze single SIF":
                         svg_buffer.close()
 
                         st.download_button(
-                            label="Download PSfs",
+                            label="Download PSFs",
                             data=svg_data,
-                            file_name="figure.svg",
+                            file_name=f"{file_path}.svg",
                             mime="image/svg+xml"
                                             )
     
@@ -93,6 +93,18 @@ if tool == "Analyze single SIF":
                         with plot_col2:
                             fig_hist = plot_histogram(df)
                             st.pyplot(fig_hist)
+                            # Convert figure to SVG
+                            svg_buffer = io.StringIO()
+                            fig_hist.savefig(svg_buffer, format='svg')
+                            svg_data = svg_buffer.getvalue()
+                            svg_buffer.close()
+    
+                            st.download_button(
+                                label="Download histogram",
+                                data=svg_data,
+                                file_name=f"{filepath.svg",
+                                mime="image/svg+xml"
+                                                )
 
     
                 except Exception as e:
