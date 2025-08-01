@@ -3,7 +3,7 @@ import os
 import io
 from utils import integrate_sif, plot_brightness, plot_histogram
 from tools.process_files import process_files
-from matplotlib.colors import LogNorm  # Needed for LogNorm
+from matplotlib.colors import LogNorm
 
 def run():
     col1, col2 = st.columns([1, 2])
@@ -47,62 +47,51 @@ def run():
                 df_selected = data_to_plot["df"]
                 image_data_cps = data_to_plot["image"]
 
+                # Use a single `with col2:` block for all output
                 with col2:
-                    normalization_to_use = LogNorm() if normalization else None
-                    fig_image = plot_brightness(
-                        image_data_cps,
-                        df_selected,
-                        show_fits=show_fits,
-                        normalization=normalization_to_use,
-                        pix_size_um=0.1
-                    )
-                    st.pyplot(fig_image)
+                    # Create two sub-columns to place the plots side-by-side
+                    plot_col1, plot_col2 = st.columns(2)
                 
-                    svg_buffer = io.StringIO()
-                    fig_image.savefig(svg_buffer, format='svg')
-                    svg_data = svg_buffer.getvalue()
-                    svg_buffer.close()
-                
-                    st.download_button(
-                        label="Download PSFs",
-                        data=svg_data,
-                        file_name=f"{selected_file_name}.svg",
-                        mime="image/svg+xml"
-                    )
-                
+                    with plot_col1:
+                        normalization_to_use = LogNorm() if normalization else None
+                        fig_image = plot_brightness(
+                            image_data_cps,
+                            df_selected,
+                            show_fits=show_fits,
+                            normalization=normalization_to_use,
+                            pix_size_um=0.1
+                        )
+                        st.pyplot(fig_image)
+
+                        # Download button for the brightness plot
+                        svg_buffer = io.StringIO()
+                        fig_image.savefig(svg_buffer, format='svg')
+                        svg_data = svg_buffer.getvalue()
+                        svg_buffer.close()
+                        st.download_button(
+                            label="Download PSFs",
+                            data=svg_data,
+                            file_name=f"{selected_file_name}.svg",
+                            mime="image/svg+xml"
+                        )
+
+                    # Place the histogram code entirely within the second sub-column
                     if plot_brightness_histogram and not combined_df.empty:
-                        fig_hist = plot_histogram(combined_df)
-                        st.pyplot(fig_hist)
-                
-                        svg_buffer_hist = io.StringIO()
-                        fig_hist.savefig(svg_buffer_hist, format='svg')
-                        svg_data_hist = svg_buffer_hist.getvalue()
-                        svg_buffer_hist.close()
-                
-                        st.download_button(
-                            label="Download histogram",
-                            data=svg_data_hist,
-                            file_name="combined_histogram.svg",
-                            mime="image/svg+xml"
-                        )
+                        with plot_col2:
+                            fig_hist = plot_histogram(combined_df)
+                            st.pyplot(fig_hist)
 
-
-                if plot_brightness_histogram and not combined_df.empty:
-                    with plot_col2:
-                        fig_hist = plot_histogram(combined_df)
-                        st.pyplot(fig_hist)
-
-                        svg_buffer_hist = io.StringIO()
-                        fig_hist.savefig(svg_buffer_hist, format='svg')
-                        svg_data_hist = svg_buffer_hist.getvalue()
-                        svg_buffer_hist.close()
-
-                        st.download_button(
-                            label="Download histogram",
-                            data=svg_data_hist,
-                            file_name="combined_histogram.svg",
-                            mime="image/svg+xml"
-                        )
+                            # Download button for the histogram
+                            svg_buffer_hist = io.StringIO()
+                            fig_hist.savefig(svg_buffer_hist, format='svg')
+                            svg_data_hist = svg_buffer_hist.getvalue()
+                            svg_buffer_hist.close()
+                            st.download_button(
+                                label="Download histogram",
+                                data=svg_data_hist,
+                                file_name="combined_histogram.svg",
+                                mime="image/svg+xml"
+                            )
             else:
                 st.error(f"Data for file '{selected_file_name}' not found.")
 
