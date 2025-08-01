@@ -227,7 +227,7 @@ def plot_histogram(df, save_as_svg = False):
     ax.set_ylabel("Count", fontsize=10*scale)
     ax.tick_params(axis='both', labelsize=10*scale, width = 0.75)
     for spine in ax.spines.values():
-        spine.set_linewidth(0.75)  
+        spine.set_linewidth(1)  
     HWT_aesthetic()
     plt.tight_layout()
     return fig
