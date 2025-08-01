@@ -31,27 +31,27 @@ def run():
 
         if st.button("Analyze"):
             st.session_state.analyze_clicked = True
+        
+        # All dynamic output logic is now within this `with col2:` block
+        if st.session_state.analyze_clicked and uploaded_files:
+            try:
+                processed_data, combined_df = process_files(uploaded_files, region)
 
-    if st.session_state.analyze_clicked and uploaded_files:
-        try:
-            processed_data, combined_df = process_files(uploaded_files, region)
+                # Move the selectbox logic here, above the plots
+                if len(uploaded_files) > 1:
+                    file_options = [f.name for f in uploaded_files]
+                    selected_file_name = st.selectbox("Select a file to display:", options=file_options)
+                else:
+                    selected_file_name = uploaded_files[0].name
 
-            if len(uploaded_files) > 1:
-                file_options = [f.name for f in uploaded_files]
-                selected_file_name = st.selectbox("Select a file to display:", options=file_options)
-            else:
-                selected_file_name = uploaded_files[0].name
+                if selected_file_name in processed_data:
+                    data_to_plot = processed_data[selected_file_name]
+                    df_selected = data_to_plot["df"]
+                    image_data_cps = data_to_plot["image"]
 
-            if selected_file_name in processed_data:
-                data_to_plot = processed_data[selected_file_name]
-                df_selected = data_to_plot["df"]
-                image_data_cps = data_to_plot["image"]
-
-                # Use a single `with col2:` block for all output
-                with col2:
-                    # Create two sub-columns to place the plots side-by-side
+                    # Now create the sub-columns for the plots below the selectbox
                     plot_col1, plot_col2 = st.columns(2)
-                
+
                     with plot_col1:
                         normalization_to_use = LogNorm() if normalization else None
                         fig_image = plot_brightness(
@@ -63,7 +63,6 @@ def run():
                         )
                         st.pyplot(fig_image)
 
-                        # Download button for the brightness plot
                         svg_buffer = io.StringIO()
                         fig_image.savefig(svg_buffer, format='svg')
                         svg_data = svg_buffer.getvalue()
@@ -74,14 +73,12 @@ def run():
                             file_name=f"{selected_file_name}.svg",
                             mime="image/svg+xml"
                         )
-
-                    # Place the histogram code entirely within the second sub-column
+                    
                     if plot_brightness_histogram and not combined_df.empty:
                         with plot_col2:
                             fig_hist = plot_histogram(combined_df)
                             st.pyplot(fig_hist)
 
-                            # Download button for the histogram
                             svg_buffer_hist = io.StringIO()
                             fig_hist.savefig(svg_buffer_hist, format='svg')
                             svg_data_hist = svg_buffer_hist.getvalue()
@@ -92,9 +89,9 @@ def run():
                                 file_name="combined_histogram.svg",
                                 mime="image/svg+xml"
                             )
-            else:
-                st.error(f"Data for file '{selected_file_name}' not found.")
-
-        except Exception as e:
-            st.error(f"Error processing files: {e}")
-            st.session_state.analyze_clicked = False
+                else:
+                    st.error(f"Data for file '{selected_file_name}' not found.")
+            
+            except Exception as e:
+                st.error(f"Error processing files: {e}")
+                st.session_state.analyze_clicked = False
