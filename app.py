@@ -20,6 +20,7 @@ from scipy.optimize import least_squares
 
 from datetime import date
 import os
+import io
 
 # Region breakdown:
 #    1 | 2
