@@ -6,9 +6,13 @@ from tools import analyze_single_sif
 
 
 def run():
-  st.header("Analyze SIF Folder")
-  uploaded_zip = st.file_uploader("Upload a ZIP of .sif files", type=["zip"])
-
+    st.header("Analyze multiple SIF files")
+    uploaded_files = st.file_uploader(
+        "Upload .sif files",
+        type="sif",
+        accept_multiple_files=True
+    )
+    
   if uploaded_zip is not None:
       temp_dir = "temp_sif_batch"
       os.makedirs(temp_dir, exist_ok=True)
