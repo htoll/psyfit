@@ -80,8 +80,8 @@ def run():
                             file_name="combined_histogram.svg",
                             mime="image/svg+xml"
                         )
-            else:
-                st.warning("Please upload a .sif file.")
+                else:
+                    st.warning("Please upload a .sif file.")
 
 
         # if st.session_state.show_data_clicked:
