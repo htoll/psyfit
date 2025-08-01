@@ -209,7 +209,7 @@ def plot_histogram(df, save_as_svg = False):
 
     brightness_vals = df['brightness_fit'].values
     bins = np.linspace(np.min(brightness_vals), np.max(brightness_vals), 20)
-    counts, edges, _ = ax.hist(brightness_vals, bins=bins, edgecolor='grey', color='#88CCEE')
+    counts, edges, _ = ax.hist(brightness_vals, bins=bins, color='#88CCEE')
     bin_centers = 0.5 * (edges[:-1] + edges[1:])
 
     p0 = [np.max(counts), np.mean(brightness_vals), np.std(brightness_vals)]
@@ -218,7 +218,7 @@ def plot_histogram(df, save_as_svg = False):
         mu, sigma = popt[1], popt[2]
         x_fit = np.linspace(edges[0], edges[-1], 500)
         y_fit = gaussian(x_fit, *popt)
-        ax.plot(x_fit, y_fit, color='black', label=f"μ = {mu:.0f} ± {sigma:.0f} pps, linewidth = 1")
+        ax.plot(x_fit, y_fit, color='black', linewidth = 1, label=f"μ = {mu:.0f} ± {sigma:.0f} pps")
         ax.legend(fontsize=10*scale)
     except RuntimeError:
         st.warning("Gaussian fit failed.")
