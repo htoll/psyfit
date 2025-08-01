@@ -46,7 +46,7 @@ if tool == "Analyze single SIF":
         st.header("Analyze Single SIF File")
         uploaded_file = st.file_uploader("Upload .sif file", type=["sif"])
         threshold = st.number_input("Threshold", min_value=0, value=2)
-        region = st.selectbox("Signal", options=["1", "2", "3", "4", "all"])
+        region = st.selectbox("Region", options=["1", "2", "3", "4", "all"])
         st.markdown("""
     ┌─┬─┐<br>
     │ 1 │ 2 │<br>
@@ -75,6 +75,12 @@ if tool == "Analyze single SIF":
                     with plot_col1:
                         fig_image = plot_brightness(image_data_cps, df, show_fits=show_fits, normalization=normalization, pix_size_um=0.1)
                         st.pyplot(fig_image)
+                        # Convert figure to SVG
+                        svg_buffer = io.StringIO()
+                        fig_image.savefig(svg_buffer, format='svg')
+                        svg_data = svg_buffer.getvalue()
+                        svg_buffer.close()
+
                         st.download_button(
                             label="Download PSfs",
                             data=fig_image,
