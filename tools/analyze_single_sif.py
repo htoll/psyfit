@@ -9,7 +9,7 @@ def run():
     col1, col2 = st.columns([1, 2])
 
     with col1:
-        st.header("Analyze Single SIF File")
+        st.header("Analyze SIF Files")
         uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
         threshold = st.number_input("Threshold", min_value=0, value=2)
         region = st.selectbox("Region", options=["1", "2", "3", "4", "all"])
