@@ -35,15 +35,18 @@ st.set_page_config(layout="wide")
 st.sidebar.title("Navigation")
 tool = st.sidebar.radio("Select a tool:", [
     "Analyze single SIF",
+    "Analyze set of SIFs",
     "Analyze Colocalization Set",
     "Batch Convert SIFs",
     "Visualize Data"
 ])
 col1, col2 = st.columns([1, 2])
 
-# Tool: Analyze single SIF
 if tool == "Analyze single SIF":
     analyze_single_sif.run()
+
+if tool == "Analyze set of SIFs":
+    analyze_set_sif.run()
 
 # Tool: Analyze Colocalization Set
 elif tool == "Colocalization Set":
