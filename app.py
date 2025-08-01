@@ -73,7 +73,7 @@ if tool == "Analyze single SIF":
                     plot_col1, plot_col2 = st.columns(2)
     
                     with plot_col1:
-                        fig_image = plot_brightness(image_data_cps, df, show_fits=show_fits, normalization=normalization, pix_size_um=0.1, save_as_svg = save_as_svg)
+                        fig_image = plot_brightness(image_data_cps, df, show_fits=show_fits, normalization=normalization, pix_size_um=0.1)
                         st.pyplot(fig_image)
                         st.download_button(
                             label="Download PSfs",
