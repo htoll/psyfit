@@ -91,7 +91,7 @@ if tool == "Analyze single SIF":
     
                     if plot_brightness_histogram:
                         with plot_col2:
-                            fig_hist = plot_histogram(df, save_as_svg = save_as_svg)
+                            fig_hist = plot_histogram(df)
                             st.pyplot(fig_hist)
 
     
