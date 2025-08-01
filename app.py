@@ -57,9 +57,14 @@ if tool == "Analyze single SIF":
     """, unsafe_allow_html=True)
         signal = st.selectbox("Signal", options=["UCNP", "dye"])
         show_fits = st.checkbox("Show fits")
-        save_as_svg = st.checkbox("Save as SVG")
         plot_brightness_histogram = st.checkbox("Plot brightness histogram")
         normalization = st.checkbox("Log Image Scaling")
+        st.download_button(
+            label="Download PSfs",
+            data=fig_image,
+            file_name="figure.svg",
+            mime="image/svg+xml"
+        )
 
     with col2:
         if st.button("Fit PSFs"):
