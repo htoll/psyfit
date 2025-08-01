@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import io
 from utils import integrate_sif, plot_brightness, plot_histogram
-from tools import process_files
+from tools.process_files import process_files
 from matplotlib.colors import LogNorm  # Needed for LogNorm
 
 def run():
