@@ -83,8 +83,8 @@ def run():
                             file_name="combined_histogram.svg",
                             mime="image/svg+xml"
                         )
-            # else:
-            #     st.error(f"Data for file '{selected_file_name}' not found.")
+            else:
+                st.error(f"Data for file '{selected_file_name}' not found.")
         
         except Exception as e:
             st.error(f"Error processing files: {e}")
