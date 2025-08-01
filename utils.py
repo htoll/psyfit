@@ -218,7 +218,7 @@ def plot_histogram(df, save_as_svg = False):
         mu, sigma = popt[1], popt[2]
         x_fit = np.linspace(edges[0], edges[-1], 500)
         y_fit = gaussian(x_fit, *popt)
-        ax.plot(x_fit, y_fit, color='black', linewidth = 0.5, label=f"μ = {mu:.0f} ± {sigma:.0f} pps")
+        ax.plot(x_fit, y_fit, color='black', linewidth = 0.75, linestyle = '--', label=f"μ = {mu:.0f} ± {sigma:.0f} pps")
         ax.legend(fontsize=10*scale)
     except RuntimeError:
         st.warning("Gaussian fit failed.")
