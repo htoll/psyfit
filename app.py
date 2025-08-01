@@ -69,8 +69,8 @@ if tool == "Analyze single SIF":
         with col2:
             if st.button("Show me the data"):
                 st.session_state.show_data_clicked = True
-                
-        if st.button("Show me the data"):
+        
+        if st.session_state.show_data_clicked:
             if uploaded_file is not None:
                 try:
                     os.makedirs("temp", exist_ok=True)
