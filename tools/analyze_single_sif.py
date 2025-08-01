@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import io
 from utils import integrate_sif, plot_brightness, plot_histogram
+from tools import process_files
 
 def run():
     col1, col2 = st.columns([1, 2])
