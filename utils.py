@@ -225,7 +225,7 @@ def plot_histogram(df, save_as_svg = False):
     
     ax.set_xlabel("Brightness (pps)", fontsize=10*scale)
     ax.set_ylabel("Count", fontsize=10*scale)
-    ax.tick_params(axis='both', labelsize=10*scale)
+    ax.tick_params(axis='both', labelsize=10*scale, width = 0.75)
     HWT_aesthetic()
     plt.tight_layout()
     return fig
