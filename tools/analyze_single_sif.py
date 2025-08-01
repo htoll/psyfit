@@ -32,7 +32,7 @@ def run():
 
         if uploaded_files and st.session_state.get("run_analysis", False):
             processed_data, combined_df = process_files(uploaded_files, region)
-             if len(uploaded_files) > 1:
+            if len(uploaded_files) > 1:
                 file_options = [f.name for f in uploaded_files]
                 selected_file_name = st.selectbox("Select a file to display:", options=file_options)
             else:
