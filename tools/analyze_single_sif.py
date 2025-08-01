@@ -70,23 +70,23 @@ def run():
                             mime="image/svg+xml"
                         )
                                         
-                    if plot_brightness_histogram and not combined_df.empty:
-                        with plot_col2:
-                            fig_hist = plot_histogram(combined_df)
-                            st.pyplot(fig_hist)
-                            
-                            # Download button for the histogram
-                            svg_buffer_hist = io.StringIO()
-                            fig_hist.savefig(svg_buffer_hist, format='svg')
-                            svg_data_hist = svg_buffer_hist.getvalue()
-                            svg_buffer_hist.close()
-                            st.download_button(
-                                label="Download histogram",
-                                data=svg_data_hist,
-                                file_name="combined_histogram.svg",
-                                mime="image/svg+xml"
-                            )                
-                      else:
+                        if plot_brightness_histogram and not combined_df.empty:
+                            with plot_col2:
+                                fig_hist = plot_histogram(combined_df)
+                                st.pyplot(fig_hist)
+                                
+                                # Download button for the histogram
+                                svg_buffer_hist = io.StringIO()
+                                fig_hist.savefig(svg_buffer_hist, format='svg')
+                                svg_data_hist = svg_buffer_hist.getvalue()
+                                svg_buffer_hist.close()
+                                st.download_button(
+                                    label="Download histogram",
+                                    data=svg_data_hist,
+                                    file_name="combined_histogram.svg",
+                                    mime="image/svg+xml"
+                                )                
+                        else:
                             st.error(f"Data for file '{selected_file_name}' not found.")
             
             except Exception as e:
