@@ -71,9 +71,7 @@ def run():
                     )
                     
                 if plot_brightness_histogram and not combined_df.empty:
-                    with plot_col2:
-                        st.markdown("#### Histogram Range Options")
-                
+                    with plot_col2:                
                         # Auto-detect full data range
                         brightness_vals = combined_df['brightness_fit'].values
                         default_min = float(np.min(brightness_vals))
