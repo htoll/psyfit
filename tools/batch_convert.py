@@ -38,7 +38,6 @@ def run():
         if st.session_state.convert and uploaded_files:
             try:
                 processed_data, combined_df = process_files(uploaded_files, region)
-                st.dataframe(processed_data.head())
                 
                 plot_all_sifs(uploaded_files, combined_df, show_fits=show_fits, save_format=export_format, normalization=None)
             except Exception as e:
