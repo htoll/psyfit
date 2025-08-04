@@ -570,7 +570,8 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
             st.warning(f"Warning: Data for {sif_name} not found in df_dict. Skipping.")
             continue
 
-        df, img = df_dict[sif_name]
+        df = df_dict[sif_name]["df"]
+        img = df_dict[sif_name]["image"]
         has_fit = all(col in df.columns for col in required_cols)
 
         colocalized = np.zeros(len(df), dtype=bool) if has_fit else None
