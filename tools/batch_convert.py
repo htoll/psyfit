@@ -38,10 +38,8 @@ def run():
         if st.session_state.convert and uploaded_files:
             try:
                 processed_data, combined_df = process_files(uploaded_files, region)
-                plot_all_sifs(uploaded_files, combined_df, show_fits = show_fits, save_format = export_format, normalization = None)
-
-
-            except:
-                pass
+                plot_all_sifs(uploaded_files, combined_df, show_fits=show_fits, save_format=export_format, normalization=None)
+            except Exception as e:
+                st.error(f"An error occurred: {e}")
 
 
