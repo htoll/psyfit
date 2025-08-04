@@ -41,8 +41,7 @@ st.set_page_config(layout="wide")
 # Sidebar navigation
 st.sidebar.title("Navigation")
 tool = st.sidebar.radio("Select a tool:", [
-    "Analyze single SIF",
-    "Analyze set of SIFs",
+    "Analyze brightness",
     "Analyze Colocalization Set",
     "Batch Convert SIFs",
     "Visualize Data"
