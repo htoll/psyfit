@@ -553,7 +553,7 @@ from matplotlib.patches import Circle
 from datetime import date
 import streamlit as st
 
-def plot_all_sifs_streamlit(sif_files, df_dict, colocalization_radius=2, show_fits=True, normalization=None):
+def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, normalization=None):
     required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
     all_matched_pairs = []
 
