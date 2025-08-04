@@ -37,40 +37,38 @@ def run():
         if st.session_state.analyze_clicked and uploaded_files:
             try:
                 processed_data, combined_df = process_files(uploaded_files, region)
-                
 
+                # Now create the sub-columns for the plots below the selectbox
+                plot_col1, plot_col2 = st.columns(2)
 
-                    # Now create the sub-columns for the plots below the selectbox
-                    plot_col1, plot_col2 = st.columns(2)
+                with plot_col1:
+                    if len(uploaded_files) > 1:
+                        file_options = [f.name for f in uploaded_files]
+                        selected_file_name = st.selectbox("Select sif to display:", options=file_options)
+                    if selected_file_name in processed_data:
+                        data_to_plot = processed_data[selected_file_name]
+                        df_selected = data_to_plot["df"]
+                        image_data_cps = data_to_plot["image"]
+                    normalization_to_use = LogNorm() if normalization else None
+                    fig_image = plot_brightness(
+                        image_data_cps,
+                        df_selected,
+                        show_fits=show_fits,
+                        normalization=normalization_to_use,
+                        pix_size_um=0.1
+                    )
+                    st.pyplot(fig_image)
 
-                    with plot_col1:
-                        if len(uploaded_files) > 1:
-                            file_options = [f.name for f in uploaded_files]
-                            selected_file_name = st.selectbox("Select sif to display:", options=file_options)
-                        if selected_file_name in processed_data:
-                            data_to_plot = processed_data[selected_file_name]
-                            df_selected = data_to_plot["df"]
-                            image_data_cps = data_to_plot["image"]
-                        normalization_to_use = LogNorm() if normalization else None
-                        fig_image = plot_brightness(
-                            image_data_cps,
-                            df_selected,
-                            show_fits=show_fits,
-                            normalization=normalization_to_use,
-                            pix_size_um=0.1
-                        )
-                        st.pyplot(fig_image)
-
-                        svg_buffer = io.StringIO()
-                        fig_image.savefig(svg_buffer, format='svg')
-                        svg_data = svg_buffer.getvalue()
-                        svg_buffer.close()
-                        st.download_button(
-                            label="Download PSFs",
-                            data=svg_data,
-                            file_name=f"{selected_file_name}.svg",
-                            mime="image/svg+xml"
-                        )
+                    svg_buffer = io.StringIO()
+                    fig_image.savefig(svg_buffer, format='svg')
+                    svg_data = svg_buffer.getvalue()
+                    svg_buffer.close()
+                    st.download_button(
+                        label="Download PSFs",
+                        data=svg_data,
+                        file_name=f"{selected_file_name}.svg",
+                        mime="image/svg+xml"
+                    )
                     
                 if plot_brightness_histogram and not combined_df.empty:
                     with plot_col2:
