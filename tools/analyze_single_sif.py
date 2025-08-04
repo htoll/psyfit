@@ -38,10 +38,7 @@ def run():
             try:
                 processed_data, combined_df = process_files(uploaded_files, region)
                 
-                if selected_file_name in processed_data:
-                    data_to_plot = processed_data[selected_file_name]
-                    df_selected = data_to_plot["df"]
-                    image_data_cps = data_to_plot["image"]
+
 
                     # Now create the sub-columns for the plots below the selectbox
                     plot_col1, plot_col2 = st.columns(2)
@@ -50,6 +47,10 @@ def run():
                         if len(uploaded_files) > 1:
                             file_options = [f.name for f in uploaded_files]
                             selected_file_name = st.selectbox("Select sif to display:", options=file_options)
+                        if selected_file_name in processed_data:
+                            data_to_plot = processed_data[selected_file_name]
+                            df_selected = data_to_plot["df"]
+                            image_data_cps = data_to_plot["image"]
                         normalization_to_use = LogNorm() if normalization else None
                         fig_image = plot_brightness(
                             image_data_cps,
