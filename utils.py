@@ -565,11 +565,12 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
 
     for i, sif_file in enumerate(sif_files):
         ax = axes[i]
-        if sif_file not in df_dict:
-            st.warning(f"Warning: Data for {sif_file} not found in df_dict. Skipping.")
+        sif_name = sif_file.name  
+        if sif_name not in df_dict:
+            st.warning(f"Warning: Data for {sif_name} not found in df_dict. Skipping.")
             continue
 
-        df, img = df_dict[sif_file]
+        df, img = df_dict[sif_name]
         has_fit = all(col in df.columns for col in required_cols)
 
         colocalized = np.zeros(len(df), dtype=bool) if has_fit else None
@@ -594,7 +595,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
         im = ax.imshow(img + 1, cmap='magma', origin='lower', norm=normalization)
         plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
 
-        basename = os.path.basename(sif_file)
+        basename = os.path.basename(sif_name)
         match = re.search(r'(\d+)\.sif$', basename)
         file_number = match.group(1) if match else '?'
 
