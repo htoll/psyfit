@@ -74,21 +74,37 @@ def run():
                             mime="image/svg+xml"
                         )
                     
-                    if plot_brightness_histogram and not combined_df.empty:
-                        with plot_col2:
-                            fig_hist = plot_histogram(combined_df)
+                if plot_brightness_histogram and not combined_df.empty:
+                    with plot_col2:
+                        st.markdown("#### Histogram Range Options")
+                
+                        # Auto-detect full data range
+                        brightness_vals = combined_df['brightness_fit'].values
+                        default_min = float(np.min(brightness_vals))
+                        default_max = float(np.max(brightness_vals))
+                
+                        # User inputs
+                        user_min = st.number_input("Minimum Brightness (pps)", value=default_min)
+                        user_max = st.number_input("Maximum Brightness (pps)", value=default_max)
+                
+                        if user_min < user_max:
+                            fig_hist = plot_histogram(combined_df, min_val=user_min, max_val=user_max)
                             st.pyplot(fig_hist)
-
+                
                             svg_buffer_hist = io.StringIO()
                             fig_hist.savefig(svg_buffer_hist, format='svg')
                             svg_data_hist = svg_buffer_hist.getvalue()
                             svg_buffer_hist.close()
+                
                             st.download_button(
                                 label="Download histogram",
                                 data=svg_data_hist,
                                 file_name="combined_histogram.svg",
                                 mime="image/svg+xml"
                             )
+                        else:
+                            st.warning("⚠️ Please ensure that the minimum is less than the maximum.")
+
                 else:
                     st.error(f"Data for file '{selected_file_name}' not found.")
             
