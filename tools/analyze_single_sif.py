@@ -22,7 +22,7 @@ def run():
         └─┴─┘
         """, unsafe_allow_html=True)
         signal = st.selectbox("Signal", options=["UCNP", "dye"])
-        cmap = st.selectbox("magma", 'viridis', 'plasma', 'inferno', 'cividis', 'Greys')
+        cmap = st.selectbox("Colormap", options = ["magma", 'viridis', 'plasma', 'inferno', 'cividis', 'Greys'])
         show_fits = st.checkbox("Show fits")
         plot_brightness_histogram = st.checkbox("Plot brightness histogram")
         normalization = st.checkbox("Log Image Scaling")
