@@ -28,7 +28,6 @@ def run():
         normalization = st.checkbox("Log Image Scaling")
 
     with col2:
-        st.header("placeholder")
         if "Convert" not in st.session_state:
             st.session_state.convert = False
 
