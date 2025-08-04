@@ -41,3 +41,7 @@ def run():
                 plot_all_sifs(uploaded_files, combined_df, show_fits = show_fits, save_format = export_format, normalization = None)
 
 
+            except:
+                pass
+
+
