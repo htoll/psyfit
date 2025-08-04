@@ -657,15 +657,6 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
         mime=mime_type
     )
 
-    today = date.today().strftime('%Y%m%d')
-    download_name = f"sif_grid_{today}.{save_format}"
-    st.download_button(
-        label="Download all plots",
-        data=plot_data,
-        file_name=download_name,
-        mime="image/svg+xml"
-    )
-
     # Return colocalization results
     if all_matched_pairs:
         return pd.DataFrame(all_matched_pairs)
