@@ -40,15 +40,15 @@ st.set_page_config(layout="wide")
 
 # Sidebar navigation
 st.sidebar.title("Navigation")
-tool = st.sidebar.radio("Select a tool:", [
-    "Analyze brightness",
-    "Analyze Colocalization Set",
-    "Batch Convert SIFs",
+tool = st.sidebar.radio("Analyze:", [
+    "Brightness",
+    "Colocalization Set",
+    "Batch Convert",
     "Visualize Data"
 ])
 col1, col2 = st.columns([1, 2])
 
-if tool == "Analyze brightness":
+if tool == "Brightness":
     analyze_single_sif.run()
 
 
@@ -58,7 +58,7 @@ elif tool == "Colocalization Set":
     st.info("This feature is under construction — implement logic here.")
 
 # Tool: Batch Convert SIFs
-elif tool == "Batch Convert SIFs":
+elif tool == "Batch Convert":
     st.header("Batch Convert SIFs")
     st.info("This feature is under construction — implement logic here.")
 
