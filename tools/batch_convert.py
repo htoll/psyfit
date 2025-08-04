@@ -28,3 +28,4 @@ def run():
         normalization = st.checkbox("Log Image Scaling")
 
     with col2:
+        st.header("placeholder")
