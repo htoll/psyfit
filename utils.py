@@ -542,4 +542,90 @@ def gaussian2d(xy, amp, x0, sigma_x, y0, sigma_y, offset):
                  np.exp(-((y - y0)**2)/(2*sigma_y**2)) + offset).ravel()
 
 
+def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, save_format = 'SVG', normalization = None):
+    n_files = len(sif_files)
+    n_cols = 4
+    n_rows = (n_files + n_cols - 1) // n_cols  # Compute rows for a 4-column grid
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
+    axes = axes.flatten()  
+
+    required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
+    all_matched_pairs = []
+
+    for i, sif_file in enumerate(sif_files):
+        ax = axes[i]
+        if sif_file not in df_dict:
+            print(f"Warning: Data for {sif_file} not found in df_dict. Skipping.")
+            continue
+
+        df, img = df_dict[sif_file]
+        has_fit = all(col in df.columns for col in required_cols)
+
+        # Initialize colocalization array
+        colocalized = np.zeros(len(df), dtype=bool) if has_fit else None
+
+        # Perform colocalization
+        if show_fits and has_fit:
+            for idx, row in df.iterrows():
+                x, y = row['x_pix'], row['y_pix']
+
+                # Compute distances within the same file (self-colocalization, if applicable)
+                distances = np.sqrt((df['x_pix'] - x) ** 2 + (df['y_pix'] - y) ** 2)
+                distances[idx] = np.inf  # Ignore self-match
+                if np.any(distances <= colocalization_radius):
+                    colocalized[idx] = True
+                    closest_idx = distances.idxmin()
+                    all_matched_pairs.append({
+                        'x': x, 'y': y, 'brightness': row['brightness_fit'],
+                        'closest_x': df.at[closest_idx, 'x_pix'],
+                        'closest_y': df.at[closest_idx, 'y_pix'],
+                        'closest_brightness': df.at[closest_idx, 'brightness_fit'],
+                        'distance': distances[closest_idx]
+                    })
+
+        # Plot the SIF image
+        im = ax.imshow(img + 1, cmap='magma', origin='lower', norm=normalization)
+        plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
+
+        basename = os.path.basename(sif_file)
+        match = re.search(r'(\d+)\.sif$', basename)
+        file_number = match.group(1) if match else '?'
+
+        # Overlay fits if available
+        if show_fits and has_fit:
+            for is_coloc, (_, row) in zip(colocalized, df.iterrows()):
+                color = 'lime' if is_coloc else 'white'
+                radius_px = 4 * max(row['sigx_fit'], row['sigy_fit']) / 0.1
+                circle = Circle((row['x_pix'], row['y_pix']), radius_px, color=color, fill=False, linewidth=1.5, alpha=0.7)
+                ax.add_patch(circle)
+                ax.text(row['x_pix'] + 7.5, row['y_pix'] + 7.5,
+                        f"{row['brightness_fit']/1000:.1f} kpps",
+                        color=color, fontsize=8, ha='center', va='center')
+        wrapped_basename = "\n".join(textwrap.wrap(basename, width=20))
+
+        ax.set_title(f"Sif {file_number}\n{wrapped_basename}")
+        ax.set_xlabel('X (px)')
+        ax.set_ylabel('Y (px)')
+
+    # Hide unused subplots
+    for ax in axes[n_files:]:
+        ax.axis('off')
+
+    plt.tight_layout()
+
+    if save_SVG:
+        expt_name = basename
+        todaydate = date.today().strftime("%Y%m%d")
+        filename = f"{expt_name}_{todaydate}.svg"
+
+        plt.savefig(filename)
+        print(f"Saved as: {filename}")
+        files.download(filename)  # This will prompt a browser download
+
+    plt.show()
+
+    # Return colocalization results if any
+    if all_matched_pairs:
+        return pd.DataFrame(all_matched_pairs)
+    return None
 
