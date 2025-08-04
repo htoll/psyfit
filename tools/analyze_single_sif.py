@@ -22,6 +22,7 @@ def run():
         └─┴─┘
         """, unsafe_allow_html=True)
         signal = st.selectbox("Signal", options=["UCNP", "dye"])
+        cmap = st.selectbox("magma", 'viridis', 'plasma', 'inferno', 'cividis', 'Greys')
         show_fits = st.checkbox("Show fits")
         plot_brightness_histogram = st.checkbox("Plot brightness histogram")
         normalization = st.checkbox("Log Image Scaling")
@@ -55,7 +56,8 @@ def run():
                         df_selected,
                         show_fits=show_fits,
                         normalization=normalization_to_use,
-                        pix_size_um=0.1
+                        pix_size_um=0.1,
+                        cmap = cmap
                     )
                     st.pyplot(fig_image)
 
@@ -102,7 +104,7 @@ def run():
 
                         
                         else:
-                            st.warning("⚠️ Please ensure that the minimum is less than the maximum.")
+                            st.warning("Min greater than max")
 
                 else:
                     st.error(f"Data for file '{selected_file_name}' not found.")
