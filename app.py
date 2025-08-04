@@ -59,8 +59,7 @@ elif tool == "Colocalization Set":
 
 # Tool: Batch Convert SIFs
 elif tool == "Batch Convert":
-    st.header("Batch Convert SIFs")
-    st.info("This feature is under construction — implement logic here.")
+    batch_convert.run()
 
 # Tool: Visualize Data
 elif tool == "Visualize Data":
