@@ -605,14 +605,14 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
             for is_coloc, (_, row) in zip(colocalized, df.iterrows()):
                 color = 'lime' if is_coloc else 'white'
                 radius_px = 4 * max(row['sigx_fit'], row['sigy_fit']) / 0.1
-                circle = Circle((row['x_pix'], row['y_pix']), radius_px, color=color, fill=False, linewidth=1.5, alpha=0.7)
+                circle = Circle((row['x_pix'], row['y_pix']), radius_px, color=color, fill=False, linewidth=1, alpha=0.7)
                 ax.add_patch(circle)
                 ax.text(row['x_pix'] + 7.5, row['y_pix'] + 7.5,
                         f"{row['brightness_fit']/1000:.1f} kpps",
-                        color=color, fontsize=8, ha='center', va='center')
+                        color=color, fontsize=7, ha='center', va='center')
 
-        wrapped_basename = "\n".join(textwrap.wrap(basename, width=20))
-        ax.set_title(f"Sif {file_number}\n{wrapped_basename}", fontsize = 7)
+        wrapped_basename = "\n".join(textwrap.wrap(basename, width=30))
+        ax.set_title(f"Sif {file_number}\n{wrapped_basename}", fontsize = 8)
         ax.axis('off')
 
     # Turn off unused axes
