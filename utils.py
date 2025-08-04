@@ -612,9 +612,8 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
                         color=color, fontsize=8, ha='center', va='center')
 
         wrapped_basename = "\n".join(textwrap.wrap(basename, width=20))
-        ax.set_title(f"Sif {file_number}\n{wrapped_basename}")
-        #ax.set_xlabel('X (px)')
-        #ax.set_ylabel('Y (px)')
+        ax.set_title(f"Sif {file_number}\n{wrapped_basename}", fontsize = 7)
+        ax.axis('off')
 
     # Turn off unused axes
     for ax in axes[n_files:]:
