@@ -4,6 +4,7 @@ import io
 from utils import integrate_sif, plot_brightness, plot_histogram
 from tools.process_files import process_files
 from matplotlib.colors import LogNorm
+import numpy as np
 
 def run():
     col1, col2 = st.columns([1, 2])
