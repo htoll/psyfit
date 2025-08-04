@@ -201,19 +201,27 @@ def plot_brightness(image_data_cps, df, show_fits = True, plot_brightness_histog
     return fig
 
 
-def plot_histogram(df, save_as_svg = False, min_val = None, max_val = None):
+def plot_histogram(df, save_as_svg=False, min_val=None, max_val=None):
     """Plots the brightness histogram with a gaussian fit."""
     fig_width, fig_height = 4, 4
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     scale = fig_width / 5
 
     brightness_vals = df['brightness_fit'].values
-    if min_val is None:
-        min_val = np.min(brightness_vals)
-    if max_val is None:
-        max_val = np.max(brightness_vals)
-    bins = np.linspace(np.min(brightness_vals), np.max(brightness_vals), 20)
-    counts, edges, _ = ax.hist(brightness_vals, bins=bins, color='#88CCEE', edgecolor = '#88CCEE')
+
+    # Apply min/max filtering if specified
+    if min_val is not None and max_val is not None:
+        brightness_vals = brightness_vals[(brightness_vals >= min_val) & (brightness_vals <= max_val)]
+
+    # Ensure the filtered data is valid
+    if len(brightness_vals) == 0:
+        st.warning("No data in selected brightness range.")
+        return fig
+
+    # Use the min/max values to define histogram bin edges
+    bins = np.linspace(min_val, max_val, 20)
+
+    counts, edges, _ = ax.hist(brightness_vals, bins=bins, color='#88CCEE', edgecolor='#88CCEE')
     bin_centers = 0.5 * (edges[:-1] + edges[1:])
 
     p0 = [np.max(counts), np.mean(brightness_vals), np.std(brightness_vals)]
@@ -222,19 +230,21 @@ def plot_histogram(df, save_as_svg = False, min_val = None, max_val = None):
         mu, sigma = popt[1], popt[2]
         x_fit = np.linspace(edges[0], edges[-1], 500)
         y_fit = gaussian(x_fit, *popt)
-        ax.plot(x_fit, y_fit, color='black', linewidth = 0.75, linestyle = '--', label=f"μ = {mu:.0f} ± {sigma:.0f} pps")
-        ax.legend(fontsize=10*scale)
+        ax.plot(x_fit, y_fit, color='black', linewidth=0.75, linestyle='--', label=f"μ = {mu:.0f} ± {sigma:.0f} pps")
+        ax.legend(fontsize=10 * scale)
     except RuntimeError:
         st.warning("Gaussian fit failed.")
-    
-    ax.set_xlabel("Brightness (pps)", fontsize=10*scale)
-    ax.set_ylabel("Count", fontsize=10*scale)
-    ax.tick_params(axis='both', labelsize=10*scale, width = 0.75)
+
+    ax.set_xlabel("Brightness (pps)", fontsize=10 * scale)
+    ax.set_ylabel("Count", fontsize=10 * scale)
+    ax.tick_params(axis='both', labelsize=10 * scale, width=0.75)
     for spine in ax.spines.values():
-        spine.set_linewidth(1)  
+        spine.set_linewidth(1)
+
     HWT_aesthetic()
     plt.tight_layout()
     return fig
+
 
 
 
