@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 import io
-from utils import integrate_sif, plot_brightness, plot_histogram
+from utils import integrate_sif, plot_brightness, plot_histogram, plot_all_sifs
 from tools.process_files import process_files
 from matplotlib.colors import LogNorm
 import numpy as np
@@ -29,3 +29,8 @@ def run():
 
     with col2:
         st.header("placeholder")
+
+
+
+#def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, save_format = 'SVG', normalization = None):
+
