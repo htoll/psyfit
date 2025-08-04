@@ -553,7 +553,7 @@ from matplotlib.patches import Circle
 from datetime import date
 import streamlit as st
 
-def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, normalization=None):
+def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, normalization=None, save_format = 'SVG'):
     required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
     all_matched_pairs = []
 
@@ -623,16 +623,18 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     # Show the figure
     st.pyplot(fig)
 
+    
+
     # Download button
     buf = io.StringIO()
-    fig.savefig(buf, format='svg')
+    fig.savefig(buf, format=f'{save_format}')
     svg_data = buf.getvalue()
     buf.close()
 
     today = date.today().strftime('%Y%m%d')
-    download_name = f"sif_grid_{today}.svg"
+    download_name = f"sif_grid_{today}.{save_format}"
     st.download_button(
-        label="Download all plots as SVG",
+        label="Download all plots",
         data=svg_data,
         file_name=download_name,
         mime="image/svg+xml"
