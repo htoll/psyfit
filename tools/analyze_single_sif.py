@@ -37,11 +37,7 @@ def run():
         if st.session_state.analyze_clicked and uploaded_files:
             try:
                 processed_data, combined_df = process_files(uploaded_files, region)
-
-
-                else:
-                    selected_file_name = uploaded_files[0].name
-
+                
                 if selected_file_name in processed_data:
                     data_to_plot = processed_data[selected_file_name]
                     df_selected = data_to_plot["df"]
