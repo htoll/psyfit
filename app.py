@@ -48,11 +48,9 @@ tool = st.sidebar.radio("Select a tool:", [
 ])
 col1, col2 = st.columns([1, 2])
 
-if tool == "Analyze single SIF":
+if tool == "Analyze brightness":
     analyze_single_sif.run()
 
-if tool == "Analyze set of SIFs":
-    analyze_set_sif.run()
 
 # Tool: Analyze Colocalization Set
 elif tool == "Colocalization Set":
