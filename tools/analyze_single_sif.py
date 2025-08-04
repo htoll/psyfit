@@ -85,11 +85,14 @@ def run():
                         default_max = float(np.max(brightness_vals))
                 
                         # User inputs
-                        user_min = st.number_input("Minimum Brightness (pps)", value=default_min)
-                        user_max = st.number_input("Maximum Brightness (pps)", value=default_max)
+                        user_min = st.number_input("Min Brightness (pps)", value=default_min)
+                        user_max = st.number_input("Max Brightness (pps)", value=default_max)
+
+                        #binning
+                        num_bins = st.number_input("# Bins:", value = 20)
                 
                         if user_min < user_max:
-                            fig_hist = plot_histogram(combined_df, min_val=user_min, max_val=user_max)
+                            fig_hist = plot_histogram(combined_df, min_val=user_min, max_val=user_max, num_bins = num_bins)
                             st.pyplot(fig_hist)
                 
                             svg_buffer_hist = io.StringIO()
@@ -103,6 +106,8 @@ def run():
                                 file_name="combined_histogram.svg",
                                 mime="image/svg+xml"
                             )
+
+                        
                         else:
                             st.warning("⚠️ Please ensure that the minimum is less than the maximum.")
 
