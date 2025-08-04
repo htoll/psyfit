@@ -661,7 +661,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     download_name = f"sif_grid_{today}.{save_format}"
     st.download_button(
         label="Download all plots",
-        data=svg_data,
+        data=plot_data,
         file_name=download_name,
         mime="image/svg+xml"
     )
