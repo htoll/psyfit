@@ -29,8 +29,15 @@ def run():
 
     with col2:
         st.header("placeholder")
+        if "Convert" not in st.session_state:
+            st.session_state.convert = False
 
+        if st.button("Convert"):
+            st.session_state.convert = True
+        
+        if st.session_state.convert and uploaded_files:
+            try:
+                processed_data, combined_df = process_files(uploaded_files, region)
+                plot_all_sifs(uploaded_files, combined_df, show_fits = show_fits, save_format = export_format, normalization = None)
 
-
-#def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, save_format = 'SVG', normalization = None):
 
