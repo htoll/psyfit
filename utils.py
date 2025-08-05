@@ -348,6 +348,8 @@ def coloc_subplots(ucnps, dyes, df_dict, colocalization_radius=2,
     all_matched = []
 
     for ucnp_file, dye_file in pairs:
+        st.write("Available df_dict keys:", list(df_dict.keys()))
+
         ucnp_df, ucnp_img = df_dict[ucnp_file]
         dye_df, dye_img = df_dict[dye_file]
 
