@@ -10,6 +10,8 @@ from sklearn.metrics import r2_score
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from matplotlib.colors import LogNorm
+from matplotlib.colors import Normalize
+
 import seaborn as sns
 
 from scipy.ndimage import zoom
@@ -21,6 +23,9 @@ from datetime import date
 
 import streamlit as st
 import io
+import re
+import os
+import textwrap
 
 def HWT_aesthetic():
     sns.set_style("ticks")
@@ -542,17 +547,6 @@ def gaussian2d(xy, amp, x0, sigma_x, y0, sigma_y, offset):
     return (amp * np.exp(-((x - x0)**2)/(2*sigma_x**2)) *
                  np.exp(-((y - y0)**2)/(2*sigma_y**2)) + offset).ravel()
 
-
-import io
-import re
-import os
-import textwrap
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
-from datetime import date
-import streamlit as st
 
 def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, normalization=None, save_format = 'SVG', univ_minmax=False):
     required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
