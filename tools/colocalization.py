@@ -29,7 +29,9 @@ def run():
       │ 3 │ 4 │  
       └─┴─┘
       """
-      region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help = diagram)
+      ucnp_region = st.selectbox("UCNP Region", options=["1", "2", "3", "4", "all"], help = diagram)
+      dye_region = st.selectbox("Dye Region", options=["1", "2", "3", "4", "all"], help = diagram)
+
       coloc_radius = st.number_input("Colocalization Radius", min_value=1, value = 2, help = 'Max radius to associate two PSFs')
       export_format = st.selectbox("Export Format", options=["SVG","TIFF", "PNG", "JPEG"])
       ucnp_id = st.text_input("UCNP ID:", value = "976")
