@@ -57,7 +57,7 @@ def run():
       if st.session_state.convert and uploaded_files:
         ucnp_list, dye_list = sort_UCNP_dye_sifs(uploaded_files, ucnp_id=ucnp_id, dye_id=dye_id)
         df_dict = {}
-    
+        
         # Process UCNP files
         for file in ucnp_list:
             try:
@@ -67,7 +67,7 @@ def run():
             except Exception as e:
                 st.error(f"Could not process UCNP file: {file.name}")
                 st.exception(e)
-    
+        
         # Process dye files
         for file in dye_list:
             try:
