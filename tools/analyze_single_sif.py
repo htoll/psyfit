@@ -13,13 +13,13 @@ def run():
         st.header("Analyze SIF Files")
         uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
         threshold = st.number_input("Threshold", min_value=0, value=2)
-        diagram = ("""
-        ┌─┬─┐<br>
-        │ 1 │ 2 │<br>
-        ├─┼─┤<br>
-        │ 3 │ 4 │<br>
+        diagram = """
+        ┌─┬─┐  
+        │ 1 │ 2 │  
+        ├─┼─┤  
+        │ 3 │ 4 │  
         └─┴─┘
-        """)#, unsafe_allow_html=True)
+        """
         region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help = diagram)
 
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help= "Changes detection method, UCNP for high SNR (sklearn peakfinder) while dye for low SNR (sklearn blob detection)")
