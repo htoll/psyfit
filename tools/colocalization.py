@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 import io
-from utils import integrate_sif, plot_brightness, plot_histogram, sort_UCNP_dye_sifs, coloc_subplots
+from utils import integrate_sif, plot_brightness, plot_histogram, sort_UCNP_dye_sifs
 from tools.process_files import process_files
 from matplotlib.colors import LogNorm
 import numpy as np
