@@ -656,6 +656,8 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     # Define the mime type based on the format
     if save_format.lower() == 'svg':
         mime_type = "image/svg+xml"
+    elif save_format.lower() == 'tiff':
+        mime_type = "image/tiff"
     elif save_format.lower() == 'png':
         mime_type = "image/png"
     elif save_format.lower() == 'jpeg' or save_format.lower() == 'jpg':
