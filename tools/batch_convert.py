@@ -14,8 +14,6 @@ def run():
         uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
         threshold = st.number_input("Threshold", min_value=0, value=2)
         region = st.selectbox("Region", options=["1", "2", "3", "4", "all"])
-        export_format = st.selectbox("Export Format", options=["SVG", "PNG", "JPEG"])
-
         st.markdown("""
         ┌─┬─┐<br>
         │ 1 │ 2 │<br>
@@ -23,6 +21,9 @@ def run():
         │ 3 │ 4 │<br>
         └─┴─┘
         """, unsafe_allow_html=True)
+        export_format = st.selectbox("Export Format", options=["SVG", "PNG", "JPEG"])
+
+
         signal = st.selectbox("Signal", options=["UCNP", "dye"])
 
 
