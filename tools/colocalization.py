@@ -10,7 +10,7 @@ def run():
   col1, col2 = st.columns([1, 2])
 
   with col1:
-      st.header("Colocalize")
+      st.header("Colocalize ##Beta##")
       uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
       ucnp_threshold = st.number_input("UCNP threshold", min_value=0, value=2,  
                                        key="ucnp_threshold_input", 
