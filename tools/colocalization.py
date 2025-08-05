@@ -83,7 +83,7 @@ def run():
                   st.exception(e)
 
             
-              processed_data, combined_df = process_files(uploaded_files, region)
+              processed_data, combined_df = process_files(uploaded_files, dye_region)
               
               coloc_subplots(ucnp_list, dye_list, df_dict, show_fits=show_fits, 
                              export_format = export_format, colocalization_radius=coloc_radius)
