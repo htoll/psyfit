@@ -77,12 +77,12 @@ def run():
             except Exception as e:
                 st.error(f"Could not process dye file: {file.name}")
                 st.exception(e)
-
+        
             
-              processed_data, combined_df = process_files(uploaded_files, dye_region)
-              
-              coloc_subplots(ucnp_list, dye_list, df_dict, show_fits=show_fits, 
-                             export_format = export_format, colocalization_radius=coloc_radius)
+        processed_data, combined_df = process_files(uploaded_files, dye_region)
+          
+        coloc_subplots(ucnp_list, dye_list, df_dict, show_fits=show_fits, 
+                 export_format = export_format, colocalization_radius=coloc_radius)
 
 
 
