@@ -25,7 +25,9 @@ def run():
         """, unsafe_allow_html=True)
         signal = st.selectbox("Signal", options=["UCNP", "dye"])
         show_fits = st.checkbox("Show fits")
-        normalization = st.checkbox("Log Image Scaling")
+        use_log_norm = st.checkbox("Log Image Scaling")
+        norm = LogNorm() if use_log_norm else None
+
         univ_minmax = st.checkbox("Universal Scaling")
 
     with col2:
