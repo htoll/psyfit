@@ -27,8 +27,8 @@ def run():
       region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help = diagram)
       coloc_radius = st.number_input("Colocalization Radius", min_value=1, value = 2, help = 'Max radius to associate two PSFs')
       export_format = st.selectbox("Export Format", options=["SVG","TIFF", "PNG", "JPEG"])
-      ucnp_id = st.text_input("UCNP ID:", value = "976')
-      dye_id = st.text_input("Dye ID:", value = "638')
+      ucnp_id = st.text_input("UCNP ID:", value = "976")
+      dye_id = st.text_input("Dye ID:", value = "638")
 
   
   with col2:
