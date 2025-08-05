@@ -79,7 +79,7 @@ def run():
                   if df is not None:
                       df_dict[file] = (df, cropped_img)
               except Exception as e:
-                  st.error(f"Could not process dye file: {file.name}"")
+                  st.error(f"Could not process dye file: {file.name}")
                   st.exception(e)
 
             
