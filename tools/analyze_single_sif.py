@@ -16,7 +16,8 @@ def run():
         Stringency of fit, higher value is more selective:  
         -UCNP signal sets absolute peak cut off  
         -Dye signal sets sensitivity of blob detection
-        ''')        diagram = """ Splits sif into quadrants (256x256 px):  
+        ''')        
+        diagram = """ Splits sif into quadrants (256x256 px):  
         ┌─┬─┐  
         │ 1 │ 2 │  
         ├─┼─┤  
