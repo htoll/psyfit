@@ -21,7 +21,7 @@ def run():
         │ 3 │ 4 │<br>
         └─┴─┘
         """, unsafe_allow_html=True)
-        signal = st.selectbox("Signal", options=["UCNP", "dye"], , help= "Changes detection method, UCNP for high SNR (sklearn peakfinder) while dye for low SNR (sklearn blob detection)")
+        signal = st.selectbox("Signal", options=["UCNP", "dye"], help= "Changes detection method, UCNP for high SNR (sklearn peakfinder) while dye for low SNR (sklearn blob detection)")
         cmap = st.selectbox("Colormap", options = ["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
         show_fits = st.checkbox("Show fits")
         plot_brightness_histogram = st.checkbox("Plot brightness histogram")
