@@ -22,7 +22,7 @@ def run():
         """
         region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help = diagram)
 
-        signal = st.selectbox("Signal", options=["UCNP", "dye"], help= "Changes detection method, UCNP for high SNR (sklearn peakfinder) while dye for low SNR (sklearn blob detection)")
+        signal = st.selectbox("Signal", options=["UCNP", "dye"], help= "Changes detection method:  - UCNP for high SNR (sklearn peakfinder)  - dye for low SNR (sklearn blob detection)")
         cmap = st.selectbox("Colormap", options = ["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
         show_fits = st.checkbox("Show fits")
         plot_brightness_histogram = st.checkbox("Plot brightness histogram")
