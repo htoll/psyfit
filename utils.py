@@ -340,6 +340,9 @@ def match_ucnp_dye_files(ucnps, dyes):
 def coloc_subplots(ucnps, dyes, df_dict, colocalization_radius=2, 
                     show_fits=True, export_format = 'SVG'):
     pairs = match_ucnp_dye_files(ucnps, dyes)
+    if not pairs:
+        st.warning("No UCNP/Dye file pairs could be matched.")
+        return 
     all_matched = []
 
     for ucnp_file, dye_file in pairs:
