@@ -64,10 +64,10 @@ def run():
                 for file in ucnp_list:
                   df, cropped_img = integrate_sif(file, threshold=ucnp_threshold, region=ucnp_region, signal='UCNP')
                   
-                  df_dict[file] = (df, cropped_img)
+                  df_dict[file.name] = (df, cropped_img)
                   df, cropped_img = integrate_sif(file, threshold=ucnp_threshold, region=ucnp_region, signal='UCNP')
                   if df is not None:
-                      df_dict[file] = (df, cropped_img)
+                      df_dict[file.name] = (df, cropped_img)
               except Exception as e:
                 st.error(f"Could not process UCNP file: {file.name}")
                 st.exception(e)
