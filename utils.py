@@ -559,6 +559,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     axes = axes.flatten() if n_files > 1 else [axes]
     
     all_vals = []
+    normalization = None  # Always ensure it's a valid value
     if univ_minmax:
         for sif_file in sif_files:
             sif_name = sif_file.name
