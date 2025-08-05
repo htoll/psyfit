@@ -551,6 +551,8 @@ def gaussian2d(xy, amp, x0, sigma_x, y0, sigma_y, offset):
 def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, normalization=None, save_format = 'SVG', univ_minmax=False):
     required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
     all_matched_pairs = []
+    if normalization = True:
+        normalization = LogNorm()
 
     n_files = len(sif_files)
     n_cols = 4
