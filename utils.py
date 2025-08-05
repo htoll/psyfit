@@ -557,8 +557,9 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     n_rows = (n_files + n_cols - 1) // n_cols
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
     axes = axes.flatten() if n_files > 1 else [axes]
+    
+    all_vals = []
     if univ_minmax:
-        all_vals = []
         for sif_file in sif_files:
             sif_name = sif_file.name
             if sif_name in df_dict:
@@ -600,7 +601,6 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
                     })
 
         im = ax.imshow(img + 1, cmap='magma', origin='lower', norm=normalization)
-        plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
         # Only show colorbar on the last subplot in the first row (column n_cols-1)
         if not univ_minmax or (univ_minmax and i == n_cols - 1):
             plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
