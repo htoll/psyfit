@@ -43,21 +43,21 @@ def run():
 
   
   with col2:
-      show_fits = st.checkbox("Show fits")
-      use_log_norm = st.checkbox("Log Image Scaling")
-      norm = LogNorm() if use_log_norm else None
-  
-      univ_minmax = st.checkbox("Universal Scaling")
-      if "Analyze" not in st.session_state:
-          st.session_state.convert = False
-  
-      if st.button("Analyze"):
-          st.session_state.convert = True
-      
-      if st.session_state.convert and uploaded_files:
+    show_fits = st.checkbox("Show fits")
+    use_log_norm = st.checkbox("Log Image Scaling")
+    norm = LogNorm() if use_log_norm else None
+
+    univ_minmax = st.checkbox("Universal Scaling")
+    if "Analyze" not in st.session_state:
+        st.session_state.convert = False
+
+    if st.button("Analyze"):
+        st.session_state.convert = True
+
+    if st.session_state.convert and uploaded_files:
         ucnp_list, dye_list = sort_UCNP_dye_sifs(uploaded_files, ucnp_id=ucnp_id, dye_id=dye_id)
         df_dict = {}
-        
+
         # Process UCNP files
         for file in ucnp_list:
             try:
@@ -67,7 +67,7 @@ def run():
             except Exception as e:
                 st.error(f"Could not process UCNP file: {file.name}")
                 st.exception(e)
-        
+
         # Process dye files
         for file in dye_list:
             try:
@@ -77,13 +77,11 @@ def run():
             except Exception as e:
                 st.error(f"Could not process dye file: {file.name}")
                 st.exception(e)
-        
-            
-        processed_data, combined_df = process_files(uploaded_files, dye_region)
-          
-        coloc_subplots(ucnp_list, dye_list, df_dict, show_fits=show_fits, 
-                 export_format = export_format, colocalization_radius=coloc_radius)
 
+        processed_data, combined_df = process_files(uploaded_files, dye_region)
+
+        coloc_subplots(ucnp_list, dye_list, df_dict, show_fits=show_fits,
+                       export_format=export_format, colocalization_radius=coloc_radius)
 
 
 
