@@ -280,6 +280,8 @@ def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
 
 def match_ucnp_dye_files(ucnps, dyes):
+    ucnps = [f.name for f in ucnps]
+    dyes = [f.name for f in dyes]
     # 1. deterministic sorting
     ucnps_sorted = sorted(ucnps, key=natural_sort_key)
     dyes_sorted = sorted(dyes, key=natural_sort_key)
