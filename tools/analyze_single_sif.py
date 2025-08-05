@@ -13,7 +13,7 @@ def run():
         st.header("Analyze SIF Files")
         uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
         threshold = st.number_input("Threshold", min_value=0, value=2)
-        diagram = """ Splits sif into quadrants (256x256 px):
+        diagram = """ Splits sif into quadrants (256x256 px):  
         ┌─┬─┐  
         │ 1 │ 2 │  
         ├─┼─┤  
