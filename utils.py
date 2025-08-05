@@ -561,6 +561,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     
     all_vals = []
     if univ_minmax and normalization is None:
+        all_vals = []
         for sif_file in sif_files:
             sif_name = sif_file.name
             if sif_name in df_dict:
@@ -569,8 +570,8 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
             stacked = np.stack(all_vals)
             global_min = stacked.min()
             global_max = stacked.max()
+            # This is the crucial line: it creates a Normalize instance.
             normalization = Normalize(vmin=global_min, vmax=global_max)
-
     for i, sif_file in enumerate(sif_files):
         ax = axes[i]
         sif_name = sif_file.name  
