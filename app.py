@@ -54,8 +54,7 @@ if tool == "Brightness":
 
 # Tool: Analyze Colocalization Set
 elif tool == "Colocalization Set":
-    st.header("Colocalization Set")
-    st.info("This feature is under construction — implement logic here.")
+    colocalization.run()
 
 # Tool: Batch Convert SIFs
 elif tool == "Batch Convert":
