@@ -605,10 +605,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
         # Only show colorbar on the last subplot in the first row (column n_cols-1)
         if not univ_minmax:
             plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
-        if univ_minmax:
-            colorbar_ax = axes[min(n_cols - 1, n_files - 1)]
-            im = colorbar_ax.images[0]  # Get the image from that subplot
-            plt.colorbar(im, ax=colorbar_ax, label='pps', fraction=0.046, pad=0.04)
+
 
         basename = os.path.basename(sif_name)
         match = re.search(r'(\d+)\.sif$', basename)
@@ -632,6 +629,10 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     # Turn off unused axes
     for ax in axes[n_files:]:
         ax.axis('off')
+    if univ_minmax:
+        colorbar_ax = axes[min(n_cols - 1, n_files - 1)]
+        im = colorbar_ax.images[0]  # Get the image from that subplot
+        plt.colorbar(im, ax=colorbar_ax, label='pps', fraction=0.046, pad=0.04)
 
     plt.tight_layout()
 
