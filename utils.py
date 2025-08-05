@@ -255,24 +255,23 @@ def plot_histogram(df, save_as_svg=False, min_val=None, max_val=None, num_bins =
 
 
 
-def sort_UCNP_dye_sifs(directory, signal_ucnp=976, signal_dye=638):
-    files = [f for f in os.listdir(directory) if f.endswith('.sif')]
+def sort_UCNP_dye_sifs(directory, ucnp_id=976, ucnp_id=638):
     ucnp_files = []
     dye_files = []
 
     for f in files:
-        full_path = os.path.join(directory, f)
-        has_ucnp = str(signal_ucnp) in f
-        has_dye = str(signal_dye) in f
+        filename = f.lower()
+        has_ucnp = str(signal_ucnp) in filename
+        has_dye = str(signal_dye) in filename
 
         if has_ucnp and not has_dye:
             ucnp_files.append(full_path)
         elif has_dye and not has_ucnp:
             dye_files.append(full_path)
         elif has_ucnp and has_dye:
-            print(f"Warning: file contains both excitation numbers → {f}")
+            print(f"Warning: file contains both IDs → {f}")
         else:
-            print(f"Warning: file contains neither excitation number → {f}")
+            print(f"Warning: file contains neither ID → {f}")
 
     return ucnp_files, dye_files
 
