@@ -30,13 +30,15 @@ def run():
                                                                 - UCNP for high SNR (sklearn peakfinder)  
                                                                 - dye for low SNR (sklearn blob detection)''')
         cmap = st.selectbox("Colormap", options = ["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
-        show_fits = st.checkbox("Show fits")
-        plot_brightness_histogram = st.checkbox("Plot brightness histogram")
-        normalization = st.checkbox("Log Image Scaling")
+
 
     with col2:
         if "analyze_clicked" not in st.session_state:
             st.session_state.analyze_clicked = False
+
+        show_fits = st.checkbox("Show fits")
+        plot_brightness_histogram = st.checkbox("Plot brightness histogram")
+        normalization = st.checkbox("Log Image Scaling")
 
         if st.button("Analyze"):
             st.session_state.analyze_clicked = True
