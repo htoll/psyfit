@@ -603,7 +603,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
 
         im = ax.imshow(img + 1, cmap='magma', origin='lower', norm=normalization)
         # Only show colorbar on the last subplot in the first row (column n_cols-1)
-        if not univ_minmax or (univ_minmax and i == n_cols - 1):
+        if not univ_minmax:
             plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
 
         basename = os.path.basename(sif_name)
