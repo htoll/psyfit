@@ -255,11 +255,11 @@ def plot_histogram(df, save_as_svg=False, min_val=None, max_val=None, num_bins =
 
 
 
-def sort_UCNP_dye_sifs(directory, ucnp_id=976, dye_id=638):
+def sort_UCNP_dye_sifs(uploaded_files, ucnp_id=976, dye_id=638):
     ucnp_files = []
     dye_files = []
 
-    for f in files:
+    for f in uploaded_files:
         filename = f.lower()
         has_ucnp = str(signal_ucnp) in filename
         has_dye = str(signal_dye) in filename
