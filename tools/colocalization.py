@@ -68,10 +68,10 @@ def run():
                   df, cropped_img = integrate_sif(file, threshold=ucnp_threshold, region=ucnp_region, signal='UCNP')
                   if df is not None:
                       df_dict[file] = (df, cropped_img)
-                except Exception as e:
-                  st.error(f"Could not process UCNP file: {os.path.basename(file)}")
-                  st.exception(e)
-  
+              except Exception as e:
+                st.error(f"Could not process UCNP file: {os.path.basename(file)}")
+                st.exception(e)
+
           # Process dye files
           for file in dye_list:
               try:
