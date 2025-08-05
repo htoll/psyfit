@@ -21,7 +21,7 @@ def run():
         │ 3 │ 4 │<br>
         └─┴─┘
         """, unsafe_allow_html=True)
-        export_format = st.selectbox("Export Format", options=["SVG", "PNG", "JPEG"])
+        export_format = st.selectbox("Export Format", options=["SVG","TIFF", "PNG", "JPEG"])
 
 
         signal = st.selectbox("Signal", options=["UCNP", "dye"])
