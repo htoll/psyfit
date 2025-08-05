@@ -261,8 +261,8 @@ def sort_UCNP_dye_sifs(uploaded_files, ucnp_id=976, dye_id=638):
 
     for f in uploaded_files:
         filename = f.name.lower()
-        has_ucnp = str(signal_ucnp) in filename
-        has_dye = str(signal_dye) in filename
+        has_ucnp = str(ucnp_id) in filename
+        has_dye = str(dye_id) in filename
 
         if has_ucnp and not has_dye:
             ucnp_files.append(full_path)
