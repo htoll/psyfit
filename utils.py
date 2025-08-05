@@ -265,9 +265,9 @@ def sort_UCNP_dye_sifs(uploaded_files, ucnp_id=976, dye_id=638):
         has_dye = str(dye_id) in filename
 
         if has_ucnp and not has_dye:
-            ucnp_files.append(full_path)
+            ucnp_files.append(f)
         elif has_dye and not has_ucnp:
-            dye_files.append(full_path)
+            dye_files.append(f)
         elif has_ucnp and has_dye:
             print(f"Warning: file contains both IDs → {f}")
         else:
