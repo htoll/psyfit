@@ -339,201 +339,46 @@ def match_ucnp_dye_files(ucnps, dyes):
 
     
 def coloc_subplots(ucnps, dyes, df_dict, colocalization_radius=2, show_fits=True, save_SVG = False):
-    n_pairs = min(len(ucnps), len(dyes))
-    #per_file_matched = []
-    all_matched_pairs = []
-
-
-    required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
-    if len(ucnps) != len(dyes):
-      print(f"Warning: UCNP files ({len(ucnps)}) and Dye files ({len(dyes)}) have different lengths.")
-
-    if len(ucnps) != len(dyes):
-        print(f"Warning: UCNP files ({len(ucnps)}) and Dye files ({len(dyes)}) have different lengths.")
-
-
-    ucnp_indices = [int(re.search(r'(\d+)\.sif$', f).group(1)) for f in ucnps]
-    dye_indices = [int(re.search(r'(\d+)\.sif$', f).group(1)) for f in dyes]
-
-
-
     pairs = match_ucnp_dye_files(ucnps, dyes)
+    all_matched = []
 
-    # Flatten pairs into two separate lists for the rest of the function
-    ucnps = [pair[0] for pair in pairs]
-    dyes = [pair[1] for pair in pairs]
-    n_pairs = len(pairs)
-    fig, axes = plt.subplots(n_pairs, 2, figsize=(12, 6.5 * n_pairs))
-
-    if n_pairs == 1:
-        axes = np.array([axes])
-
-    for i in range(n_pairs):
-        per_file_matched = []
-        ucnp_file = ucnps[i]
-        dye_file = dyes[i]
-        ucnp_file_name = os.path.basename(ucnp_file)
-        dye_file_name = os.path.basename(dye_file)
-
-        # Extract file IDs (numbers before .sif)
-        ucnp_file_id = re.search(r'(\d+)\.sif$', ucnp_file_name)
-        dye_file_id = re.search(r'(\d+)\.sif$', dye_file_name)
-
-        print(f"Pair {i+1}:")
-        print(f"  UCNP file: {ucnp_file_name}")
-        print(f"  Dye file: {dye_file_name}")
-
-        matched_ucnp = set()
-        matched_dye = set()
-
-        if ucnp_file_id and dye_file_id:
-          ucnp_file_id = ucnp_file_id.group(1)
-          dye_file_id = dye_file_id.group(1)
-
+    for ucnp_file, dye_file in pairs:
         ucnp_df, ucnp_img = df_dict[ucnp_file]
         dye_df, dye_img = df_dict[dye_file]
 
-        # Determine if each DataFrame has the required columns
-        ucnp_has_fit = all(col in ucnp_df.columns for col in required_cols)
-        dye_has_fit = all(col in dye_df.columns for col in required_cols)
+        # Perform colocalization to compute matched flags and percentages
+        coloc_data = _compute_coloc(ucnp_df, dye_df, radius=colocalization_radius)
+        all_matched.extend(coloc_data['matches'])
 
-        # Initialize colocalization arrays
-        colocalized_ucnp = np.zeros(len(ucnp_df), dtype=bool) if ucnp_has_fit else None
-        colocalized_dye = np.zeros(len(dye_df), dtype=bool) if dye_has_fit else None
+        # Now plot both panels using plot_brightness
+        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+        ax_u, ax_d = axes
 
-        # Perform colocalization only if both DataFrames have the required columns and show_fits is True
-        if show_fits and ucnp_has_fit and dye_has_fit:
-            for idx_ucnp, row_ucnp in ucnp_df.iterrows():
-                x_ucnp, y_ucnp = row_ucnp['x_pix'], row_ucnp['y_pix']
+        plot_brightness(
+            image_data_cps=ucnp_img,
+            df=ucnp_df.assign(_coloc=coloc_data['ucnp_flags']),
+            show_fits=True,
+            normalization=LogNorm(),
+            pix_size_um=pix_size_um,
+            cmap='magma',
+            ax=ax_u,
+            title=f"UCNP: {os.path.basename(ucnp_file)} — {coloc_data['percent_ucnp']:.1f}% coloc"
+        )
 
-                # compute distances to all *unmatched* dyes
-                mask = ~dye_df.index.isin(matched_dye)
-                dx = dye_df.loc[mask, 'x_pix'] - x_ucnp
-                dy = dye_df.loc[mask, 'y_pix'] - y_ucnp
-                distances = np.hypot(dx, dy)
+        plot_brightness(
+            image_data_cps=dye_img,
+            df=dye_df.assign(_coloc=coloc_data['dye_flags']),
+            show_fits=True,
+            normalization=LogNorm(),
+            pix_size_um=pix_size_um,
+            cmap='magma',
+            ax=ax_d,
+            title=f"Dye: {os.path.basename(dye_file)} — {coloc_data['percent_dye']:.1f}% coloc"
+        )
 
-                if distances.min() <= colocalization_radius:
-                    best_dye_idx = distances.idxmin()
-                    matched_ucnp.add(idx_ucnp)
-                    matched_dye.add(best_dye_idx)
+        st.pyplot(fig)
 
-                    row_dye = dye_df.loc[best_dye_idx]
-
-                    colocalized_ucnp[idx_ucnp] = True
-                    closest_idx = distances.idxmin()
-                    row_dye = dye_df.loc[closest_idx]
-                    idx_dye = dye_df.index.get_loc(closest_idx)
-                    colocalized_dye[idx_dye] = True
-
-
-                    #update df with relevant fields
-                    per_file_matched.append({
-                        'ucnp_file': ucnp_file_id,
-                        'dye_file': dye_file_id,
-                        'ucnp_x': x_ucnp,
-                        'ucnp_y': y_ucnp,
-                        'ucnp_brightness': row_ucnp['brightness_fit'],
-                        'dye_x': row_dye['x_pix'],
-                        'dye_y': row_dye['y_pix'],
-                        'dye_brightness': row_dye['brightness_fit'],
-                        'distance': distances[closest_idx],
-                        'x_um_ucnp': row_ucnp['x_um'],
-                        'y_um_ucnp': row_ucnp['y_um'],
-                        'sigx_ucnp': row_ucnp['sigx_fit'],
-                        'sigy_ucnp': row_ucnp['sigy_fit'],
-                        'x_um_dye': row_dye['x_um'],
-                        'y_um_dye': row_dye['y_um'],
-                        'sigx_dye': row_dye['sigx_fit'],
-                        'sigy_dye': row_dye['sigy_fit']
-                    })
-
-            percent_ucnp_coloc = 100 * np.sum(colocalized_ucnp) / len(ucnp_df) if len(ucnp_df) > 0 else 0
-            percent_dye_coloc = 100 * np.sum(colocalized_dye) / len(dye_df) if len(dye_df) > 0 else 0
-        else:
-            percent_ucnp_coloc = percent_dye_coloc = None
-            matched_pairs = []
-
-        all_matched_pairs.extend(per_file_matched)
-
-
-
-        matched_pairs_df = pd.DataFrame(per_file_matched)
-
-
-        # --- Plot UCNP ---
-        ax_ucnp = axes[i, 0]
-        im_ucnp = ax_ucnp.imshow(ucnp_img + 1, cmap='magma', origin='lower', norm=LogNorm())
-        plt.colorbar(im_ucnp, ax=ax_ucnp, label='pps', fraction=0.046, pad=0.04)
-
-        ucnp_basename = os.path.basename(ucnp_file)
-        match = re.search(r'(\d+)\.sif$', ucnp_basename)
-        file_number = match.group(1) if match else '?'
-        wrapped_ucnp_basename = "\n".join(textwrap.wrap(ucnp_basename, width=35))
-
-
-        if show_fits and ucnp_has_fit:
-            for is_coloc, (_, row) in zip(colocalized_ucnp, ucnp_df.iterrows()):
-                color = 'lime' if is_coloc else 'white'
-                radius_px = 4 * max(row['sigx_fit'], row['sigy_fit']) / 0.1
-                circle = Circle((row['x_pix'], row['y_pix']), radius_px, color=color, fill=False, linewidth=1.5, alpha=0.7)
-                ax_ucnp.add_patch(circle)
-                ax_ucnp.text(row['x_pix'] + 7.5, row['y_pix'] + 7.5,
-                            f"{row['brightness_fit']/1000:.1f} kpps",
-                            color=color, fontsize=8, ha='center', va='center')
-
-            if percent_ucnp_coloc is not None:
-                ax_ucnp.set_title(f"UCNP sif# {file_number}\n{wrapped_ucnp_basename}\n{percent_ucnp_coloc:.1f}% colocalized")
-            else:
-                ax_ucnp.set_title(f"UCNP sif# {file_number}\n{wrapped_ucnp_basename}\n[No colocalization data]")
-        else:
-            ax_ucnp.set_title(f"UCNP\n{wrapped_ucnp_basename}")
-
-        ax_ucnp.set_xlabel('X (px)')
-        ax_ucnp.set_ylabel('Y (px)')
-
-        # --- Plot Dye ---
-        ax_dye = axes[i, 1]
-        im_dye = ax_dye.imshow(dye_img + 1, cmap='magma', origin='lower', norm=LogNorm())
-        plt.colorbar(im_dye, ax=ax_dye, label='pps', fraction=0.046, pad=0.04)
-
-        dye_basename = os.path.basename(dye_file)
-        wrapped_dye_basename = "\n".join(textwrap.wrap(dye_basename, width=35))
-
-
-        if show_fits and dye_has_fit:
-            for is_coloc, (_, row) in zip(colocalized_dye, dye_df.iterrows()):
-                color = 'lime' if is_coloc else 'white'
-                radius_px = 4 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
-                circle = Circle((row['x_pix'], row['y_pix']), radius_px, color=color, fill=False, linewidth=1.5, alpha=0.7)
-                ax_dye.add_patch(circle)
-                ax_dye.text(row['x_pix'] + 7.5, row['y_pix'] + 7.5,
-                            f"{row['brightness_fit']/1000:.1f} kpps",
-                            color=color, fontsize=8, ha='center', va='center')
-
-            match = re.search(r'(\d+)\.sif$', wrapped_dye_basename)
-            file_number = match.group(1) if match else '?'
-            ax_dye.set_title(f"Dye sif# {file_number}\n{wrapped_dye_basename}\n{percent_dye_coloc:.1f}% colocalized")
-        else:
-            ax_dye.set_title(f"Dye\n{wrapped_dye_basename}")
-
-        ax_dye.set_xlabel('X (px)')
-        ax_dye.set_ylabel('Y (px)')
-
-
-    compiled_matched_df = pd.DataFrame(all_matched_pairs)
-    plt.tight_layout()
-
-    if save_SVG:
-        expt_name = os.path.basename(file_path.rstrip('/'))
-        expt_name = re.sub(r'[^\w\-_.]', '_', expt_name)
-        todaydate = date.today().strftime("%Y%m%d")
-        filename = f"{expt_name}_{todaydate}.svg"
-
-        plt.savefig(filename)
-        print(f"Saved in Colab VM as: {filename}")
-        files.download(filename)  # This will prompt a browser download
-    plt.show()
-    return compiled_matched_df
+    return pd.DataFrame(all_matched)
 
 def extract_subregion(image, x0, y0, radius_pix):
     x_start = int(max(x0 - radius_pix, 0))
