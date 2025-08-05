@@ -24,8 +24,9 @@ def run():
         export_format = st.selectbox("Export Format", options=["SVG","TIFF", "PNG", "JPEG"])
 
 
-        signal = st.selectbox("Signal", options=["UCNP", "dye"], help= "Changes detection method, UCNP for high SNR (sklearn peakfinder) while dye for low SNR (sklearn blob detection)")
-
+        signal = st.selectbox("Signal", options=["UCNP", "dye"], help= '''Changes detection method:  
+                                                                - UCNP for high SNR (sklearn peakfinder)  
+                                                                - dye for low SNR (sklearn blob detection)''')
 
     with col2:
         show_fits = st.checkbox("Show fits")
