@@ -41,9 +41,9 @@ st.set_page_config(layout="wide")
 # Sidebar navigation
 st.sidebar.title("Navigation")
 tool = st.sidebar.radio("Analyze:", [
+    "Batch Convert",
     "Brightness",
     "Colocalization Set",
-    "Batch Convert",
     "Visualize Data"
 ])
 col1, col2 = st.columns([1, 2])
