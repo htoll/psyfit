@@ -82,8 +82,8 @@ def run():
                              export_format = export_format, colocalization_radius=coloc_radius)
 
         
-          except Exception as e:
-              st.error(f"An error occurred: {e}")
+      except Exception as e:
+          st.error(f"An error occurred: {e}")
 
 
 
