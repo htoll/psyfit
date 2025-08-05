@@ -45,7 +45,7 @@ def run():
                             df_dict=processed_data,
                             show_fits=show_fits, 
                             save_format=export_format, 
-                            normalization=normalization,
+                            normalization=norm,
                              univ_minmax = univ_minmax)
             except Exception as e:
                 st.error(f"An error occurred: {e}")
