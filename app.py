@@ -44,7 +44,7 @@ tool = st.sidebar.radio("Analyze:", [
     "Batch Convert",
     "Brightness",
     "Colocalization Set",
-    "Visualize Data"
+    "Monomer + Conc Estimation"
 ])
 col1, col2 = st.columns([1, 2])
 
