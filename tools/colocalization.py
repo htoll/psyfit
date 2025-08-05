@@ -79,9 +79,8 @@ def run():
                   st.exception(e)
   
           processed_data, combined_df = process_files(uploaded_files, region = 'all')
-          ucnp_names = [f.name for f in ucnp_list]
-          dye_names = [f.name for f in dye_list]
-          coloc_subplots(ucnp_names, dye_names, df_dict, show_fits=show_fits,
+
+          coloc_subplots(ucnp_list, dye_list, df_dict, show_fits=show_fits,
                          export_format=export_format, colocalization_radius=coloc_radius)
 
 
