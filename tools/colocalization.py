@@ -35,10 +35,10 @@ def run():
       norm = LogNorm() if use_log_norm else None
   
       univ_minmax = st.checkbox("Universal Scaling")
-      if "Convert" not in st.session_state:
+      if "Analyze" not in st.session_state:
           st.session_state.convert = False
   
-      if st.button("Convert"):
+      if st.button("Analyze"):
           st.session_state.convert = True
       
       if st.session_state.convert and uploaded_files:
