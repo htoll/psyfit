@@ -55,13 +55,20 @@ def run():
           st.session_state.convert = True
       
       if st.session_state.convert and uploaded_files:
+          ucnp_list, dye_list = sort_UCNP_dye_sifs(uploaded_files, ucnp_id=ucnp_id, dye_id=dye_id)
+          df_dict = {}
           # Process UCNP files
           for file in ucnp_list:
               try:
+
+                for file in ucnp_list:
+                  df, cropped_img = integrate_sif(file, threshold=ucnp_threshold, region=ucnp_region, signal='UCNP')
+                  
+                  df_dict[file] = (df, cropped_img)
                   df, cropped_img = integrate_sif(file, threshold=ucnp_threshold, region=ucnp_region, signal='UCNP')
                   if df is not None:
                       df_dict[file] = (df, cropped_img)
-              except Exception as e:
+                except Exception as e:
                   st.error(f"Could not process UCNP file: {os.path.basename(file)}")
                   st.exception(e)
   
