@@ -14,7 +14,7 @@ def run():
         uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
         threshold = st.number_input("Threshold", min_value=0, value=2, help = '''
         Stringency of fit, higher value is more selective:  
-        -UCNP signal sets absolute peak cut off 
+        -UCNP signal sets absolute peak cut off  
         -Dye signal sets sensitivity of blob detection
         ''')
         diagram = """ Splits sif into quadrants (256x256 px):  
