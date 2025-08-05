@@ -337,7 +337,8 @@ def match_ucnp_dye_files(ucnps, dyes):
     return pairs
 
     
-def coloc_subplots(ucnps, dyes, df_dict, colocalization_radius=2, show_fits=True, save_SVG = False):
+def coloc_subplots(ucnps, dyes, df_dict, colocalization_radius=2, 
+                    show_fits=True, export_format = 'SVG'):
     pairs = match_ucnp_dye_files(ucnps, dyes)
     all_matched = []
 
@@ -376,6 +377,37 @@ def coloc_subplots(ucnps, dyes, df_dict, colocalization_radius=2, show_fits=True
         )
 
         st.pyplot(fig)
+        buf = io.BytesIO()
+    
+        # Save the figure to the binary buffer
+        # Use bbox_inches='tight' for better layouts
+        fig.savefig(buf, format=save_format, bbox_inches='tight')
+        
+        # Get the value from the binary buffer
+        plot_data = buf.getvalue()
+        buf.close()
+    
+        # Define the mime type based on the format
+        if save_format.lower() == 'svg':
+            mime_type = "image/svg+xml"
+        elif save_format.lower() == 'tiff':
+            mime_type = "image/tiff"
+        elif save_format.lower() == 'png':
+            mime_type = "image/png"
+        elif save_format.lower() == 'jpeg' or save_format.lower() == 'jpg':
+            mime_type = "image/jpeg"
+        else:
+            mime_type = "application/octet-stream" # Default for unknown formats
+    
+        today = date.today().strftime('%Y%m%d')
+        download_name = f"sif_grid_{today}.{save_format}"
+        
+        st.download_button(
+            label=f"Download all plots as {save_format.upper()}",
+            data=plot_data,
+            file_name=download_name,
+            mime=mime_type
+        )
 
     return pd.DataFrame(all_matched)
 
