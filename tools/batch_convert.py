@@ -26,6 +26,7 @@ def run():
         signal = st.selectbox("Signal", options=["UCNP", "dye"])
         show_fits = st.checkbox("Show fits")
         normalization = st.checkbox("Log Image Scaling")
+        univ_minmax = st.checkbox("Universal Scaling")
 
     with col2:
         if "Convert" not in st.session_state:
@@ -42,7 +43,8 @@ def run():
                             df_dict=processed_data,
                             show_fits=show_fits, 
                             save_format=export_format, 
-                            normalization=None)
+                            normalization=normalization,
+                             univ_minmax = univ_minmax)
             except Exception as e:
                 st.error(f"An error occurred: {e}")
 
