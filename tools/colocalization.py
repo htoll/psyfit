@@ -12,12 +12,12 @@ def run():
   with col1:
       st.header("Colocalize")
       uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
-      ucnp_threshold = st.number_input("Threshold", min_value=0, value=2, help = '''
+      ucnp_threshold = st.number_input("UCNP threshold", min_value=0, value=2, help = '''
       Stringency of fit, higher value is more selective:  
       -UCNP signal sets absolute peak cut off  
       -Dye signal sets sensitivity of blob detection
       ''')
-      dye_threshold = st.number_input("Threshold", min_value=0, value=2, help = '''
+      dye_threshold = st.number_input("Dye threshold", min_value=0, value=5, help = '''
       Stringency of fit, higher value is more selective:  
       -UCNP signal sets absolute peak cut off  
       -Dye signal sets sensitivity of blob detection
