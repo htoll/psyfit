@@ -81,9 +81,7 @@ def run():
               coloc_subplots(ucnp_list, dye_list, df_dict, show_fits=show_fits, 
                              export_format = export_format, colocalization_radius=coloc_radius)
 
-        
-      except Exception as e:
-          st.error(f"An error occurred: {e}")
+
 
 
 
