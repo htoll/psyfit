@@ -90,7 +90,7 @@ def run():
                         brightness_vals = combined_df['brightness_fit'].values
                         
                         thresholding_method = st.radio("Choose thresholding method:", ("Automatic (Mu/Sigma)", "Manual"))
-
+                
                         num_bins = st.number_input("# Bins:", value=20)
                         
                         min_val = float(np.min(brightness_vals))
@@ -98,34 +98,23 @@ def run():
                         
                         thresholds = []
                         if thresholding_method == "Automatic (Mu/Sigma)":
-                            # Calculate mu and sigma from the brightness data
                             mu = np.mean(brightness_vals)
-                            sigma = np.std(brightness_vals)
-                            
-                            # Create thresholds based on multiples of mu and sigma
-                            # Let's create thresholds for Monomers, Dimers, Trimers, etc.
-                            # Group 1 (Monomers) is centered around 1*mu with width 1*sigma
-                            # Group 2 (Dimers) is centered around 2*mu with width 2*sigma
-                            # Group 3 (Trimers) is centered around 3*mu with width 3*sigma
-                            
-                            # We'll define thresholds as the midpoints between these groups.
-                            # A common approach is to set the threshold at the geometric mean or a simple average.
-                            # Let's use the average of the group centers:
-                            threshold_1 = (mu + 2 * mu) / 2
-                            threshold_2 = (2 * mu + 3 * mu) / 2
-                            # Add more thresholds if needed, e.g., threshold_3 = (3 * mu + 4 * mu) / 2
+                            # Create three thresholds for Monomers, Dimers, and Trimers
+                            threshold_1 = (mu + 2 * mu) / 2  # Threshold between Monomers and Dimers
+                            threshold_2 = (2 * mu + 3 * mu) / 2  # Threshold between Dimers and Trimers
+                            threshold_3 = (3 * mu + 4 * mu) / 2  # Threshold between Trimers and Multimers
                             
                             # Filter thresholds to ensure they are within the data range
-                            thresholds = [t for t in [threshold_1, threshold_2] if min_val < t < max_val]
+                            thresholds = [t for t in [threshold_1, threshold_2, threshold_3] if min_val < t < max_val]
                             
                             st.write(f"Automatic Thresholds (based on Mu/Sigma): {', '.join([f'{t:.2f}' for t in thresholds])}")
-
+                
                         else: # Manual thresholding
-                            # Use number inputs for manual thresholds
                             threshold1 = st.number_input("Threshold 1", min_value=min_val, max_value=max_val, value=(max_val + min_val) / 2, step=(max_val - min_val) / 1000)
                             threshold2 = st.number_input("Threshold 2", min_value=min_val, max_value=max_val, value=max_val * 0.75, step=(max_val - min_val) / 1000)
-                            thresholds = sorted([threshold1, threshold2])
-
+                            threshold3 = st.number_input("Threshold 3", min_value=min_val, max_value=max_val, value=max_val * 0.9, step=(max_val - min_val) / 1000)
+                            thresholds = sorted([threshold1, threshold2, threshold3])
+                
                         if min_val < max_val:
                             fig_hist = plot_histogram(combined_df, min_val=min_val, max_val=max_val, num_bins=num_bins, thresholds=thresholds)
                             st.pyplot(fig_hist)
@@ -141,20 +130,17 @@ def run():
                                 file_name="combined_histogram.svg",
                                 mime="image/svg+xml"
                             )
-
+                
                             if thresholds:
-                                # Create custom labels for the pie chart
-                                custom_labels = ["Monomers", "Dimers", "Trimers", "Quadramers"] # Extend this list as needed
+                                # Define labels for the pie chart
+                                labels_for_pie = ["Monomers", "Dimers", "Trimers", "Multimers"]
                 
-                                # The number of labels should match the number of categories (len(thresholds) + 1)
+                                # Pad labels if more thresholds are added manually
                                 num_categories = len(thresholds) + 1
-                                if len(custom_labels) < num_categories:
-                                    st.warning(f"Not enough custom labels. Using generic names for categories beyond {len(custom_labels)}.")
-                                    labels_for_pie = custom_labels + [f"Group {i+1}" for i in range(len(custom_labels), num_categories)]
-                                else:
-                                    labels_for_pie = custom_labels[:num_categories]
+                                if len(labels_for_pie) < num_categories:
+                                     labels_for_pie = labels_for_pie + [f"Group {i+1}" for i in range(len(labels_for_pie), num_categories)]
                 
-                                bins_for_pie = [min_val] + thresholds + [max_val]
+                                bins_for_pie = [min_val] + sorted(thresholds) + [max_val]
                                 
                                 categories = pd.cut(combined_df['brightness_fit'], bins=bins_for_pie, right=False, include_lowest=True, labels=labels_for_pie)
                                 category_counts = categories.value_counts().reset_index()
@@ -162,12 +148,12 @@ def run():
                                 
                                 fig_pie = px.pie(category_counts, values='Count', names='Category', title='Percentage of Data Points by Threshold')
                                 st.plotly_chart(fig_pie, use_container_width=True)
-
-
+                
                         else:
                             st.warning("Min brightness is not less than max brightness.")
                     else:
                         st.info("No brightness data to display.")
+
 
             except Exception as e:
                 st.error(f"Error processing files: {e}")
