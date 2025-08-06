@@ -57,7 +57,7 @@ elif tool == "UNDER CONSTRUCTION Colocalization Set":
     colocalization.run()
 
 # Tool: Batch Convert SIFs
-elif tool == "UNDER CONSTRUCTION Batch Convert":
+elif tool == "Batch Convert":
     batch_convert.run()
 
 
