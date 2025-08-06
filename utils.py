@@ -308,7 +308,7 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
 
     HWT_aesthetic()
     plt.tight_layout()
-    return fig, mu, sigma
+    return fig
 
 
 
