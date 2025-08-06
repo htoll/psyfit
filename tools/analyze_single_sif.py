@@ -96,7 +96,7 @@ def run():
                         num_bins = st.number_input("# Bins:", value = 20)
                 
                         if user_min < user_max:
-                            fig_hist = plot_histogram(combined_df, min_val=user_min, max_val=user_max, num_bins = num_bins)
+                            fig_hist, _, _ = plot_histogram(combined_df, min_val=user_min, max_val=user_max, num_bins = num_bins)
                             st.pyplot(fig_hist)
                 
                             svg_buffer_hist = io.StringIO()
