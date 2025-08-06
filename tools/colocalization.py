@@ -81,6 +81,9 @@ def run():
           processed_data, combined_df = process_files(uploaded_files, region = 'all')
           ucnp_names = [f.name for f in ucnp_list]
           dye_names = [f.name for f in dye_list]
+          st.write("df_dict has keys:", list(df_dict.keys()))
+          st.write("ucnp_list:", [f.name for f in ucnp_list])
+          st.write("dye_list:", [f.name for f in dye_list])
           coloc_subplots(ucnp_names, dye_names, df_dict, show_fits=show_fits,
                          export_format=export_format, colocalization_radius=coloc_radius)
 
