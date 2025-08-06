@@ -6,7 +6,7 @@ import io
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from tools import analyze_single_sif, batch_convert, colocalization
+from tools import analyze_single_sif, batch_convert, colocalization, monomers
 import sif_parser
 
 from skimage.feature import peak_local_max
