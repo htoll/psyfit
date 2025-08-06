@@ -45,12 +45,10 @@ def run():
         if st.button("Analyze"):
             st.session_state.analyze_clicked = True
             
-        # All dynamic output logic is now within this `with col2:` block
         if st.session_state.analyze_clicked and uploaded_files:
             try:
                 processed_data, combined_df = process_files(uploaded_files, region)
 
-                # Now create the sub-columns for the plots below the selectbox
                 plot_col1, plot_col2 = st.columns(2)
 
                 with plot_col1:
@@ -91,7 +89,6 @@ def run():
                     if not combined_df.empty:
                         brightness_vals = combined_df['brightness_fit'].values
                         
-                        # User selects thresholding method
                         thresholding_method = st.radio("Choose thresholding method:", ("Automatic (GMM)", "Manual"))
 
                         num_bins = st.number_input("# Bins:", value=20)
@@ -101,18 +98,17 @@ def run():
                         
                         thresholds = []
                         if thresholding_method == "Automatic (GMM)":
-                            # Fit GMM to data
                             gmm = GaussianMixture(n_components=2, random_state=0)
                             gmm.fit(brightness_vals.reshape(-1, 1))
                             thresholds = sorted(gmm.means_.flatten())
-
                             st.write(f"Automatic Thresholds (based on GMM means): {', '.join([f'{t:.2f}' for t in thresholds])}")
 
                         else: # Manual thresholding
-                            # Use Streamlit's range slider to allow manual threshold setting
-                            threshold_tuple = st.slider("Set Thresholds", min_value=min_val, max_value=max_val, value=(min_val, (max_val + min_val) / 2, max_val), step=(max_val - min_val) / 1000)
-                            thresholds = sorted(list(threshold_tuple))
-                        
+                            # Use number inputs for manual thresholds
+                            threshold1 = st.number_input("Threshold 1", min_value=min_val, max_value=max_val, value=(max_val + min_val) / 2, step=(max_val - min_val) / 1000)
+                            threshold2 = st.number_input("Threshold 2", min_value=min_val, max_value=max_val, value=max_val * 0.75, step=(max_val - min_val) / 1000)
+                            thresholds = sorted([threshold1, threshold2])
+
                         if min_val < max_val:
                             fig_hist = plot_histogram(combined_df, min_val=min_val, max_val=max_val, num_bins=num_bins, thresholds=thresholds)
                             st.pyplot(fig_hist)
@@ -129,14 +125,13 @@ def run():
                                 mime="image/svg+xml"
                             )
 
-                            # Pie Chart Generation
                             if thresholds:
-                                # Categorize data based on thresholds
-                                categories = pd.cut(combined_df['brightness_fit'], bins=[min_val] + thresholds + [max_val], right=False, include_lowest=True, labels=[f"Group {i+1}" for i in range(len(thresholds) + 1)])
+                                bins_for_pie = [min_val] + thresholds + [max_val]
+                                labels = [f"{bins_for_pie[i]:.0f} to {bins_for_pie[i+1]:.0f}" for i in range(len(bins_for_pie) - 1)]
+                                categories = pd.cut(combined_df['brightness_fit'], bins=bins_for_pie, right=False, include_lowest=True, labels=labels)
                                 category_counts = categories.value_counts().reset_index()
                                 category_counts.columns = ['Category', 'Count']
                                 
-                                # Create pie chart using plotly
                                 fig_pie = px.pie(category_counts, values='Count', names='Category', title='Percentage of Data Points by Threshold')
                                 st.plotly_chart(fig_pie, use_container_width=True)
 
