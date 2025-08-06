@@ -43,8 +43,8 @@ st.sidebar.title("Navigation")
 tool = st.sidebar.radio("Analyze:", [
     "Batch Convert",
     "Brightness",
-    "Colocalization Set",
-    "Monomer + Conc Estimation"
+    "UNDER CONSTRUCTION Colocalization Set",
+    "UNDER CONSTRUCTION Monomer + Conc Estimation"
 ])
 col1, col2 = st.columns([1, 2])
 
@@ -53,17 +53,13 @@ if tool == "Brightness":
 
 
 # Tool: Analyze Colocalization Set
-elif tool == "Colocalization Set":
+elif tool == "UNDER CONSTRUCTION Colocalization Set":
     colocalization.run()
 
 # Tool: Batch Convert SIFs
-elif tool == "Batch Convert":
+elif tool == "UNDER CONSTRUCTION Batch Convert":
     batch_convert.run()
 
-# Tool: Visualize Data
-elif tool == "Visualize Data":
-    st.header("Visualize Data")
-    st.info("This feature is under construction — implement logic here.")
 
 
 
