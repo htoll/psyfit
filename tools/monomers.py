@@ -118,7 +118,7 @@ def run():
                             # Filter thresholds to ensure they are within the data range
                             thresholds = [t for t in [threshold_1, threshold_2] if min_val < t < max_val]
                             
-                            st.write(f"Automatic Thresholds (based on Mu/Sigma): {', '.join([f'{t:.2f}' for t in thresholds])}")f"Automatic Thresholds (based on GMM means): {', '.join([f'{t:.2f}' for t in thresholds])}")
+                            st.write(f"Automatic Thresholds (based on Mu/Sigma): {', '.join([f'{t:.2f}' for t in thresholds])}")
 
                         else: # Manual thresholding
                             # Use number inputs for manual thresholds
