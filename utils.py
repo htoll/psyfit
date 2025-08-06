@@ -300,9 +300,9 @@ def match_ucnp_dye_files(ucnps, dyes):
 
     # 3. for each UCNP, try forward then backward, skipping used dyes
     for ucnp_file in ucnps_sorted:
-        m = re.search(r'(\d+)\.sif$', ucnp_file)
+        m = re.search(r'(\d+)\.sif$', ucnp_file.name)
         if not m:
-            warnings.append(f"Could not parse UCNP index from {ucnp_file}")
+            warnings.append(f"Could not parse UCNP index from {ucnp_file.name}")
             continue
         uidx = int(m.group(1))
 
@@ -320,12 +320,12 @@ def match_ucnp_dye_files(ucnps, dyes):
             if (uidx-1) in dye_map: expected.append(str(uidx-1))
             if expected:
                 warnings.append(
-                    f"Both candidate dyes {', '.join(expected)} for UCNP {os.path.basename(ucnp_file)} "
+                    f"Both candidate dyes {', '.join(expected)} for UCNP {os.path.basename(ucnp_file.name)} "
                     "are already matched to other UCNPs."
                 )
             else:
                 warnings.append(
-                    f"No Dye file “{uidx+1}.sif or {uidx-1}.sif” found for UCNP {os.path.basename(ucnp_file)}"
+                    f"No Dye file “{uidx+1}.sif or {uidx-1}.sif” found for UCNP {os.path.basename(ucnp_file.name)}"
                 )
         else:
             # pick forward first if present, else backward
