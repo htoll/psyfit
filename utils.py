@@ -283,6 +283,7 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
     bin_centers = 0.5 * (edges[:-1] + edges[1:])
 
     # Gaussian fit
+    mu, sigma = None, None
     p0 = [np.max(counts), np.mean(brightness_vals), np.std(brightness_vals)]
     try:
         popt, _ = curve_fit(gaussian, bin_centers, counts, p0=p0)
@@ -307,7 +308,7 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
 
     HWT_aesthetic()
     plt.tight_layout()
-    return fig
+    return fig, mu, sigma
 
 
 
