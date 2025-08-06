@@ -146,7 +146,7 @@ def run():
                                 category_counts = categories.value_counts().reset_index()
                                 category_counts.columns = ['Category', 'Count']
                                 
-                                fig_pie = px.pie(category_counts, values='Count', names='Category', title='Percentage of Data Points by Threshold')
+                                fig_pie = px.pie(category_counts, values='Count', names='Category', title='Estimated Monomer Proportion')
                                 st.plotly_chart(fig_pie, use_container_width=True)
                 
                         else:
