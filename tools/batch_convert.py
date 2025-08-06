@@ -12,6 +12,8 @@ def run():
     with col1:
         st.header("Convert SIF Files")
         uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
+        if uploaded_files and not isinstance(uploaded_files, list):
+            uploaded_files = [uploaded_files]
         threshold = st.number_input("Threshold", min_value=0, value=2, help = '''
         Stringency of fit, higher value is more selective:  
         -UCNP signal sets absolute peak cut off  
