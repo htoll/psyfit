@@ -126,9 +126,20 @@ def run():
                             )
 
                             if thresholds:
+                                # Create custom labels for the pie chart
+                                custom_labels = ["Monomers", "Dimers", "Trimers", "Quadramers"] # Extend this list as needed
+                
+                                # The number of labels should match the number of categories (len(thresholds) + 1)
+                                num_categories = len(thresholds) + 1
+                                if len(custom_labels) < num_categories:
+                                    st.warning(f"Not enough custom labels. Using generic names for categories beyond {len(custom_labels)}.")
+                                    labels_for_pie = custom_labels + [f"Group {i+1}" for i in range(len(custom_labels), num_categories)]
+                                else:
+                                    labels_for_pie = custom_labels[:num_categories]
+                
                                 bins_for_pie = [min_val] + thresholds + [max_val]
-                                labels = [f"{bins_for_pie[i]:.0f} to {bins_for_pie[i+1]:.0f}" for i in range(len(bins_for_pie) - 1)]
-                                categories = pd.cut(combined_df['brightness_fit'], bins=bins_for_pie, right=False, include_lowest=True, labels=labels)
+                                
+                                categories = pd.cut(combined_df['brightness_fit'], bins=bins_for_pie, right=False, include_lowest=True, labels=labels_for_pie)
                                 category_counts = categories.value_counts().reset_index()
                                 category_counts.columns = ['Category', 'Count']
                                 
