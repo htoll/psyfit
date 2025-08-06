@@ -55,6 +55,8 @@ def run():
                     if len(uploaded_files) > 1:
                         file_options = [f.name for f in uploaded_files]
                         selected_file_name = st.selectbox("Select sif to display:", options=file_options)
+                    else:
+                        selected_file_name = uploaded_files[0].name  # Default to the only file's name
                     if selected_file_name in processed_data:
                         data_to_plot = processed_data[selected_file_name]
                         df_selected = data_to_plot["df"]
