@@ -70,6 +70,10 @@ def run():
             # Process dye files and use file.name as the key
             for file in dye_list:
                 try:
+                    file.seek(0)
+                    st.write(f"File {file.name} size after seek: {len(file.read())}")
+                    file.seek(0)  # reset again before actual use
+                    df, cropped_img = integrate_sif(file, ...)
                     df, cropped_img = integrate_sif(file, threshold=dye_threshold, region=dye_region, signal='dye')
                     if df is not None:
                         df_dict[file.name] = (df, cropped_img)
