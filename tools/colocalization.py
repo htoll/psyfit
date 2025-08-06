@@ -57,6 +57,8 @@ def run():
       if st.session_state.convert and uploaded_files:
           ucnp_list, dye_list = sort_UCNP_dye_sifs(uploaded_files, ucnp_id=ucnp_id, dye_id=dye_id)
           df_dict = {}
+          for f in ucnp_list + dye_list:
+              st.write(f"Adding to df_dict: key = {f}, name = {f.name}")
   
           # Process UCNP files
           for file in ucnp_list:
