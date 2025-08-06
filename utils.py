@@ -276,8 +276,10 @@ def sort_UCNP_dye_sifs(uploaded_files, ucnp_id=976, dye_id=638):
     return ucnp_files, dye_files
 
 
-def natural_sort_key(s):
-    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
+def natural_sort_key(f):
+    name = f.name if hasattr(f, "name") else str(f)
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', name)]
+
 
 def match_ucnp_dye_files(ucnps, dyes):
 
@@ -288,7 +290,7 @@ def match_ucnp_dye_files(ucnps, dyes):
     # 2. build dye lookup
     dye_map = {}
     for f in dyes_sorted:
-        m = re.search(r'(\d+)\.sif$', f)
+        m = re.search(r'(\d+)\.sif$', f.name)
         if m:
             dye_map[int(m.group(1))] = f
 
