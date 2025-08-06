@@ -206,51 +206,6 @@ def plot_brightness(image_data_cps, df, show_fits = True, plot_brightness_histog
     return fig
 
 
-# def plot_histogram(df, save_as_svg=False, min_val=None, max_val=None, num_bins = 20):
-#     """Plots the brightness histogram with a gaussian fit."""
-#     fig_width, fig_height = 4, 4
-#     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-#     scale = fig_width / 5
-
-#     brightness_vals = df['brightness_fit'].values
-
-#     # Apply min/max filtering if specified
-#     if min_val is not None and max_val is not None:
-#         brightness_vals = brightness_vals[(brightness_vals >= min_val) & (brightness_vals <= max_val)]
-
-#     # Ensure the filtered data is valid
-#     if len(brightness_vals) == 0:
-#         st.warning("No data in selected brightness range.")
-#         return fig
-
-#     # Use the min/max values to define histogram bin edges
-    
-#     bins = np.linspace(min_val, max_val, num_bins)
-
-#     counts, edges, _ = ax.hist(brightness_vals, bins=bins, color='#88CCEE', edgecolor='#88CCEE')
-#     bin_centers = 0.5 * (edges[:-1] + edges[1:])
-
-#     p0 = [np.max(counts), np.mean(brightness_vals), np.std(brightness_vals)]
-#     try:
-#         popt, _ = curve_fit(gaussian, bin_centers, counts, p0=p0)
-#         mu, sigma = popt[1], popt[2]
-#         x_fit = np.linspace(edges[0], edges[-1], 500)
-#         y_fit = gaussian(x_fit, *popt)
-#         ax.plot(x_fit, y_fit, color='black', linewidth=0.75, linestyle='--', label=r"μ = {mu:.0f} ± {sigma:.0f} pps".format(mu=mu, sigma=sigma))
-#         ax.legend(fontsize=10 * scale)
-#     except RuntimeError:
-#         st.warning("Gaussian fit failed.")
-
-#     ax.set_xlabel("Brightness (pps)", fontsize=10 * scale)
-#     ax.set_ylabel("Count", fontsize=10 * scale)
-#     ax.tick_params(axis='both', labelsize=10 * scale, width=0.75)
-#     for spine in ax.spines.values():
-#         spine.set_linewidth(1)
-
-#     HWT_aesthetic()
-#     plt.tight_layout()
-#     return fig
-
 def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None):
     """
     Plots the brightness histogram with a Gaussian fit and optional vertical thresholds.
@@ -503,8 +458,10 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     n_cols = 4
     n_rows = (n_files + n_cols - 1) // n_cols
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
-    axes = axes.flatten() if n_files > 1 else [axes]
-    
+    if isinstance(axes, np.ndarray):
+        axes = axes.flatten()
+    else:
+        axes = [axes]    
     all_vals = []
     if univ_minmax and normalization is None:
         all_vals = []
