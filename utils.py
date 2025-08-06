@@ -374,7 +374,7 @@ def coloc_subplots(ucnps, dyes, df_dict, colocalization_radius=2,
             pix_size_um=pix_size_um,
             cmap='magma',
             ax=ax_u,
-            title=f"UCNP: {os.path.basename(ucnp_file)} — {coloc_data['percent_ucnp']:.1f}% coloc"
+            title=f"UCNP: {os.path.basename(ucnp_file.name)} — {coloc_data['percent_ucnp']:.1f}% coloc"
         )
 
         plot_brightness(
@@ -385,7 +385,7 @@ def coloc_subplots(ucnps, dyes, df_dict, colocalization_radius=2,
             pix_size_um=pix_size_um,
             cmap='magma',
             ax=ax_d,
-            title=f"Dye: {os.path.basename(dye_file)} — {coloc_data['percent_dye']:.1f}% coloc"
+            title=f"Dye: {os.path.basename(dye_file.name)} — {coloc_data['percent_dye']:.1f}% coloc"
         )
 
         st.pyplot(fig)
