@@ -60,7 +60,7 @@ elif tool == "UNDER CONSTRUCTION Colocalization Set":
 elif tool == "Batch Convert":
     batch_convert.run()
 
-elif tool == 'UNDER CONSTRUCTION Monomer + Conc Estimation'
+elif tool == 'UNDER CONSTRUCTION Monomer + Conc Estimation':
     monomers.run()
 
 
