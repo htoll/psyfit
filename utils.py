@@ -355,8 +355,8 @@ def coloc_subplots(ucnps, dyes, df_dict, colocalization_radius=2,
         st.write("Looking for:", ucnp_file)
         st.write("df_dict keys:", list(df_dict.keys()))
 
-        ucnp_df, ucnp_img = df_dict[ucnp_file]
-        dye_df, dye_img = df_dict[dye_file]
+        ucnp_df, ucnp_img = df_dict[ucnp_file.name]
+        dye_df, dye_img = df_dict[dye_file.name]
 
         # Perform colocalization to compute matched flags and percentages
         coloc_data = _compute_coloc(ucnp_df, dye_df, radius=colocalization_radius)
