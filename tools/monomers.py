@@ -89,7 +89,7 @@ def run():
                     if not combined_df.empty:
                         brightness_vals = combined_df['brightness_fit'].values
                         
-                        thresholding_method = st.radio("Choose thresholding method:", ("Automatic (GMM)", "Manual"))
+                        thresholding_method = st.radio("Choose thresholding method:", ("Automatic (Mu/Sigma)", "Manual"))
 
                         num_bins = st.number_input("# Bins:", value=20)
                         
@@ -97,11 +97,28 @@ def run():
                         max_val = float(np.max(brightness_vals))
                         
                         thresholds = []
-                        if thresholding_method == "Automatic (GMM)":
-                            gmm = GaussianMixture(n_components=2, random_state=0)
-                            gmm.fit(brightness_vals.reshape(-1, 1))
-                            thresholds = sorted(gmm.means_.flatten())
-                            st.write(f"Automatic Thresholds (based on GMM means): {', '.join([f'{t:.2f}' for t in thresholds])}")
+                        if thresholding_method == "Automatic (Mu/Sigma)":
+                            # Calculate mu and sigma from the brightness data
+                            mu = np.mean(brightness_vals)
+                            sigma = np.std(brightness_vals)
+                            
+                            # Create thresholds based on multiples of mu and sigma
+                            # Let's create thresholds for Monomers, Dimers, Trimers, etc.
+                            # Group 1 (Monomers) is centered around 1*mu with width 1*sigma
+                            # Group 2 (Dimers) is centered around 2*mu with width 2*sigma
+                            # Group 3 (Trimers) is centered around 3*mu with width 3*sigma
+                            
+                            # We'll define thresholds as the midpoints between these groups.
+                            # A common approach is to set the threshold at the geometric mean or a simple average.
+                            # Let's use the average of the group centers:
+                            threshold_1 = (mu + 2 * mu) / 2
+                            threshold_2 = (2 * mu + 3 * mu) / 2
+                            # Add more thresholds if needed, e.g., threshold_3 = (3 * mu + 4 * mu) / 2
+                            
+                            # Filter thresholds to ensure they are within the data range
+                            thresholds = [t for t in [threshold_1, threshold_2] if min_val < t < max_val]
+                            
+                            st.write(f"Automatic Thresholds (based on Mu/Sigma): {', '.join([f'{t:.2f}' for t in thresholds])}")f"Automatic Thresholds (based on GMM means): {', '.join([f'{t:.2f}' for t in thresholds])}")
 
                         else: # Manual thresholding
                             # Use number inputs for manual thresholds
