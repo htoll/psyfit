@@ -117,9 +117,6 @@ def run():
                                         if user_min_val < t < user_max_val:
                                             thresholds.append(t)
                             
-                                    st.write("Automatic Thresholds (μ-based):")
-                                    for i, t in enumerate(thresholds, start=1):
-                                        st.write(f"Threshold {i}: {t:.2f} pps (Between {i}-mer and {i+1}-mer)")
                                 else:
                                     st.warning("Gaussian fit failed to converge. Cannot perform automatic thresholding.")
 
