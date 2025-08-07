@@ -112,7 +112,7 @@ def run():
                             st.warning("Min brightness must be less than max brightness.")
                         else:
                             thresholding_method = st.radio("Choose thresholding method:", ("Automatic (Mu/Sigma)", "Manual"), 
-                              help="Automatic sets thresholds at 1.5μ, 2.5μ, 3.5μ
+                              help="Automatic sets thresholds at 1.5μ, 2.5μ, 3.5μ"
                                 )
                             num_bins = st.number_input("# Bins:", value=20)
 
