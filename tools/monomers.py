@@ -219,5 +219,6 @@ def run():
         ax_count.legend(fontsize=10)
         ax_count.tick_params(axis='x', labelsize=8)
         ax_count.tick_params(axis='y', labelsize=8)
+        HWT_aesthetic()
         
         st.pyplot(fig_count)              
