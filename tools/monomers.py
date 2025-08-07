@@ -203,14 +203,13 @@ def run():
             return match.group(1) if match else filename  # fallback to filename if pattern not matched
         
         file_names = [extract_sif_number(name) for name in psf_counts.keys()]
-        num_cols = len(filenames)
         counts = list(psf_counts.values())
         mean_count = np.mean(counts)
-        fig_count, ax_count = plt.subplots(figsize=(2*num_cols, 3))
+        fig_count, ax_count = plt.subplots(figsize=(5, 3))
         ax_count.bar(file_names, counts, color='tab:blue')
-        ax_count.axhline(mean_count, color='black', linestyle='--', label=f'Avg = {mean_count:.1f}')
-        ax_count.set_ylabel("# Fit PSFs")
-        ax_count.set_xlabel("File")
+        ax_count.axhline(mean_count, color='black', linestyle='--', label=f'Avg = {mean_count:.1f}', fontsize = 6)
+        ax_count.set_ylabel("# Fit PSFs", fontsize = 8)
+        ax_count.set_xlabel("File", fontsize = 8)
         ax_count.legend()
         
         st.pyplot(fig_count)
