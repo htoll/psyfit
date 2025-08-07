@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import io
+import re
 from utils import integrate_sif, plot_brightness, plot_histogram, HWT_aesthetic
 from tools.process_files import process_files
 from matplotlib.colors import LogNorm
