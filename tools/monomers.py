@@ -196,7 +196,7 @@ def run():
                                     mean_count = np.mean(counts)
                                     
                                     import matplotlib.pyplot as plt
-                                    fig_count, ax_count = plt.subplots(figsize=(5, 3))
+                                    fig_count, ax_count = plt.subplots(figsize=(3, 2))
                                     ax_count.bar(file_names, counts, color='tab:blue')
                                     ax_count.axhline(mean_count, color='black', linestyle='--', label=f'Avg = {mean_count:.1f}')
                                     ax_count.set_ylabel("# Fit PSFs")
