@@ -96,8 +96,8 @@ def run():
                         user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
                         user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
                         try:
-                            user_min_val = float(user_min_val_str)
-                            user_max_val = float(user_max_val_str)
+                            user_min = float(user_min_val_str)
+                            user_max = float(user_max_val_str)
                         except ValueError:
                             st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
                             return  # or skip processing
