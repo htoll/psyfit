@@ -177,7 +177,6 @@ def run():
                                             category_counts,
                                             values='Count',
                                             names='Category',
-                                            title='Percentage of PSFs by Threshold',
                                             color_discrete_sequence=plotly_colors
                                         )
                                         st.plotly_chart(fig_pie, use_container_width=True)
