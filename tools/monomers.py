@@ -137,16 +137,30 @@ def run():
                                 st.pyplot(fig_hist) # Plot the initial histogram without thresholds
                 
                             if thresholds:
+                                # Prepare bins
+                                thresholds = sorted(set(thresholds))
+                                bins_for_pie = [user_min_val] + thresholds + [user_max_val]
+                                num_bins = len(bins_for_pie) - 1
+                                
+                                # Generate correct number of labels
                                 labels_for_pie = ["Monomers", "Dimers", "Trimers", "Multimers"]
-                                num_categories = len(thresholds) + 1
-                                if len(labels_for_pie) < num_categories:
-                                     labels_for_pie = labels_for_pie + [f"Group {i+1}" for i in range(len(labels_for_pie), num_categories)]
-                                bins_for_pie = [user_min_val] + sorted(thresholds) + [user_max_val]
-                                categories = pd.cut(combined_df['brightness_fit'], bins=bins_for_pie, right=False, include_lowest=True, labels=labels_for_pie)
-                                category_counts = categories.value_counts().reset_index()
-                                category_counts.columns = ['Category', 'Count']
-                                fig_pie = px.pie(category_counts, values='Count', names='Category', title='Percentage of Data Points by Threshold')
-                                st.plotly_chart(fig_pie, use_container_width=True)
+                                if len(labels_for_pie) < num_bins:
+                                    labels_for_pie += [f"Group {i+1}" for i in range(len(labels_for_pie), num_bins)]
+                                
+                                if len(labels_for_pie) != num_bins:
+                                    st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins} bins. Cannot categorize.")
+                                else:
+                                    categories = pd.cut(
+                                        combined_df['brightness_fit'],
+                                        bins=bins_for_pie,
+                                        right=False,
+                                        include_lowest=True,
+                                        labels=labels_for_pie
+                                    )
+                                    category_counts = categories.value_counts().reset_index()
+                                    category_counts.columns = ['Category', 'Count']
+                                    fig_pie = px.pie(category_counts, values='Count', names='Category', title='Percentage of Data Points by Threshold')
+                                    st.plotly_chart(fig_pie, use_container_width=True)
 
 
             except Exception as e:
