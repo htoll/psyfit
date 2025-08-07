@@ -107,20 +107,20 @@ def run():
                             thresholds = []
                             if thresholding_method == "Automatic (Mu/Sigma)":
                                 if mu is not None and sigma is not None:
-                                    # New threshold calculation incorporating mu and sigma
-                                    # Threshold between Monomers and Dimers is at 1.5*mu +/- 2*sigma
-                                    threshold_1 = 1.5 * mu + 2 * sigma
-                                    # Threshold between Dimers and Trimers is at 2.5*mu +/- 2*sigma
-                                    threshold_2 = 2.5 * mu + 2 * sigma
-                                    # Threshold between Trimers and Multimers is at 3.5*mu +/- 2*sigma
-                                    threshold_3 = 3.5 * mu + 2 * sigma
-                
-                                    # Update plot_histogram with the new thresholds
-                                    thresholds = [t for t in [threshold_1, threshold_2, threshold_3] if user_min_val < t < user_max_val]
-                                    st.write(f"Automatic Thresholds (based on Mu/Sigma): {', '.join([f'{t:.2f}' for t in thresholds])}")
-                
+                                    max_multiplicity = 4  # up to tetramers
+                                    thresholds = []
+                            
+                                    for k in range(1, max_multiplicity):
+                                        t = (2 * k + 1) / 2 * mu
+                                        if user_min_val < t < user_max_val:
+                                            thresholds.append(t)
+                            
+                                    st.write("Automatic Thresholds (μ-based):")
+                                    for i, t in enumerate(thresholds, start=1):
+                                        st.write(f"Threshold {i}: {t:.2f} pps (Between {i}-mer and {i+1}-mer)")
                                 else:
                                     st.warning("Gaussian fit failed to converge. Cannot perform automatic thresholding.")
+
                             
                             else: # Manual thresholding
                                 threshold1 = st.number_input("Threshold 1", min_value=user_min_val, max_value=user_max_val, value=(user_max_val + user_min_val) / 2, step=(user_max_val - user_min_val) / 1000)
