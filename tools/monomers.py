@@ -8,6 +8,8 @@ import numpy as np
 from sklearn.mixture import GaussianMixture
 import plotly.express as px
 import pandas as pd
+import matplotlib.colors as mcolors
+
 
 def run():
     col1, col2 = st.columns([1, 2])
@@ -158,7 +160,13 @@ def run():
                                     )
                                     category_counts = categories.value_counts().reset_index()
                                     category_counts.columns = ['Category', 'Count']
-                                    fig_pie = px.pie(category_counts, values='Count', names='Category', title='Percentage of Data Points by Threshold')
+                                    palette = HWT_aesthetic()
+                                    region_colors = palette[:len(category_counts)]
+                                    plotly_colors = [mcolors.to_hex(c) for c in region_colors]
+
+                                    fig_pie = px.pie(category_counts, values='Count', names='Category', 
+                                                     title='Percentage of Data Points by Threshold',
+                                                    color_discrete_sequence=plotly_colors)
                                     st.plotly_chart(fig_pie, use_container_width=True)
                             else:
                                 st.pyplot(fig_hist) # Plot the initial histogram without thresholds
