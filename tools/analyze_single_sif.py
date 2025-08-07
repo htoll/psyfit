@@ -37,7 +37,7 @@ def run():
             st.session_state.analyze_clicked = False
 
         show_fits = st.checkbox("Show fits")
-        plot_brightness_histogram = st.checkbox("Plot brightness histogram")
+        plot_brightness_histogram = True #st.checkbox("Plot brightness histogram") #set to always true for now
         normalization = st.checkbox("Log Image Scaling")
 
         if st.button("Analyze"):
