@@ -91,14 +91,22 @@ def run():
                         default_max = float(np.max(brightness_vals))
                 
                         # User inputs
-                        user_min = st.number_input("Min Brightness (pps)", value=default_min)
-                        user_max = st.number_input("Max Brightness (pps)", value=default_max)
+                        default_min_val = float(np.min(brightness_vals))
+                        default_max_val = float(np.max(brightness_vals))
+                        user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
+                        user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
+                        try:
+                            user_min_val = float(user_min_val_str)
+                            user_max_val = float(user_max_val_str)
+                        except ValueError:
+                            st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
+                            return  # or skip processing
 
                         #binning
                         num_bins = st.number_input("# Bins:", value = 20)
                 
                         if user_min < user_max:
-                            fig_hist= plot_histogram(combined_df, min_val=user_min, max_val=user_max, num_bins = num_bins)
+                            fig_hist, _, _= plot_histogram(combined_df, min_val=user_min, max_val=user_max, num_bins = num_bins)
                             st.pyplot(fig_hist)
                 
                             svg_buffer_hist = io.StringIO()
