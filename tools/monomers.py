@@ -181,41 +181,41 @@ def run():
                                 )
                                 st.pyplot(fig_hist_final)
 
-                                # Pie chart logic
-                                thresholds = sorted(set(thresholds))
-                                bins_for_pie = [user_min_val] + thresholds + [user_max_val]
-                                num_bins = len(bins_for_pie) - 1
-                                base_labels = ["Monomers", "Dimers", "Trimers", "Multimers"]
+                                # # Pie chart logic
+                                # thresholds = sorted(set(thresholds))
+                                # bins_for_pie = [user_min_val] + thresholds + [user_max_val]
+                                # num_bins = len(bins_for_pie) - 1
+                                # base_labels = ["Monomers", "Dimers", "Trimers", "Multimers"]
 
-                                if num_bins <= len(base_labels):
-                                    labels_for_pie = base_labels[:num_bins]
-                                else:
-                                    labels_for_pie = base_labels + [f"Group {i+1}" for i in range(len(base_labels), num_bins)]
+                                # if num_bins <= len(base_labels):
+                                #     labels_for_pie = base_labels[:num_bins]
+                                # else:
+                                #     labels_for_pie = base_labels + [f"Group {i+1}" for i in range(len(base_labels), num_bins)]
 
-                                if len(labels_for_pie) != num_bins:
-                                    st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins} bins.")
-                                else:
-                                    categories = pd.cut(
-                                        combined_df['brightness_fit'],
-                                        bins=bins_for_pie,
-                                        right=False,
-                                        include_lowest=True,
-                                        labels=labels_for_pie
-                                    )
-                                    category_counts = categories.value_counts().reset_index()
-                                    category_counts.columns = ['Category', 'Count']
-                                    palette = HWT_aesthetic()
-                                    region_colors = palette[:len(category_counts)]
-                                    plotly_colors = [mcolors.to_hex(c) for c in region_colors]
+                                # if len(labels_for_pie) != num_bins:
+                                #     st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins} bins.")
+                                # else:
+                                #     categories = pd.cut(
+                                #         combined_df['brightness_fit'],
+                                #         bins=bins_for_pie,
+                                #         right=False,
+                                #         include_lowest=True,
+                                #         labels=labels_for_pie
+                                #     )
+                                #     category_counts = categories.value_counts().reset_index()
+                                #     category_counts.columns = ['Category', 'Count']
+                                #     palette = HWT_aesthetic()
+                                #     region_colors = palette[:len(category_counts)]
+                                #     plotly_colors = [mcolors.to_hex(c) for c in region_colors]
 
-                                    fig_pie = px.pie(
-                                        category_counts,
-                                        values='Count',
-                                        names='Category',
-                                        title='Percentage of PSFs by Threshold',
-                                        color_discrete_sequence=plotly_colors
-                                    )
-                                    st.plotly_chart(fig_pie, use_container_width=True)
+                                #     fig_pie = px.pie(
+                                #         category_counts,
+                                #         values='Count',
+                                #         names='Category',
+                                #         title='Percentage of PSFs by Threshold',
+                                #         color_discrete_sequence=plotly_colors
+                                #     )
+                                #     st.plotly_chart(fig_pie, use_container_width=True)
                             else:
                                 st.pyplot(fig_hist)
 
