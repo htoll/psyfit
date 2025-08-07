@@ -19,6 +19,11 @@ def run():
     with col1:
         st.header("Analyze SIF Files")
         uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
+        if len(uploaded_files) > 1:
+            file_options = [f.name for f in uploaded_files]
+            selected_file_name = st.selectbox("Select sif to display:", options=file_options)
+        else:
+            selected_file_name = uploaded_files[0].name
         threshold = st.number_input("Threshold", min_value=0, value=2, help='''
             Stringency of fit, higher value is more selective:  
             - UCNP signal sets absolute peak cut off  
@@ -57,11 +62,7 @@ def run():
                 processed_data, combined_df = process_files(uploaded_files, region)
 
                 # === Left Plot: Brightness Image ===
-                if len(uploaded_files) > 1:
-                    file_options = [f.name for f in uploaded_files]
-                    selected_file_name = st.selectbox("Select sif to display:", options=file_options)
-                else:
-                    selected_file_name = uploaded_files[0].name
+
 
                 if selected_file_name in processed_data:
                     data_to_plot = processed_data[selected_file_name]
