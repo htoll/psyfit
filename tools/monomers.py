@@ -212,7 +212,7 @@ def run():
         # Plot
         fig_count, ax_count = plt.subplots(figsize=(5, 3))
         ax_count.bar(file_names, counts, color='tab:blue')
-        ax_count.axhline(mean_count, color='black', linestyle='--', label=f'Avg = {mean_count:.1f}', lineweight = 0.5)
+        ax_count.axhline(mean_count, color='black', linestyle='--', label=f'Avg = {mean_count:.1f}', linewidth = 0.5)
         ax_count.set_ylabel("# Fit PSFs", fontsize=10)
         ax_count.set_xlabel("SIF #", fontsize=10)
         ax_count.legend(fontsize=10)
