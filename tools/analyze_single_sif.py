@@ -121,8 +121,8 @@ def run():
                     )
 
                 
-                else:
-                    st.warning("Min greater than max")
+                    else:
+                        st.warning("Min greater than max")
 
                 else:
                     st.error(f"Data for file '{selected_file_name}' not found.")
