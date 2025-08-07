@@ -167,7 +167,7 @@ def run():
                                     plotly_colors = [mcolors.to_hex(c) for c in region_colors]
 
                                     fig_pie = px.pie(category_counts, values='Count', names='Category', 
-                                                     title='Percentage of Data Points by Threshold',
+                                                     title='Percentage of PSFs by Threshold',
                                                     color_discrete_sequence=plotly_colors)
                                     st.plotly_chart(fig_pie, use_container_width=True)
                             else:
