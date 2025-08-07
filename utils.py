@@ -255,12 +255,27 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
     palette = HWT_aesthetic()
     region_colors = palette[:4]
 
+    # Draw shaded background regions first
     if thresholds:
         all_bounds = [min_val] + sorted(thresholds) + [max_val]
         for i in range(len(all_bounds) - 1):
-            ax.axvspan(all_bounds[i], all_bounds[i+1],
-                       color=region_colors[i % len(region_colors)],
-                       alpha=0.2)
+            ax.axvspan(
+                all_bounds[i],
+                all_bounds[i + 1],
+                color=region_colors[i % len(region_colors)],
+                alpha=0.2,
+                zorder=0  # optional: send even further back
+            )
+
+    # Now draw histogram bars on top
+    counts, edges, _ = ax.hist(
+        brightness_vals,
+        bins=np.linspace(min_val, max_val, num_bins),
+        color='#88CCEE',
+        edgecolor='#88CCEE',
+        alpha=0.7,
+        zorder=1
+    )
 
     ax.set_xlabel("Brightness (pps)", fontsize=10 * scale)
     ax.set_ylabel("Count", fontsize=10 * scale)
