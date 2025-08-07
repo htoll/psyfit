@@ -182,28 +182,29 @@ def run():
                                             color_discrete_sequence=plotly_colors
                                         )
                                         st.plotly_chart(fig_pie, use_container_width=True)
+                                    psf_counts = {
+                                        os.path.basename(f.name): len(processed_data[f.name]["df"])
+                                        for f in uploaded_files if f.name in processed_data
+                                        }
+                                    file_names = list(psf_counts.keys())
+                                    counts = list(psf_counts.values())
+                                    mean_count = np.mean(counts)
+                                    
+                                    import matplotlib.pyplot as plt
+                                    fig_count, ax_count = plt.subplots(figsize=(5, 3))
+                                    ax_count.bar(file_names, counts, color='tab:blue')
+                                    ax_count.axhline(mean_count, color='black', linestyle='--', label=f'Avg = {mean_count:.1f}')
+                                    ax_count.set_ylabel("Fitted PSFs")
+                                    ax_count.set_xlabel("File")
+                                    ax_count.set_title("Fitted PSFs per SIF")
+                                    ax_count.legend()
+                                    plt.xticks(rotation=45)
+                                    
+                                    st.pyplot(fig_count)
                                             
                             else:
                                 st.pyplot(fig_hist)
-                            psf_counts = {
-                            os.path.basename(f.name): len(processed_data[f.name]["df"])
-                            for f in uploaded_files if f.name in processed_data
-                            }
-                            file_names = list(psf_counts.keys())
-                            counts = list(psf_counts.values())
-                            mean_count = np.mean(counts)
-                            
-                            # === Plot bar chart ===
-                            fig_count, ax_count = plt.subplots(figsize=(5, 3))
-                            ax_count.bar(file_names, counts, color='tab:blue')
-                            ax_count.axhline(mean_count, color='black', linestyle='--', label=f'Avg = {mean_count:.1f}')
-                            ax_count.set_ylabel("Fitted PSFs")
-                            ax_count.set_xlabel("File")
-                            ax_count.set_title("Fitted PSFs per SIF")
-                            ax_count.legend()
-                            plt.xticks(rotation=45)
-                            
-                            st.pyplot(fig_count)
+
 
             except Exception as e:
                 st.error(f"Error processing files: {e}")
