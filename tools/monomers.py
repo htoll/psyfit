@@ -87,7 +87,6 @@ def run():
                         )
                         
                 with plot_col2:
-                    st.subheader("Brightness Histogram & Thresholding")
                     if not combined_df.empty:
                         brightness_vals = combined_df['brightness_fit'].values
                         
