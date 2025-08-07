@@ -209,8 +209,8 @@ def run():
         fig_count, ax_count = plt.subplots(figsize=(5, 3))
         ax_count.bar(file_names, counts, color='tab:blue')
         ax_count.axhline(mean_count, color='black', linestyle='--', label=f'Avg = {mean_count:.1f}', fontsize = 6)
-        ax_count.set_ylabel("# Fit PSFs", fontsize = 8)
-        ax_count.set_xlabel("File", fontsize = 8)
+        ax_count.set_ylabel("# Fit PSFs", labelsize = 8)
+        ax_count.set_xlabel("File", labelsize = 8)
         ax_count.legend()
         
         st.pyplot(fig_count)
