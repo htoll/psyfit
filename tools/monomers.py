@@ -143,9 +143,12 @@ def run():
                                 num_bins = len(bins_for_pie) - 1
                                 
                                 # Generate correct number of labels
-                                labels_for_pie = ["Monomers", "Dimers", "Trimers", "Multimers"]
-                                if len(labels_for_pie) < num_bins:
-                                    labels_for_pie += [f"Group {i+1}" for i in range(len(labels_for_pie), num_bins)]
+                                base_labels = ["Monomers", "Dimers", "Trimers", "Multimers"]
+                                if num_bins <= len(base_labels):
+                                    labels_for_pie = base_labels[:num_bins]
+                                else:
+                                    # Extend with generic names if more bins are created
+                                    labels_for_pie = base_labels + [f"Group {i+1}" for i in range(len(base_labels), num_bins)]
                                 
                                 if len(labels_for_pie) != num_bins:
                                     st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins} bins. Cannot categorize.")
