@@ -111,7 +111,9 @@ def run():
                         if user_min_val >= user_max_val:
                             st.warning("Min brightness must be less than max brightness.")
                         else:
-                            thresholding_method = st.radio("Choose thresholding method:", ("Automatic (Mu/Sigma)", "Manual"))
+                            thresholding_method = st.radio("Choose thresholding method:", ("Automatic (Mu/Sigma)", "Manual"), 
+                              help="Sets thresholds at brightness levels of 1.5μ, 2.5μ, 3.5μ, etc."
+                                )
                             num_bins = st.number_input("# Bins:", value=20)
 
                             fig_hist, mu, sigma = plot_histogram(
