@@ -108,17 +108,17 @@ def run():
                     if user_min < user_max:
                         fig_hist, _, _= plot_histogram(combined_df, min_val=user_min, max_val=user_max, num_bins = num_bins)
                         st.pyplot(fig_hist)
-                    svg_buffer_hist = io.StringIO()
-                    fig_hist.savefig(svg_buffer_hist, format='svg')
-                    svg_data_hist = svg_buffer_hist.getvalue()
-                    svg_buffer_hist.close()
-        
-                    st.download_button(
-                        label="Download histogram",
-                        data=svg_data_hist,
-                        file_name="combined_histogram.svg",
-                        mime="image/svg+xml"
-                    )
+                        svg_buffer_hist = io.StringIO()
+                        fig_hist.savefig(svg_buffer_hist, format='svg')
+                        svg_data_hist = svg_buffer_hist.getvalue()
+                        svg_buffer_hist.close()
+            
+                        st.download_button(
+                            label="Download histogram",
+                            data=svg_data_hist,
+                            file_name="combined_histogram.svg",
+                            mime="image/svg+xml"
+                        )
 
                 
                     else:
