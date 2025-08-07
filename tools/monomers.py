@@ -130,7 +130,7 @@ def run():
                 
                             # Re-generate the plot with the new thresholds if they exist
                             if thresholds:
-                                fig_hist_final = plot_histogram(combined_df, min_val=user_min_val, max_val=user_max_val, num_bins=num_bins, thresholds=thresholds)
+                                fig_hist_final, _, _ = plot_histogram(combined_df, min_val=user_min_val, max_val=user_max_val, num_bins=num_bins, thresholds=thresholds)
                                 st.pyplot(fig_hist_final)
                                 # ... (rest of the download button and pie chart logic) ...
                             else:
