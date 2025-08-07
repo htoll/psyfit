@@ -10,7 +10,7 @@ from sklearn.mixture import GaussianMixture
 import plotly.express as px
 import pandas as pd
 import matplotlib.colors as mcolors
-import matplotlib as plt
+import matplotlib.pyplot as plt
 
 
 def run():
