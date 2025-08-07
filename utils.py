@@ -33,8 +33,10 @@ def HWT_aesthetic():
                     rc={"lines.linewidth": 2.5,
                         "axes.labelsize": 14,
                         "axes.titlesize": 16})
-    sns.set_palette("tab20c")  #pref'd are colorblind , tab20c , muted6 ,
+    palette = sns.color_palette("tab20c")  # pref'd are colorblind, tab20c, muted6
+    sns.set_palette(palette)
     sns.despine()
+    return palette 
 
 def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3):
     image_data, metadata = sif_parser.np_open(sif)
@@ -250,10 +252,15 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
     except RuntimeError:
         pass  # Fail gracefully if fit doesn't converge
 
-    # Plot vertical threshold lines if provided
+    palette = HWT_aesthetic()
+    region_colors = palette[:4]
+
     if thresholds:
-        for threshold in thresholds:
-            ax.axvline(x=threshold, color='red', linestyle='-', linewidth=1.5)
+        all_bounds = [min_val] + sorted(thresholds) + [max_val]
+        for i in range(len(all_bounds) - 1):
+            ax.axvspan(all_bounds[i], all_bounds[i+1],
+                       color=region_colors[i % len(region_colors)],
+                       alpha=0.2)
 
     ax.set_xlabel("Brightness (pps)", fontsize=10 * scale)
     ax.set_ylabel("Count", fontsize=10 * scale)
