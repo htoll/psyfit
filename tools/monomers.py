@@ -128,13 +128,13 @@ def run():
                                 threshold3 = st.number_input("Threshold 3", min_value=user_min_val, max_value=user_max_val, value=user_max_val * 0.9, step=(user_max_val - user_min_val) / 1000)
                                 thresholds = sorted([threshold1, threshold2, threshold3])
                 
-                            # Re-generate the plot with the new thresholds if they exist
-                            if thresholds:
-                                fig_hist_final, _, _ = plot_histogram(combined_df, min_val=user_min_val, max_val=user_max_val, num_bins=num_bins, thresholds=thresholds)
-                                st.pyplot(fig_hist_final)
-                                # ... (rest of the download button and pie chart logic) ...
-                            else:
-                                st.pyplot(fig_hist) # Plot the initial histogram without thresholds
+                            # # Re-generate the plot with the new thresholds if they exist
+                            # if thresholds:
+                            #     fig_hist_final, _, _ = plot_histogram(combined_df, min_val=user_min_val, max_val=user_max_val, num_bins=num_bins, thresholds=thresholds)
+                            #     st.pyplot(fig_hist_final)
+                            #     # ... (rest of the download button and pie chart logic) ...
+                            # else:
+                            #     st.pyplot(fig_hist) # Plot the initial histogram without thresholds
                 
                             if thresholds:
                                 # Prepare bins
