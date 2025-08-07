@@ -33,7 +33,7 @@ def HWT_aesthetic():
                     rc={"lines.linewidth": 2.5,
                         "axes.labelsize": 14,
                         "axes.titlesize": 16})
-    palette = sns.color_palette("tab20c")  # pref'd are colorblind, tab20c, muted6
+    palette = sns.color_palette("colorblind")  # pref'd are colorblind, tab20c, muted6
     sns.set_palette(palette)
     sns.despine()
     return palette 
