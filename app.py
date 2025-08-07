@@ -39,12 +39,13 @@ import os
 st.set_page_config(layout="wide")
 
 # Sidebar navigation
-st.sidebar.title("Navigation")
+st.sidebar.title("Tools")
 tool = st.sidebar.radio("Analyze:", [
     "Batch Convert",
     "Brightness",
-    "UNDER CONSTRUCTION Colocalization Set",
-    "UNDER CONSTRUCTION Monomer + Conc Estimation"
+    "Monomer + Conc Estimation",
+    "UNDER CONSTRUCTION Colocalization Set"
+    
 ])
 col1, col2 = st.columns([1, 2])
 
@@ -60,7 +61,7 @@ elif tool == "UNDER CONSTRUCTION Colocalization Set":
 elif tool == "Batch Convert":
     batch_convert.run()
 
-elif tool == 'UNDER CONSTRUCTION Monomer + Conc Estimation':
+elif tool == 'Monomer + Conc Estimation':
     monomers.run()
 
 
