@@ -33,6 +33,9 @@ def run():
         ucnp_id = st.text_input("UCNP ID:", value="976")
         dye_id = st.text_input("Dye ID:", value="638")
 
+        single_ucnp_brightness = st.number_input("Single UCNP Brightness (pps)", min_value=1.0, value=5000.0)
+        single_dye_brightness = st.number_input("Single Dye Brightness (pps)", min_value=1.0, value=1000.0)
+
     with col2:
         show_fits = st.checkbox("Show fits")
         use_log_norm = st.checkbox("Log Image Scaling")
@@ -70,20 +73,58 @@ def run():
                 return
 
             all_results = []
+            pair_labels = []
             for i, (uf, df_) in enumerate(pairs):
-                st.subheader(f"Pair {i+1}: {uf.name} and {df_.name}")
                 if uf.name not in df_dict or df_.name not in df_dict:
                     st.warning(f"Skipping: Missing data for {uf.name} or {df_.name}")
                     continue
                 coloc_df = coloc_subplots(uf, df_, df_dict, colocalization_radius=coloc_radius, show_fits=show_fits, pix_size_um=0.1)
                 all_results.append(coloc_df)
+                pair_labels.append(f"{uf.name} ↔ {df_.name}")
 
-            # Combine and offer CSV download
+            if not all_results:
+                st.warning("No data processed.")
+                return
+
             compiled_df = pd.concat(all_results, ignore_index=True)
-            csv = compiled_df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download Colocalization Data", csv, "colocalization_data.csv", "text/csv")
+            compiled_df['num_ucnps'] = compiled_df['ucnp_brightness'] / single_ucnp_brightness
+            compiled_df['num_dyes'] = compiled_df['dye_brightness'] / single_dye_brightness
 
+            thresholded_df = compiled_df[compiled_df['ucnp_brightness'] >= 0.3 * single_ucnp_brightness]
 
+            selected_pair = st.selectbox("Select a matched pair to view", pair_labels)
+            st.dataframe(thresholded_df)
+
+            # Scatter plots
+            x = thresholded_df['num_ucnps'].values.reshape(-1, 1)
+            y = thresholded_df['num_dyes'].values
+
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+            ax1.scatter(x, y, alpha=0.6)
+            ax1.set_xlabel('Number of UCNPs per PSF')
+            ax1.set_ylabel('Number of Dyes per PSF')
+
+            ax2.scatter(x, y, alpha=0.6)
+            ax2.set_xlabel('Number of UCNPs per PSF')
+            ax2.set_ylabel('Number of Dyes per PSF')
+            ax2.set_xlim([0, 2])
+            ax2.set_ylim([0, 400])
+
+            st.pyplot(fig)
+
+            mask = (thresholded_df['num_ucnps'] >= 0) & (thresholded_df['num_ucnps'] <= 2)
+            y_subset = thresholded_df.loc[mask, 'num_dyes']
+            mean_val = y_subset.mean()
+
+            fig_hist, ax_hist = plt.subplots(figsize=(6, 4))
+            ax_hist.hist(y_subset, bins=20, edgecolor='black', color='#bc5090')
+            ax_hist.set_xlabel('Number of Dyes per Single UCNP')
+            ax_hist.set_ylabel('Count')
+            ax_hist.set_title(f'Mean = {mean_val:.1f}')
+            st.pyplot(fig_hist)
+
+            csv = thresholded_df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download Thresholded Colocalization Data", csv, "thresholded_colocalization.csv", "text/csv")
 
 # def run():
 #     st.header("Colocalize Beta")
