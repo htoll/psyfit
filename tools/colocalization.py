@@ -65,6 +65,9 @@ def run():
                         tmp_path = tmp.name
 
                     df, image = integrate_sif(tmp_path, threshold=threshold, region=region, signal=signal)
+                    st.write(f"{f.name}: Found {len(df)} PSFs")
+                    if df.empty:
+                        st.warning(f"No PSFs fitted in {f.name}. Check region, threshold, or signal type.")
                     df_dict[f.name] = (df, image)
                 except Exception as e:
                     st.error(f"Failed to parse {f.name}: {e}")
