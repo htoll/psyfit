@@ -10,14 +10,13 @@ import tempfile
 import pandas as pd
 
 
-
 def run():
     col1, col2 = st.columns([1, 2])
 
     with col1:
         st.header("Colocalize ##Beta##")
-        uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True, 
-                                          help = '''This function assumes dye and UCNP images are taken  
+        uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True,
+                                          help='''This function assumes dye and UCNP images are taken  
                                           sequentially and uses the Andor Solis automatic numbering to sort order''')
         ucnp_threshold = st.number_input("UCNP threshold", min_value=0, value=2, key="ucnp_threshold_input")
         dye_threshold = st.number_input("Dye threshold", min_value=0, value=25, key="dye_threshold_input")
@@ -34,8 +33,8 @@ def run():
 
         coloc_radius = st.number_input("Colocalization Radius", min_value=1, value=2, help='Max radius to associate two PSFs')
         export_format = st.selectbox("Export Format", options=["SVG", "TIFF", "PNG", "JPEG"])
-        ucnp_id = st.text_input("UCNP ID:", value="976", help = "Unique characters to identify UCNP sifs")
-        dye_id = st.text_input("Dye ID:", value="638", help = "Unique characters to identify UCNP sifs")
+        ucnp_id = st.text_input("UCNP ID:", value="976", help="Unique characters to identify UCNP sifs")
+        dye_id = st.text_input("Dye ID:", value="638", help="Unique characters to identify UCNP sifs")
 
         single_ucnp_brightness = st.number_input("Single UCNP Brightness (pps)", min_value=1.0, value=25000.0)
         single_dye_brightness = st.number_input("Single Dye Brightness (pps)", min_value=1.0, value=200.0)
@@ -76,7 +75,7 @@ def run():
                 st.warning("No matched UCNP/dye file pairs.")
                 return
 
-            all_results = []
+            compiled_results = {}
             pair_labels = []
             for i, (uf, df_) in enumerate(pairs):
                 if uf.name not in df_dict or df_.name not in df_dict:
@@ -84,20 +83,22 @@ def run():
                     continue
                 coloc_df = coloc_subplots(uf, df_, df_dict, colocalization_radius=coloc_radius, show_fits=show_fits, pix_size_um=0.1)
                 if not coloc_df.empty:
-                    all_results.append(coloc_df)
-                    pair_labels.append(f"{uf.name} ↔ {df_.name}")
+                    pair_key = f"{uf.name} ↔ {df_.name}"
+                    compiled_results[pair_key] = coloc_df
+                    pair_labels.append(pair_key)
 
-            if not all_results:
+            if not compiled_results:
                 st.warning("No colocalized points found.")
                 return
 
-            compiled_df = pd.concat(all_results, ignore_index=True)
-            compiled_df['num_ucnps'] = compiled_df['ucnp_brightness'] / single_ucnp_brightness
-            compiled_df['num_dyes'] = compiled_df['dye_brightness'] / single_dye_brightness
-
-            thresholded_df = compiled_df[compiled_df['ucnp_brightness'] >= 0.3 * single_ucnp_brightness]
-
             selected_pair = st.selectbox("Select a matched pair to view", pair_labels)
+            selected_df = compiled_results[selected_pair].copy()
+
+            selected_df['num_ucnps'] = selected_df['ucnp_brightness'] / single_ucnp_brightness
+            selected_df['num_dyes'] = selected_df['dye_brightness'] / single_dye_brightness
+
+            thresholded_df = selected_df[selected_df['ucnp_brightness'] >= 0.3 * single_ucnp_brightness]
+
             st.dataframe(thresholded_df)
 
             # Scatter + Histogram
