@@ -410,10 +410,10 @@ def coloc_subplots(ucnp_file, dye_file, df_dict, colocalization_radius=2, show_f
     ax_d.set_title(f"Dye: {dye_file.name}")
 
     #st.pyplot(fig)
-    print(f"UCNP DF shape: {ucnp_df.shape}, dye DF shape: {dye_df.shape}")
-    print(f"Colocalization radius: {colocalization_radius}")
-    print(f"UCNP sample coords: {ucnp_df[['x_pix', 'y_pix']].head()}")
-    print(f"Dye sample coords: {dye_df[['x_pix', 'y_pix']].head()}")
+    st.write(f"UCNP DF shape: {ucnp_df.shape}, dye DF shape: {dye_df.shape}")
+    st.write(f"Colocalization radius: {colocalization_radius}")
+    st.write(f"UCNP sample coords: {ucnp_df[['x_pix', 'y_pix']].head()}")
+    st.write(f"Dye sample coords: {dye_df[['x_pix', 'y_pix']].head()}")
     return pd.DataFrame(matched_records)
 
 
