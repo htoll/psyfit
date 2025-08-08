@@ -101,56 +101,48 @@ import tempfile
 
 
 def run():
-            st.header("Colocalize Beta")
-            uploaded_files = st.file_uploader("Upload .sif files", type="sif", accept_multiple_files=True)
-            if not uploaded_files:
-                        st.info("Please upload .sif files to continue.")
-                        return
-            
-            ucnp_id = st.text_input("UCNP ID", value="976")
-            dye_id = st.text_input("Dye ID", value="638")
-            coloc_radius = st.number_input("Colocalization Radius (pixels)", min_value=1, value=2)
-            threshold_ucnp = st.number_input("UCNP Threshold", min_value=0, value=2)
-            threshold_dye = st.number_input("Dye Threshold", min_value=0, value=5)
-            show_fits = st.checkbox("Show Fits", value=True)
-            export_format = st.selectbox("Export Format", ["SVG", "TIFF", "PNG", "JPEG"])
-            
-            ucnp_files, dye_files = sort_UCNP_dye_sifs(uploaded_files, ucnp_id, dye_id)
-            df_dict = {}
-            
-            
-            for f in ucnp_files + dye_files:
-                        try:
-                        signal = 'UCNP' if f in ucnp_files else 'dye'
-                        region = "all"
-                        threshold = threshold_ucnp if signal == 'UCNP' else threshold_dye
-                        
-                        # Write to temp file (mimicking process_files.py)
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".sif") as tmp:
-                                    tmp.write(f.read())
-                                    tmp_path = tmp.name
-                        
-                                    df, image = integrate_sif(tmp_path, threshold=threshold, region=region, signal=signal)
-                                    df_dict[f.name] = (df, image)
-            except Exception as e:
-                        st.error(f"Failed to parse {f.name}: {e}")
-            
-            except Exception as e:
-                        st.error(f"Failed to parse {f.name}: {e}")
-            
-            pairs = match_ucnp_dye_files(ucnp_files, dye_files)
-            
-            if not pairs:
-                        st.warning("No matched UCNP/dye file pairs.")
-            return
-            
-            for i, (uf, df_) in enumerate(pairs):
-                        st.subheader(f"Pair {i+1}: {uf.name} and {df_.name}")
-            if uf.name not in df_dict or df_.name not in df_dict:
-                        st.warning(f"Skipping: Missing data for {uf.name} or {df_.name}")
-                        continue
-            coloc_df = coloc_subplots(uf, df_, df_dict, colocalization_radius=coloc_radius, show_fits=show_fits, pix_size_um=0.1)
-            st.dataframe(coloc_df)
-            
+    st.header("Colocalize Beta")
+    uploaded_files = st.file_uploader("Upload .sif files", type="sif", accept_multiple_files=True)
+    if not uploaded_files:
+        st.info("Please upload .sif files to continue.")
+        return
 
+    ucnp_id = st.text_input("UCNP ID", value="976")
+    dye_id = st.text_input("Dye ID", value="638")
+    coloc_radius = st.number_input("Colocalization Radius (pixels)", min_value=1, value=2)
+    threshold_ucnp = st.number_input("UCNP Threshold", min_value=0, value=2)
+    threshold_dye = st.number_input("Dye Threshold", min_value=0, value=5)
+    show_fits = st.checkbox("Show Fits", value=True)
+    export_format = st.selectbox("Export Format", ["SVG", "TIFF", "PNG", "JPEG"])
 
+    ucnp_files, dye_files = sort_UCNP_dye_sifs(uploaded_files, ucnp_id, dye_id)
+    df_dict = {}
+
+    for f in ucnp_files + dye_files:
+        try:
+            signal = 'UCNP' if f in ucnp_files else 'dye'
+            region = "all"
+            threshold = threshold_ucnp if signal == 'UCNP' else threshold_dye
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".sif") as tmp:
+                tmp.write(f.read())
+                tmp_path = tmp.name
+
+            df, image = integrate_sif(tmp_path, threshold=threshold, region=region, signal=signal)
+            df_dict[f.name] = (df, image)
+        except Exception as e:
+            st.error(f"Failed to parse {f.name}: {e}")
+
+    pairs = match_ucnp_dye_files(ucnp_files, dye_files)
+
+    if not pairs:
+        st.warning("No matched UCNP/dye file pairs.")
+        return
+
+    for i, (uf, df_) in enumerate(pairs):
+        st.subheader(f"Pair {i+1}: {uf.name} and {df_.name}")
+        if uf.name not in df_dict or df_.name not in df_dict:
+            st.warning(f"Skipping: Missing data for {uf.name} or {df_.name}")
+            continue
+        coloc_df = coloc_subplots(uf, df_, df_dict, colocalization_radius=coloc_radius, show_fits=show_fits, pix_size_um=0.1)
+        st.dataframe(coloc_df)
