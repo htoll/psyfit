@@ -6,6 +6,7 @@ from tools.process_files import process_files
 from matplotlib.colors import LogNorm
 import numpy as np
 import tempfile
+import pandas as pd
 
 
 def run():
