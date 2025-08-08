@@ -65,9 +65,6 @@ def run():
                         tmp_path = tmp.name
 
                     df, image = integrate_sif(tmp_path, threshold=threshold, region=region, signal=signal)
-                    st.write(f"{f.name}: Found {len(df)} PSFs")
-                    if df.empty:
-                        st.warning(f"No PSFs fitted in {f.name}. Check region, threshold, or signal type.")
                     df_dict[f.name] = (df, image)
                 except Exception as e:
                     st.error(f"Failed to parse {f.name}: {e}")
@@ -86,6 +83,7 @@ def run():
                     continue
                 # Note: suppress plotting from inside coloc_subplots
                 coloc_df = coloc_subplots(uf, df_, df_dict, colocalization_radius=coloc_radius, show_fits=False, pix_size_um=0.1)
+                st.write(f"{uf.name} & {df_.name}: {len(coloc_df)} colocalized PSFs")
                 if not coloc_df.empty:
                     pair_key = f"{uf.name} ↔ {df_.name}"
                     compiled_results[pair_key] = {
