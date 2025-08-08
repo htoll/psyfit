@@ -35,7 +35,7 @@ def run():
         ucnp_id = st.text_input("UCNP ID:", value="976", help="Unique characters to identify UCNP sifs")
         dye_id = st.text_input("Dye ID:", value="638", help="Unique characters to identify UCNP sifs")
 
-        single_ucnp_brightness = st.number_input("Single UCNP Brightness (pps)", min_value=1.0, value=25000.0)
+        single_ucnp_brightness = st.number_input("Single UCNP Brightness (pps)", min_value=1.0, value=2500.0)
         single_dye_brightness = st.number_input("Single Dye Brightness (pps)", min_value=1.0, value=200.0)
 
     with col2:
