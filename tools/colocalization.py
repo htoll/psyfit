@@ -81,7 +81,12 @@ def run():
                     st.error(f"Could not process dye file: {file.name}")
                     st.exception(e)
             
-            # Pass the UploadedFile objects to coloc_subplots, not their names
-            coloc_subplots(ucnp_list, dye_list, df_dict, show_fits=show_fits,
-                           export_format=export_format, colocalization_radius=coloc_radius)
-
+            coloc_subplots(
+                ucnp_list,
+                dye_list,
+                df_dict,
+                show_fits=show_fits,
+                export_format=export_format,
+                colocalization_radius=coloc_radius,
+                pix_size_um=0.1  
+            )
