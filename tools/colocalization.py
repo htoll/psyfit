@@ -88,7 +88,7 @@ def run():
                     compiled_results[pair_key] = {
                         "df": coloc_df,
                         "ucnp_img": df_dict[uf.name][1],
-                        "ucnp_df": df_dict[uf.name][0],
+                        "ucnp_df": df_dict[uf.name][0]
                     }
                     pair_labels.append(pair_key)
 
@@ -127,11 +127,17 @@ def run():
             x = filtered_df['num_ucnps'].values.reshape(-1, 1)
             y = filtered_df['num_dyes'].values
 
+            model = LinearRegression().fit(x, y)
+            y_pred = model.predict(x)
+            r2 = r2_score(y, y_pred)
+
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
             ax1.scatter(x, y, alpha=0.6)
+            ax1.plot(x, y_pred, color='red', label=f'y = {model.coef_[0]:.2f}x + {model.intercept_:.1f}\nR² = {r2:.2f}')
             ax1.set_xlabel('Number of UCNPs per PSF')
             ax1.set_ylabel('Number of Dyes per PSF')
+            ax1.legend()
 
             mask = (filtered_df['num_ucnps'] >= 0) & (filtered_df['num_ucnps'] <= 2)
             y_subset = filtered_df.loc[mask, 'num_dyes']
