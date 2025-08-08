@@ -374,7 +374,7 @@ def match_ucnp_dye_files(ucnps, dyes):
 
     return pairs
 
-    def coloc_subplots(
+def coloc_subplots(
     ucnps,
     dyes,
     df_dict,
