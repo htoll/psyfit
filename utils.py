@@ -374,89 +374,99 @@ def match_ucnp_dye_files(ucnps, dyes):
 
     return pairs
 
-    
-def coloc_subplots(ucnps, dyes, df_dict, colocalization_radius=2, 
-                    show_fits=True, export_format = 'SVG'):
-    for k in df_dict.keys():
-        st.write(f"df_dict key: {k}, name: {k.name}")
+    def coloc_subplots(
+    ucnps,
+    dyes,
+    df_dict,
+    colocalization_radius=2,
+    show_fits=True,
+    export_format="SVG",
+    pix_size_um=0.325  # default pixel size in microns (adjust to your system)
+):
+    all_matched = []
+
+    # Log available df_dict keys
+    st.write("Available df_dict keys:", list(df_dict.keys()))
+
     pairs = match_ucnp_dye_files(ucnps, dyes)
     if not pairs:
         st.warning("No UCNP/Dye file pairs could be matched.")
-        return 
-    all_matched = []
+        return
 
     for ucnp_file, dye_file in pairs:
-        st.write("Available df_dict keys:", list(df_dict.keys()))
-        st.write("Looking for:", ucnp_file)
-        st.write("df_dict keys:", list(df_dict.keys()))
+        ucnp_key = ucnp_file.name
+        dye_key = dye_file.name
 
-        ucnp_df, ucnp_img = df_dict[ucnp_file.name]
-        dye_df, dye_img = df_dict[dye_file.name]
+        st.write(f"Processing pair: UCNP: {ucnp_key}, DYE: {dye_key}")
 
-        # Perform colocalization to compute matched flags and percentages
+        # Check if both files are in df_dict
+        if ucnp_key not in df_dict or dye_key not in df_dict:
+            st.error(f"One or both files not found in df_dict: {ucnp_key}, {dye_key}")
+            continue
+
+        ucnp_df, ucnp_img = df_dict[ucnp_key]
+        dye_df, dye_img = df_dict[dye_key]
+
+        # Compute colocalization
         coloc_data = _compute_coloc(ucnp_df, dye_df, radius=colocalization_radius)
         all_matched.extend(coloc_data['matches'])
 
-        # Now plot both panels using plot_brightness
+        # Plotting
         fig, axes = plt.subplots(1, 2, figsize=(12, 6))
         ax_u, ax_d = axes
 
         plot_brightness(
             image_data_cps=ucnp_img,
             df=ucnp_df.assign(_coloc=coloc_data['ucnp_flags']),
-            show_fits=True,
+            show_fits=show_fits,
             normalization=LogNorm(),
             pix_size_um=pix_size_um,
             cmap='magma',
             ax=ax_u,
-            title=f"UCNP: {os.path.basename(ucnp_file.name)} — {coloc_data['percent_ucnp']:.1f}% coloc"
+            title=f"UCNP: {os.path.basename(ucnp_key)} — {coloc_data['percent_ucnp']:.1f}% coloc"
         )
 
         plot_brightness(
             image_data_cps=dye_img,
             df=dye_df.assign(_coloc=coloc_data['dye_flags']),
-            show_fits=True,
+            show_fits=show_fits,
             normalization=LogNorm(),
             pix_size_um=pix_size_um,
             cmap='magma',
             ax=ax_d,
-            title=f"Dye: {os.path.basename(dye_file.name)} — {coloc_data['percent_dye']:.1f}% coloc"
+            title=f"Dye: {os.path.basename(dye_key)} — {coloc_data['percent_dye']:.1f}% coloc"
         )
 
         st.pyplot(fig)
+
+        # Save the figure to a buffer
         buf = io.BytesIO()
-    
-        # Save the figure to the binary buffer
-        # Use bbox_inches='tight' for better layouts
-        fig.savefig(buf, format=save_format, bbox_inches='tight')
-        
-        # Get the value from the binary buffer
+        fig.savefig(buf, format=export_format, bbox_inches='tight')
         plot_data = buf.getvalue()
         buf.close()
-    
-        # Define the mime type based on the format
-        if save_format.lower() == 'svg':
-            mime_type = "image/svg+xml"
-        elif save_format.lower() == 'tiff':
-            mime_type = "image/tiff"
-        elif save_format.lower() == 'png':
-            mime_type = "image/png"
-        elif save_format.lower() == 'jpeg' or save_format.lower() == 'jpg':
-            mime_type = "image/jpeg"
-        else:
-            mime_type = "application/octet-stream" # Default for unknown formats
-    
+
+        # Define MIME type
+        mime_map = {
+            "svg": "image/svg+xml",
+            "tiff": "image/tiff",
+            "png": "image/png",
+            "jpeg": "image/jpeg",
+            "jpg": "image/jpeg",
+        }
+        mime_type = mime_map.get(export_format.lower(), "application/octet-stream")
+
         today = date.today().strftime('%Y%m%d')
-        download_name = f"sif_grid_{today}.{save_format}"
-        
+        download_name = f"sif_grid_{today}.{export_format.lower()}"
+
         st.download_button(
-            label=f"Download all plots as {save_format.upper()}",
+            label=f"Download this plot as {export_format.upper()}",
             data=plot_data,
             file_name=download_name,
             mime=mime_type
         )
 
     return pd.DataFrame(all_matched)
+
 
 def extract_subregion(image, x0, y0, radius_pix):
     x_start = int(max(x0 - radius_pix, 0))
