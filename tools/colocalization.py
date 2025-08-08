@@ -60,23 +60,30 @@ def run():
             # Process UCNP files and use file.name as the key
             for file in ucnp_list:
                 try:
+                    file.seek(0)
+                    st.write(f"Reading dye file: {file.name} (size: {len(file.read())})")
+                    file.seek(0)
                     df, cropped_img = integrate_sif(file, threshold=ucnp_threshold, region=ucnp_region, signal='UCNP')
                     if df is not None:
+                        st.write(f"Success parsing: {file.name}")
                         df_dict[file.name] = (df, cropped_img)
+                    else:
+                        st.warning(f"integrate_sif returned None for {file.name}")
                 except Exception as e:
-                    st.error(f"Could not process UCNP file: {file.name}")
+                    st.error(f"Could not process dye file: {file.name}")
                     st.exception(e)
-
             # Process dye files and use file.name as the key
             for file in dye_list:
                 try:
                     file.seek(0)
-                    st.write(f"File {file.name} size after seek: {len(file.read())}")
-                    file.seek(0)  # reset again before actual use
-                    df, cropped_img = integrate_sif(file, ...)
+                    st.write(f"Reading dye file: {file.name} (size: {len(file.read())})")
+                    file.seek(0)
                     df, cropped_img = integrate_sif(file, threshold=dye_threshold, region=dye_region, signal='dye')
                     if df is not None:
+                        st.write(f"Success parsing: {file.name}")
                         df_dict[file.name] = (df, cropped_img)
+                    else:
+                        st.warning(f"integrate_sif returned None for {file.name}")
                 except Exception as e:
                     st.error(f"Could not process dye file: {file.name}")
                     st.exception(e)
