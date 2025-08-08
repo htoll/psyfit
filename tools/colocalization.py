@@ -9,6 +9,7 @@ import numpy as np
 import tempfile
 import pandas as pd
 
+
 def run():
     col1, col2 = st.columns([1, 2])
 
@@ -35,7 +36,7 @@ def run():
         ucnp_id = st.text_input("UCNP ID:", value="976", help="Unique characters to identify UCNP sifs")
         dye_id = st.text_input("Dye ID:", value="638", help="Unique characters to identify UCNP sifs")
 
-        single_ucnp_brightness = st.number_input("Single UCNP Brightness (pps)", min_value=1.0, value=2500.0)
+        single_ucnp_brightness = st.number_input("Single UCNP Brightness (pps)", min_value=1.0, value=25000.0)
         single_dye_brightness = st.number_input("Single Dye Brightness (pps)", min_value=1.0, value=200.0)
 
     with col2:
@@ -81,8 +82,41 @@ def run():
                 if uf.name not in df_dict or df_.name not in df_dict:
                     st.warning(f"Skipping: Missing data for {uf.name} or {df_.name}")
                     continue
-                # Note: suppress plotting from inside coloc_subplots
-                coloc_df = coloc_subplots(uf, df_, df_dict, colocalization_radius=coloc_radius, show_fits=False, pix_size_um=0.1)
+                # Colocalization with improved matching
+                ucnp_df, ucnp_img = df_dict[uf.name]
+                dye_df, dye_img = df_dict[df_.name]
+
+                required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
+                if not all(col in ucnp_df.columns for col in required_cols) or not all(col in dye_df.columns for col in required_cols):
+                    continue
+
+                coloc_records = []
+                matched_dye = set()
+
+                for idx_ucnp, row_ucnp in ucnp_df.iterrows():
+                    x_ucnp, y_ucnp = row_ucnp['x_pix'], row_ucnp['y_pix']
+                    dx = dye_df['x_pix'] - x_ucnp
+                    dy = dye_df['y_pix'] - y_ucnp
+                    distances = np.hypot(dx, dy)
+                    within_radius = distances <= coloc_radius
+                    candidate_idxs = dye_df.index[within_radius & ~dye_df.index.isin(matched_dye)]
+
+                    if len(candidate_idxs) == 0:
+                        continue
+
+                    closest_idx = candidate_idxs[np.argmin(distances[within_radius & ~dye_df.index.isin(matched_dye)])]
+                    row_dye = dye_df.loc[closest_idx]
+                    matched_dye.add(closest_idx)
+
+                    coloc_records.append({
+                        'x_pix': row_ucnp['x_pix'],
+                        'y_pix': row_ucnp['y_pix'],
+                        'ucnp_brightness': row_ucnp['brightness_fit'],
+                        'dye_brightness': row_dye['brightness_fit']
+                    })
+
+                coloc_df = pd.DataFrame(coloc_records)
+                st.write(f"{uf.name} & {df_.name}: {len(coloc_df)} colocalized PSFs")
                 st.write(f"{uf.name} & {df_.name}: {len(coloc_df)} colocalized PSFs")
                 if not coloc_df.empty:
                     pair_key = f"{uf.name} ↔ {df_.name}"
