@@ -119,7 +119,7 @@ def run():
 
     for f in ucnp_files + dye_files:
         try:
-            data = f.getbuffer()
+            data = f.read()
             signal = 'UCNP' if f in ucnp_files else 'dye'
             region = "all"
             threshold = threshold_ucnp if signal == 'UCNP' else threshold_dye
