@@ -51,8 +51,9 @@ def run():
 
         if st.button("Analyze"):
             st.session_state.convert = True
+            st.session_state.coloc_data = None  # reset cache
 
-        if st.session_state.convert and uploaded_files:
+        if st.session_state.convert and uploaded_files and 'coloc_data' not in st.session_state:
             ucnp_files, dye_files = sort_UCNP_dye_sifs(uploaded_files, ucnp_id, dye_id)
             df_dict = {}
 
@@ -75,7 +76,7 @@ def run():
             pairs = match_ucnp_dye_files(ucnp_files, dye_files)
 
             if not pairs:
-                st.warning("No matched UCNP/dye file pairs.")
+                st.warning("No matched UCNP/dye file pairs found.")
                 return
 
             compiled_results = {}
@@ -133,9 +134,28 @@ def run():
                 st.warning("No colocalized points found.")
                 return
 
+            st.session_state.coloc_data = {
+                "results": compiled_results,
+                "labels": pair_labels
+            }
+
+            if 'coloc_data' not in st.session_state:
+                st.warning("Run analysis first.")
+                return
+
+            compiled_results = st.session_state.coloc_data['results']
+            pair_labels = st.session_state.coloc_data['labels']
+
             selected_pair = st.selectbox("Select a matched pair to view", pair_labels)
             selected_result = compiled_results[selected_pair]
             selected_df = selected_result["df"].copy()
+
+            # Optional: show dye image too
+            st.markdown("### Dye Image")
+            dye_file = selected_pair.split(" ↔ ")[1]
+            dye_img, dye_df = df_dict[dye_file][1], df_dict[dye_file][0]
+            fig_dye = plot_brightness(dye_img, dye_df, show_fits=show_fits, normalization=use_log_norm, pix_size_um=0.1, cmap="magma")
+            st.pyplot(fig_dye)
 
             st.markdown("### Image View")
             fig_image = plot_brightness(
