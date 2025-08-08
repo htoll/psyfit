@@ -100,7 +100,7 @@ def run():
                                 st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
                                 return
     
-                            num_bins = st.number_input("# Bins:", value=20)
+                            num_bins = st.number_input("# Bins:", value=50)
     
                             if user_min < user_max:
                                 fig_hist, _, _ = plot_histogram(
