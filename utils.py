@@ -377,6 +377,8 @@ def coloc_subplots(ucnp_file, dye_file, df_dict, colocalization_radius=2, show_f
                 colocalized_dye[idx_dye] = True
 
                 matched_records.append({
+                    'source_ucnp_file': ucnp_file.name,
+                    'source_dye_file': dye_file.name,
                     'ucnp_x': x_ucnp,
                     'ucnp_y': y_ucnp,
                     'ucnp_brightness': row_ucnp['brightness_fit'],
@@ -385,9 +387,6 @@ def coloc_subplots(ucnp_file, dye_file, df_dict, colocalization_radius=2, show_f
                     'dye_brightness': dye_df.loc[best_idx]['brightness_fit'],
                     'distance': distances[best_idx],
                 })
-
-    percent_ucnp_coloc = 100 * np.sum(colocalized_ucnp) / len(ucnp_df) if ucnp_df is not None and len(ucnp_df) > 0 else 0
-    percent_dye_coloc = 100 * np.sum(colocalized_dye) / len(dye_df) if dye_df is not None and len(dye_df) > 0 else 0
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
     ax_u, ax_d = axes
@@ -407,11 +406,12 @@ def coloc_subplots(ucnp_file, dye_file, df_dict, colocalization_radius=2, show_f
             radius_px = 4 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
             ax_d.add_patch(Circle((row['x_pix'], row['y_pix']), radius_px, edgecolor=color, facecolor='none', lw=1.5))
 
-    ax_u.set_title(f"UCNP: {ucnp_file.name}\n{percent_ucnp_coloc:.1f}% coloc")
-    ax_d.set_title(f"Dye: {dye_file.name}\n{percent_dye_coloc:.1f}% coloc")
+    ax_u.set_title(f"UCNP: {ucnp_file.name}")
+    ax_d.set_title(f"Dye: {dye_file.name}")
 
-    st.pyplot(fig)
+    #st.pyplot(fig)
     return pd.DataFrame(matched_records)
+
 
 
 
