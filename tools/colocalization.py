@@ -10,6 +10,7 @@ import tempfile
 import pandas as pd
 
 
+
 def run():
     col1, col2 = st.columns([1, 2])
 
@@ -81,10 +82,14 @@ def run():
                 if uf.name not in df_dict or df_.name not in df_dict:
                     st.warning(f"Skipping: Missing data for {uf.name} or {df_.name}")
                     continue
-                coloc_df = coloc_subplots(uf, df_, df_dict, colocalization_radius=coloc_radius, show_fits=show_fits, pix_size_um=0.1)
+                coloc_df = coloc_subplots(uf, df_, df_dict, colocalization_radius=coloc_radius, show_fits=False, pix_size_um=0.1)
                 if not coloc_df.empty:
                     pair_key = f"{uf.name} ↔ {df_.name}"
-                    compiled_results[pair_key] = coloc_df
+                    compiled_results[pair_key] = {
+                        "df": coloc_df,
+                        "ucnp_img": df_dict[uf.name][1],
+                        "ucnp_df": df_dict[uf.name][0],
+                    }
                     pair_labels.append(pair_key)
 
             if not compiled_results:
@@ -92,7 +97,19 @@ def run():
                 return
 
             selected_pair = st.selectbox("Select a matched pair to view", pair_labels)
-            selected_df = compiled_results[selected_pair].copy()
+            selected_result = compiled_results[selected_pair]
+            selected_df = selected_result["df"].copy()
+
+            st.markdown("### Image View")
+            fig_image = plot_brightness(
+                selected_result["ucnp_img"],
+                selected_result["ucnp_df"],
+                show_fits=show_fits,
+                normalization=use_log_norm,
+                pix_size_um=0.1,
+                cmap="magma"
+            )
+            st.pyplot(fig_image)
 
             selected_df['num_ucnps'] = selected_df['ucnp_brightness'] / single_ucnp_brightness
             selected_df['num_dyes'] = selected_df['dye_brightness'] / single_dye_brightness
@@ -101,20 +118,23 @@ def run():
 
             st.dataframe(thresholded_df)
 
-            # Scatter + Histogram
-            x = thresholded_df['num_ucnps'].values.reshape(-1, 1)
-            y = thresholded_df['num_dyes'].values
+            # Scatter + Histogram across ALL results
+            full_df = pd.concat([d['df'] for d in compiled_results.values()], ignore_index=True)
+            full_df['num_ucnps'] = full_df['ucnp_brightness'] / single_ucnp_brightness
+            full_df['num_dyes'] = full_df['dye_brightness'] / single_dye_brightness
+            filtered_df = full_df[full_df['ucnp_brightness'] >= 0.3 * single_ucnp_brightness]
+
+            x = filtered_df['num_ucnps'].values.reshape(-1, 1)
+            y = filtered_df['num_dyes'].values
 
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
-            # Scatter
             ax1.scatter(x, y, alpha=0.6)
             ax1.set_xlabel('Number of UCNPs per PSF')
             ax1.set_ylabel('Number of Dyes per PSF')
 
-            # Histogram
-            mask = (thresholded_df['num_ucnps'] >= 0) & (thresholded_df['num_ucnps'] <= 2)
-            y_subset = thresholded_df.loc[mask, 'num_dyes']
+            mask = (filtered_df['num_ucnps'] >= 0) & (filtered_df['num_ucnps'] <= 2)
+            y_subset = filtered_df.loc[mask, 'num_dyes']
             mean_val = y_subset.mean()
 
             ax2.hist(y_subset, bins=20, edgecolor='black', color='#bc5090')
