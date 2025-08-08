@@ -9,8 +9,6 @@ import numpy as np
 import tempfile
 import pandas as pd
 
-
-
 def run():
     col1, col2 = st.columns([1, 2])
 
@@ -62,6 +60,7 @@ def run():
                     threshold = int(ucnp_threshold) if signal == 'UCNP' else int(dye_threshold)
 
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".sif") as tmp:
+                        f.seek(0)
                         tmp.write(f.read())
                         tmp_path = tmp.name
 
@@ -82,6 +81,7 @@ def run():
                 if uf.name not in df_dict or df_.name not in df_dict:
                     st.warning(f"Skipping: Missing data for {uf.name} or {df_.name}")
                     continue
+                # Note: suppress plotting from inside coloc_subplots
                 coloc_df = coloc_subplots(uf, df_, df_dict, colocalization_radius=coloc_radius, show_fits=False, pix_size_um=0.1)
                 if not coloc_df.empty:
                     pair_key = f"{uf.name} ↔ {df_.name}"
