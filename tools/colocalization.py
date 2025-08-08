@@ -4,6 +4,7 @@ import io
 from utils import integrate_sif, plot_brightness, plot_histogram, sort_UCNP_dye_sifs, coloc_subplots, match_ucnp_dye_files
 from tools.process_files import process_files
 from matplotlib.colors import LogNorm
+import maplotlib.pyplot as plt
 import numpy as np
 import tempfile
 import pandas as pd
