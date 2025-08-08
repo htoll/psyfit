@@ -16,7 +16,9 @@ def run():
 
     with col1:
         st.header("Colocalize ##Beta##")
-        uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
+        uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True, 
+                                          help = '''This function assumes dye and UCNP images are taken  
+                                          sequentially and uses the Andor Solis automatic numbering to sort order''')
         ucnp_threshold = st.number_input("UCNP threshold", min_value=0, value=2, key="ucnp_threshold_input")
         dye_threshold = st.number_input("Dye threshold", min_value=0, value=25, key="dye_threshold_input")
 
@@ -32,8 +34,8 @@ def run():
 
         coloc_radius = st.number_input("Colocalization Radius", min_value=1, value=2, help='Max radius to associate two PSFs')
         export_format = st.selectbox("Export Format", options=["SVG", "TIFF", "PNG", "JPEG"])
-        ucnp_id = st.text_input("UCNP ID:", value="976")
-        dye_id = st.text_input("Dye ID:", value="638")
+        ucnp_id = st.text_input("UCNP ID:", value="976", help = "Unique characters to identify UCNP sifs")
+        dye_id = st.text_input("Dye ID:", value="638", help = "Unique characters to identify UCNP sifs")
 
         single_ucnp_brightness = st.number_input("Single UCNP Brightness (pps)", min_value=1.0, value=25000.0)
         single_dye_brightness = st.number_input("Single Dye Brightness (pps)", min_value=1.0, value=200.0)
