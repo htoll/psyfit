@@ -160,6 +160,7 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
 # ==============================================================================
 #  STREAMLIT GUI
 # ==============================================================================
+
 st.set_page_config(layout="wide")
 st.title("🔬 Quadrant-Based Image Cross-Registration")
 st.markdown("---")
@@ -211,38 +212,46 @@ if f_reg and f_data:
         
         st.session_state['output_stack'] = output_stack
         st.session_state['log'] = log_stream.getvalue()
+
 # --- Display Results ---
 if 'output_stack' in st.session_state and st.session_state['output_stack'] is not None:
     st.success("✅ Registration complete!")
     
-    with st.expander("Show Processing Log"):
-        st.text(st.session_state['log'])
-    
-    stack = st.session_state['output_stack']
-    fig, axes = plt.subplots(2, 2, figsize=(10, 10))
-    fig.suptitle('Registered Output Channels', fontsize=16)
-    for i, ax in enumerate(axes.flat):
-        channel_data = stack[i]
-        if channel_data.max() > 0:
-            norm_data = cv2.normalize(channel_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-            ax.imshow(norm_data, cmap='viridis')
-        else:
-            ax.imshow(np.zeros_like(channel_data), cmap='gray', vmin=0, vmax=255)
-        ax.set_title(f"Channel {i+1} (From Quad {i+1})")
-        ax.axis('off')
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    st.pyplot(fig)
+    # Display the processing log in a column to keep layout consistent
+    log_col, res_col = st.columns([1, 2])
+    with log_col:
+        with st.expander("Show Processing Log"):
+            st.text(st.session_state['log'])
 
-    buffer = io.BytesIO()
-    tifffile.imwrite(buffer, stack, imagej=True)
-    buffer.seek(0)
-    
-    st.download_button(
-        label="💾 Download Registered 4-Channel TIFF",
-        data=buffer,
-        file_name="registered_output.tif",
-        mime="image/tiff",
-    )
+        # Prepare data for download button
+        buffer = io.BytesIO()
+        tifffile.imwrite(buffer, st.session_state['output_stack'], imagej=True)
+        buffer.seek(0)
+        
+        st.download_button(
+            label="💾 Download Registered 4-Channel TIFF",
+            data=buffer,
+            file_name="registered_output.tif",
+            mime="image/tiff",
+            use_container_width=True
+        )
+
+    with res_col:
+        stack = st.session_state['output_stack']
+        fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+        fig.suptitle('Registered Output Channels', fontsize=16)
+        for i, ax in enumerate(axes.flat):
+            channel_data = stack[i]
+            if channel_data.max() > 0:
+                norm_data = cv2.normalize(channel_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                ax.imshow(norm_data, cmap='viridis')
+            else:
+                ax.imshow(np.zeros_like(channel_data), cmap='gray', vmin=0, vmax=255)
+            ax.set_title(f"Channel {i+1} (From Quad {i+1})")
+            ax.axis('off')
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        st.pyplot(fig)
+
 elif 'log' in st.session_state:
     st.error("Registration failed. Please check the log for details.")
     with st.expander("Show Processing Log"):
