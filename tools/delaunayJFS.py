@@ -183,8 +183,8 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
     print(f"\nStep 2: Finding 1:1 correlated peaks within a {correlationRadius} pixel radius...")
     correlated_peaks = find_correlated_peaks(initial_peaks, correlationRadius)
     
-    # --- The rest of the workflow now uses the CORRELATED peaks ---
-    all_detected_peaks = np.vstack(list(correlated_peaks.values())) if correlated_peaks else np.array([])
+    peak_arrays = [arr for arr in correlated_peaks.values() if arr.size > 0]
+    all_detected_peaks = np.vstack(peak_arrays) if peak_arrays else np.array([])
     
     refQuadIndex = activeQuads[0]
     refPeaksGlobal = correlated_peaks.get(refQuadIndex, np.array([]))
