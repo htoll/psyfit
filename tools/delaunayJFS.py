@@ -8,8 +8,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial import Delaunay
 
 # ==============================================================================
-#  HELPER FUNCTIONS (FROM OUR PREVIOUS SCRIPT)
-#  These are the core logic functions we've already built and debugged.
+#  HELPER FUNCTIONS (UNCHANGED)
 # ==============================================================================
 
 def findOptimalPeaks(image, minPeaks=10, maxPeaks=100, minRoundness=0.8):
@@ -103,11 +102,12 @@ def getQuadrantOffset(image_shape, quad_index):
     return offsets.get(quad_index, (0, 0))
 
 # ==============================================================================
-#  MAIN REGISTRATION WORKFLOW
+#  MAIN REGISTRATION WORKFLOW (UNCHANGED)
 # ==============================================================================
 
 def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams, matchParams):
     """Encapsulates the entire registration process."""
+    # This function is unchanged.
     print("\nCalculating transformations from registration image...")
     refQuadIndex = activeQuads[0]
     sourceQuadIndices = [q for q in activeQuads if q != refQuadIndex]
@@ -164,25 +164,25 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
 st.set_page_config(layout="wide")
 st.title("🔬 Quadrant-Based Image Cross-Registration")
 
-# --- Sidebar for Parameters ---
-st.sidebar.header("⚙️ Registration Parameters")
+# --- Parameters moved to an expander in the main panel ---
+with st.expander("⚙️ Set Registration Parameters", expanded=True):
+    activeQuads = st.multiselect(
+        "1. Select active quadrants (first is reference)",
+        options=[1, 2, 3, 4],
+        default=[1, 2, 3, 4]
+    )
 
-activeQuads = st.sidebar.multiselect(
-    "1. Select active quadrants (first is reference)",
-    options=[1, 2, 3, 4],
-    default=[1, 2, 3, 4]
-)
+    st.subheader("Peak Detection")
+    minPeaks = st.slider("Min desired peaks", 5, 500, 10)
+    maxPeaks = st.slider("Max desired peaks", 10, 1000, 200)
+    minRoundness = st.slider("Min peak roundness", 0.0, 1.0, 0.75, 0.05)
 
-st.sidebar.subheader("Peak Detection")
-minPeaks = st.sidebar.slider("Min desired peaks", 5, 500, 10)
-maxPeaks = st.sidebar.slider("Max desired peaks", 10, 1000, 200)
-minRoundness = st.sidebar.slider("Min peak roundness", 0.0, 1.0, 0.75, 0.05)
-
-st.sidebar.subheader("Feature Matching")
-patchSize = st.sidebar.slider("Match patch size", 5, 51, 21, step=2)
-searchRadius = st.sidebar.slider("Match search radius (pixels)", 10, 500, 100)
+    st.subheader("Feature Matching")
+    patchSize = st.slider("Match patch size", 5, 51, 21, step=2)
+    searchRadius = st.slider("Match search radius (pixels)", 10, 500, 100)
 
 # --- Main Panel for File I/O and Results ---
+st.markdown("---")
 col1, col2 = st.columns(2)
 with col1:
     f_reg = st.file_uploader("Upload Registration Image (with fiducials)", type=["tif", "tiff"])
@@ -191,14 +191,11 @@ with col2:
 
 if f_reg and f_data:
     if st.button("🚀 Run Registration"):
-        # Read uploaded files from memory
         imgRegistration = tifffile.imread(io.BytesIO(f_reg.read()))
         imgData = tifffile.imread(io.BytesIO(f_data.read()))
-
         peakParams = {'minPeaks': minPeaks, 'maxPeaks': maxPeaks, 'minRoundness': minRoundness}
         matchParams = {'patchSize': patchSize, 'searchRadius': searchRadius}
 
-        # Capture print statements as a log
         log_stream = io.StringIO()
         with st.spinner("Registration in progress... this may take a moment."):
             with contextlib.redirect_stdout(log_stream):
@@ -206,7 +203,6 @@ if f_reg and f_data:
                     imgRegistration, imgData, activeQuads, peakParams, matchParams
                 )
         
-        # Store results in session state to persist them
         st.session_state['output_stack'] = output_stack
         st.session_state['log'] = log_stream.getvalue()
 
@@ -214,28 +210,24 @@ if f_reg and f_data:
 if 'output_stack' in st.session_state and st.session_state['output_stack'] is not None:
     st.success("✅ Registration complete!")
     
-    # Display the processing log
     with st.expander("Show Processing Log"):
         st.text(st.session_state['log'])
     
-    # Create a preview of the output channels
     stack = st.session_state['output_stack']
     fig, axes = plt.subplots(2, 2, figsize=(10, 10))
     fig.suptitle('Registered Output Channels', fontsize=16)
     for i, ax in enumerate(axes.flat):
         channel_data = stack[i]
-        # Normalize for display purposes
         if channel_data.max() > 0:
             norm_data = cv2.normalize(channel_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
             ax.imshow(norm_data, cmap='viridis')
         else:
-            ax.imshow(np.zeros_like(channel_data), cmap='gray') # Show blank if no data
+            ax.imshow(np.zeros_like(channel_data), cmap='gray', vmin=0, vmax=255)
         ax.set_title(f"Channel {i+1} (From Quad {i+1})")
         ax.axis('off')
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     st.pyplot(fig)
 
-    # Prepare data for download button
     buffer = io.BytesIO()
     tifffile.imwrite(buffer, stack, imagej=True)
     buffer.seek(0)
@@ -250,4 +242,3 @@ elif 'log' in st.session_state:
     st.error("Registration failed. Please check the log for details.")
     with st.expander("Show Processing Log"):
         st.text(st.session_state['log'])
-
