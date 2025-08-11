@@ -44,7 +44,8 @@ tool = st.sidebar.radio("Analyze:", [
     "Batch Convert",
     "Brightness",
     "Monomer + Conc Estimation",
-    "UNDER CONSTRUCTION Colocalization Set"
+    "UNDER CONSTRUCTION Colocalization Set",
+    "Delaunay Colocalization"
     
 ])
 col1, col2 = st.columns([1, 2])
@@ -63,6 +64,9 @@ elif tool == "Batch Convert":
 
 elif tool == 'Monomer + Conc Estimation':
     monomers.run()
+    
+elif tool == 'Delaunay Colocalization':
+    DelaunayJFS.run()
 
 
 
