@@ -160,37 +160,43 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
 # ==============================================================================
 #  STREAMLIT GUI
 # ==============================================================================
-
 st.set_page_config(layout="wide")
 st.title("🔬 Quadrant-Based Image Cross-Registration")
-
-# --- Parameters moved to an expander in the main panel ---
-with st.expander("⚙️ Set Registration Parameters", expanded=True):
-    activeQuads = st.multiselect(
-        "1. Select active quadrants (first is reference)",
-        options=[1, 2, 3, 4],
-        default=[1, 2, 3, 4]
-    )
-
-    st.subheader("Peak Detection")
-    minPeaks = st.slider("Min desired peaks", 5, 500, 10)
-    maxPeaks = st.slider("Max desired peaks", 10, 1000, 200)
-    minRoundness = st.slider("Min peak roundness", 0.0, 1.0, 0.75, 0.05)
-
-    st.subheader("Feature Matching")
-    patchSize = st.slider("Match patch size", 5, 51, 21, step=2)
-    searchRadius = st.slider("Match search radius (pixels)", 10, 500, 100)
-
-# --- Main Panel for File I/O and Results ---
 st.markdown("---")
+
+# --- Define layout columns ---
 col1, col2 = st.columns(2)
+
+# --- Populate Column 1: Registration Setup ---
 with col1:
+    st.subheader("1. Registration Setup")
     f_reg = st.file_uploader("Upload Registration Image (with fiducials)", type=["tif", "tiff"])
+
+    with st.expander("Set Registration Parameters", expanded=True):
+        activeQuads = st.multiselect(
+            "Active quadrants (first is reference)",
+            options=[1, 2, 3, 4],
+            default=[1, 2, 3, 4]
+        )
+        st.markdown("###### Peak Detection")
+        minPeaks = st.slider("Min desired peaks", 5, 500, 10, key="min_peaks")
+        maxPeaks = st.slider("Max desired peaks", 10, 1000, 200, key="max_peaks")
+        minRoundness = st.slider("Min peak roundness", 0.0, 1.0, 0.75, 0.05, key="roundness")
+
+        st.markdown("###### Feature Matching")
+        patchSize = st.slider("Match patch size", 5, 51, 21, step=2, key="patch_size")
+        searchRadius = st.slider("Match search radius (pixels)", 10, 500, 100, key="search_radius")
+
+# --- Populate Column 2: Data Setup ---
 with col2:
+    st.subheader("2. Data Setup")
     f_data = st.file_uploader("Upload Data Image (to be warped)", type=["tif", "tiff"])
 
+st.markdown("---")
+
+# --- Run Button and Results Display ---
 if f_reg and f_data:
-    if st.button("🚀 Run Registration"):
+    if st.button("🚀 Run Registration", use_container_width=True):
         imgRegistration = tifffile.imread(io.BytesIO(f_reg.read()))
         imgData = tifffile.imread(io.BytesIO(f_data.read()))
         peakParams = {'minPeaks': minPeaks, 'maxPeaks': maxPeaks, 'minRoundness': minRoundness}
@@ -205,7 +211,6 @@ if f_reg and f_data:
         
         st.session_state['output_stack'] = output_stack
         st.session_state['log'] = log_stream.getvalue()
-
 # --- Display Results ---
 if 'output_stack' in st.session_state and st.session_state['output_stack'] is not None:
     st.success("✅ Registration complete!")
