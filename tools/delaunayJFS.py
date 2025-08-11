@@ -100,53 +100,119 @@ def getQuadrantOffset(image_shape, quad_index):
         1: (0, 0), 2: (w_half, 0), 3: (0, h_half), 4: (w_half, h_half)
     }
     return offsets.get(quad_index, (0, 0))
+def find_correlated_peaks(peak_sets, radius):
+    """
+    Filters peaks to find 1:1 correspondences across all active quadrants.
+    
+    Parameters:
+    - peak_sets: Dict where key is quad_index and value is np.array of peak coords.
+    - radius: The max distance in pixels to consider a match.
+    
+    Returns:
+    - A new dict with the same structure, but containing only correlated peaks.
+    """
+    if not peak_sets or len(peak_sets) < 2:
+        return peak_sets
 
-# ==============================================================================
-#  MAIN REGISTRATION WORKFLOW (UNCHANGED)
-# ==============================================================================
+    quad_indices = list(peak_sets.keys())
+    ref_idx = quad_indices[0]
+    source_indices = quad_indices[1:]
+    
+    ref_peaks = peak_sets[ref_idx]
+    if len(ref_peaks) == 0:
+        return {idx: np.array([]) for idx in quad_indices}
 
-def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams, matchParams):
+    # Use KD-Trees for efficient nearest neighbor searching
+    source_trees = {idx: cKDTree(peak_sets[idx]) for idx in source_indices if len(peak_sets[idx]) > 0}
+    
+    # Also need a tree for the reference peaks for the mutual check
+    ref_tree = cKDTree(ref_peaks)
+    
+    correlated_indices = {idx: [] for idx in quad_indices}
+
+    for i, p_ref in enumerate(ref_peaks):
+        is_fully_correlated = True
+        potential_matches = {ref_idx: i}
+
+        for src_idx in source_indices:
+            if src_idx not in source_trees:
+                is_fully_correlated = False
+                break
+
+            # Find nearest source peak to the reference peak
+            dist, j = source_trees[src_idx].query(p_ref, k=1)
+            
+            if dist > radius:
+                is_fully_correlated = False
+                break
+            
+            # Mutual check: find nearest reference peak to the source peak
+            p_src = peak_sets[src_idx][j]
+            _, mutual_i = ref_tree.query(p_src, k=1)
+
+            if i == mutual_i:
+                potential_matches[src_idx] = j
+            else:
+                is_fully_correlated = False
+                break
+        
+        if is_fully_correlated:
+            for idx, peak_idx in potential_matches.items():
+                correlated_indices[idx].append(peak_idx)
+    
+    # Build the final filtered peak sets
+    filtered_peak_sets = {
+        idx: peak_sets[idx][correlated_indices[idx]] for idx in quad_indices
+    }
+    
+    return filtered_peak_sets
+def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams, matchParams, correlationRadius):
     """Encapsulates the entire registration process."""
-    print("\nCalculating transformations from registration image...")
-    # --- CHANGE: Initialize a list to store all detected peaks ---
-    all_detected_peaks = []
+    print("\nStep 1: Finding initial peaks in all active quadrants...")
+    initial_peaks = {}
+    for quad_idx in activeQuads:
+        quad_img = getQuadrant(imgRegistration, quad_idx)
+        peaks, _ = findOptimalPeaks(quad_img, **peakParams)
+        if len(peaks) > 0:
+            offset = getQuadrantOffset(imgRegistration.shape, quad_idx)
+            initial_peaks[quad_idx] = peaks + offset
+        else:
+            initial_peaks[quad_idx] = np.array([])
+        print(f"  Quadrant {quad_idx}: Found {len(initial_peaks[quad_idx])} peaks.")
+    
+    print(f"\nStep 2: Finding 1:1 correlated peaks within a {correlationRadius} pixel radius...")
+    correlated_peaks = find_correlated_peaks(initial_peaks, correlationRadius)
+    
+    # --- The rest of the workflow now uses the CORRELATED peaks ---
+    all_detected_peaks = np.vstack(list(correlated_peaks.values())) if correlated_peaks else np.array([])
     
     refQuadIndex = activeQuads[0]
+    refPeaksGlobal = correlated_peaks.get(refQuadIndex, np.array([]))
+    if len(refPeaksGlobal) < 3:
+        print("Error: Not enough correlated peaks found to perform registration. Try increasing the correlation radius.")
+        return None, all_detected_peaks
+
     sourceQuadIndices = [q for q in activeQuads if q != refQuadIndex]
     
-    refQuadImg = getQuadrant(imgRegistration, refQuadIndex)
-    refOffset = getQuadrantOffset(imgRegistration.shape, refQuadIndex)
-    refPeaks, _ = findOptimalPeaks(refQuadImg, **peakParams)
-    if len(refPeaks) == 0:
-        print(f"Error: Could not find any peaks in the reference quadrant {refQuadIndex}. Aborting.")
-        # --- CHANGE: Return None for both values on failure ---
-        return None, None
-    refPeaksGlobal = refPeaks + refOffset
-    # --- CHANGE: Add reference peaks to our list ---
-    all_detected_peaks.extend(refPeaksGlobal)
-    
     transformations = {}
+    print("\nStep 3: Matching feature patches for final transform calculation...")
     for srcQuadIndex in sourceQuadIndices:
-        print(f"\nProcessing source quadrant {srcQuadIndex}...")
-        srcQuadImg = getQuadrant(imgRegistration, srcQuadIndex)
-        srcOffset = getQuadrantOffset(imgRegistration.shape, srcQuadIndex)
-        srcPeaks, _ = findOptimalPeaks(srcQuadImg, **peakParams)
-        if len(srcPeaks) == 0:
-            print(f"  Could not find peaks in quadrant {srcQuadIndex}. Skipping.")
+        srcPeaksGlobal = correlated_peaks.get(srcQuadIndex, np.array([]))
+        if len(srcPeaksGlobal) == 0:
             continue
-        srcPeaksGlobal = srcPeaks + srcOffset
-        # --- CHANGE: Add source peaks to our list ---
-        all_detected_peaks.extend(srcPeaksGlobal)
-        
-        print(f"  Matching {len(srcPeaks)} source peaks to {len(refPeaks)} reference peaks...")
+            
+        print(f"  Matching features between quadrant {srcQuadIndex} and {refQuadIndex}...")
         matchedSourcePoints, matchedTargetPoints = matchFeatures(imgRegistration, srcPeaksGlobal, imgRegistration, refPeaksGlobal, **matchParams)
-        print(f"  Found {len(matchedSourcePoints)} matching points.")
+        print(f"  Found {len(matchedSourcePoints)} final matching points.")
+
         if len(matchedSourcePoints) >= 3:
             transformations[srcQuadIndex] = (matchedSourcePoints, matchedTargetPoints)
         else:
-            print(f"  Not enough matches to calculate transform for quadrant {srcQuadIndex}. Skipping.")
+            print(f"  Not enough patch matches to calculate transform for quadrant {srcQuadIndex}.")
 
-    print("\nApplying transformations to data image and building output file...")
+    # --- Warping and Saving ---
+    # (This part is unchanged)
+    print("\nStep 4: Applying transformations to data image and building output file...")
     quad_h, quad_w = imgData.shape[0] // 2, imgData.shape[1] // 2
     output_stack = np.zeros((4, quad_h, quad_w), dtype=imgData.dtype)
     
@@ -163,9 +229,11 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
         print(f"Warped data from quadrant {srcQuadIndex} placed in channel {srcQuadIndex - 1}.")
     
     print("\nProcessing complete.")
-    # --- CHANGE: Return both the warped stack and the collected peaks ---
-    return output_stack, np.array(all_detected_peaks)
+    return output_stack, all_detected_peaks
 
+# ==============================================================================
+#  STREAMLIT GUI (MODIFIED TO ADD CORRELATION RADIUS SLIDER)
+# ==============================================================================
 def run():
     st.set_page_config(layout="wide")
     st.title("🔬 Quadrant-Based Image Cross-Registration")
@@ -178,10 +246,16 @@ def run():
         f_reg = st.file_uploader("Upload Registration Image (with fiducials)", type=["tif", "tiff"])
         with st.expander("Set Registration Parameters", expanded=True):
             activeQuads = st.multiselect("Active quadrants (first is reference)", options=[1, 2, 3, 4], default=[1, 2, 3, 4])
+            
             st.markdown("###### Peak Detection")
-            minPeaks = st.slider("Min desired peaks", 5, 500, 10, key="min_peaks")
-            maxPeaks = st.slider("Max desired peaks", 10, 1000, 200, key="max_peaks")
+            minPeaks = st.slider("Min desired peaks (per quad)", 5, 500, 10, key="min_peaks")
+            maxPeaks = st.slider("Max desired peaks (per quad)", 10, 1000, 200, key="max_peaks")
             minRoundness = st.slider("Min peak roundness", 0.0, 1.0, 0.75, 0.05, key="roundness")
+    
+            # --- NEW WIDGET ---
+            st.markdown("###### Geometric Correlation")
+            correlationRadius = st.slider("Peak correlation radius (pixels)", 1, 20, 4, key="correlation_radius")
+    
             st.markdown("###### Feature Matching")
             patchSize = st.slider("Match patch size", 5, 51, 21, step=2, key="patch_size")
             searchRadius = st.slider("Match search radius (pixels)", 10, 500, 100, key="search_radius")
@@ -198,53 +272,42 @@ def run():
             imgData = tifffile.imread(io.BytesIO(f_data.read()))
             peakParams = {'minPeaks': minPeaks, 'maxPeaks': maxPeaks, 'minRoundness': minRoundness}
             matchParams = {'patchSize': patchSize, 'searchRadius': searchRadius}
+    
             log_stream = io.StringIO()
             with st.spinner("Registration in progress... this may take a moment."):
                 with contextlib.redirect_stdout(log_stream):
-                    # --- CHANGE: Capture both returned values ---
                     output_stack, detected_peaks = run_registration_workflow(
-                        imgRegistration, imgData, activeQuads, peakParams, matchParams
+                        imgRegistration, imgData, activeQuads, peakParams, matchParams, correlationRadius
                     )
+            
             st.session_state['output_stack'] = output_stack
             st.session_state['log'] = log_stream.getvalue()
-            # --- CHANGE: Store the peaks and the original registration image in the session ---
             st.session_state['detected_peaks'] = detected_peaks
             st.session_state['registration_image'] = imgRegistration
     
-    
+    # --- Results Display (Unchanged) ---
     if 'output_stack' in st.session_state and st.session_state['output_stack'] is not None:
         st.success("✅ Registration complete!")
-        
-        # --- CHANGE: Create a new two-column layout for results ---
         res_col1, res_col2 = st.columns(2)
-        
         with res_col1:
-            st.subheader("Detected Peaks")
-            # --- CHANGE: Create and display the new plot with detected peaks ---
+            st.subheader("Correlated Peaks")
             fig_peaks, ax_peaks = plt.subplots(figsize=(8, 8))
             ax_peaks.imshow(st.session_state['registration_image'], cmap='gray')
             peaks = st.session_state['detected_peaks']
             if peaks is not None and len(peaks) > 0:
-                ax_peaks.plot(peaks[:, 0], peaks[:, 1], 'r+', markersize=8, label=f'{len(peaks)} peaks found')
-            ax_peaks.set_title("Detected Fiducials on Registration Image")
+                ax_peaks.plot(peaks[:, 0], peaks[:, 1], 'r+', markersize=8, label=f'{len(peaks)} correlated peaks')
+            ax_peaks.set_title("Correlated Fiducials on Registration Image")
             ax_peaks.axis('off')
             ax_peaks.legend()
             st.pyplot(fig_peaks)
-            
             with st.expander("Show Processing Log"):
                 st.text(st.session_state['log'])
-            
             buffer = io.BytesIO()
             tifffile.imwrite(buffer, st.session_state['output_stack'], imagej=True)
             buffer.seek(0)
             st.download_button(
-                label="💾 Download Registered 4-Channel TIFF",
-                data=buffer,
-                file_name="registered_output.tif",
-                mime="image/tiff",
-                use_container_width=True
+                label="💾 Download Registered 4-Channel TIFF", data=buffer, file_name="registered_output.tif", mime="image/tiff", use_container_width=True
             )
-    
         with res_col2:
             st.subheader("Registered Data Channels")
             stack = st.session_state['output_stack']
@@ -260,7 +323,6 @@ def run():
                 ax.axis('off')
             plt.tight_layout()
             st.pyplot(fig_channels)
-    
     elif 'log' in st.session_state:
         st.error("Registration failed. Please check the log for details.")
         with st.expander("Show Processing Log"):
