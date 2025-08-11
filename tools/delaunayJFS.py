@@ -166,7 +166,6 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
     # --- CHANGE: Return both the warped stack and the collected peaks ---
     return output_stack, np.array(all_detected_peaks)
 
-
 def run():
     st.set_page_config(layout="wide")
     st.title("🔬 Quadrant-Based Image Cross-Registration")
@@ -212,43 +211,53 @@ def run():
             st.session_state['detected_peaks'] = detected_peaks
             st.session_state['registration_image'] = imgRegistration
     
+    
     if 'output_stack' in st.session_state and st.session_state['output_stack'] is not None:
         st.success("✅ Registration complete!")
         
-        # Create a two-column layout for the results
+        # --- CHANGE: Create a new two-column layout for results ---
         res_col1, res_col2 = st.columns(2)
         
-        # --- Column 1: Displays the Registration Image with Red Crosses ---
         with res_col1:
             st.subheader("Detected Peaks")
+            # --- CHANGE: Create and display the new plot with detected peaks ---
             fig_peaks, ax_peaks = plt.subplots(figsize=(8, 8))
-            
-            # Displays the original registration image
             ax_peaks.imshow(st.session_state['registration_image'], cmap='gray')
             peaks = st.session_state['detected_peaks']
-            
-            # Plots the red crosses on top
             if peaks is not None and len(peaks) > 0:
                 ax_peaks.plot(peaks[:, 0], peaks[:, 1], 'r+', markersize=8, label=f'{len(peaks)} peaks found')
-                
             ax_peaks.set_title("Detected Fiducials on Registration Image")
             ax_peaks.axis('off')
             ax_peaks.legend()
             st.pyplot(fig_peaks)
             
-            # ... (Log and Download Button are also in this column) ...
+            with st.expander("Show Processing Log"):
+                st.text(st.session_state['log'])
             
+            buffer = io.BytesIO()
+            tifffile.imwrite(buffer, st.session_state['output_stack'], imagej=True)
+            buffer.seek(0)
+            st.download_button(
+                label="💾 Download Registered 4-Channel TIFF",
+                data=buffer,
+                file_name="registered_output.tif",
+                mime="image/tiff",
+                use_container_width=True
+            )
     
-        # --- Column 2: Displays the Final Transformed Data ---
         with res_col2:
             st.subheader("Registered Data Channels")
             stack = st.session_state['output_stack']
             fig_channels, axes_channels = plt.subplots(2, 2, figsize=(8, 8))
-            
-            # Creates the 2x2 grid of the warped quadrant data
             for i, ax in enumerate(axes_channels.flat):
-                # ... (plotting logic for each channel) ...
-            
+                channel_data = stack[i]
+                if channel_data.max() > 0:
+                    norm_data = cv2.normalize(channel_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                    ax.imshow(norm_data, cmap='viridis')
+                else:
+                    ax.imshow(np.zeros_like(channel_data), cmap='gray', vmin=0, vmax=255)
+                ax.set_title(f"Channel {i+1} (From Quad {i+1})")
+                ax.axis('off')
             plt.tight_layout()
             st.pyplot(fig_channels)
     
