@@ -6,7 +6,7 @@ import io
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from tools import analyze_single_sif, batch_convert, colocalization, monomers
+from tools import analyze_single_sif, batch_convert, colocalization, monomers, delaunayJFS
 import sif_parser
 
 from skimage.feature import peak_local_max
@@ -66,7 +66,7 @@ elif tool == 'Monomer + Conc Estimation':
     monomers.run()
     
 elif tool == 'Delaunay Colocalization':
-    DelaunayJFS.run()
+    delaunayJFS.run()
 
 
 
