@@ -5,7 +5,7 @@ import tifffile
 import io
 import contextlib
 import matplotlib.pyplot as plt
-from scipy.spatial import Delaunay
+from scipy.spatial import Delaunay, cKDTree
 
 # ==============================================================================
 #  HELPER FUNCTIONS (UNCHANGED)
