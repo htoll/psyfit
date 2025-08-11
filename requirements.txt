@@ -8,4 +8,6 @@ seaborn
 plotly
 pydeck
 scikit-image
+opencv-python
+tifffile
 git+https://github.com/fujiisoup/sif_parser.git
