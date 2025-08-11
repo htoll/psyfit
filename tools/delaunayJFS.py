@@ -156,103 +156,103 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
     
     print("\nProcessing complete.")
     return output_stack
-
-# ==============================================================================
-#  STREAMLIT GUI
-# ==============================================================================
-
-st.set_page_config(layout="wide")
-st.title("🔬 Quadrant-Based Image Cross-Registration")
-st.markdown("---")
-
-# --- Define layout columns ---
-col1, col2 = st.columns(2)
-
-# --- Populate Column 1: Registration Setup ---
-with col1:
-    st.subheader("1. Registration Setup")
-    f_reg = st.file_uploader("Upload Registration Image (with fiducials)", type=["tif", "tiff"])
-
-    with st.expander("Set Registration Parameters", expanded=True):
-        activeQuads = st.multiselect(
-            "Active quadrants (first is reference)",
-            options=[1, 2, 3, 4],
-            default=[1, 2, 3, 4]
-        )
-        st.markdown("###### Peak Detection")
-        minPeaks = st.slider("Min desired peaks", 5, 500, 10, key="min_peaks")
-        maxPeaks = st.slider("Max desired peaks", 10, 1000, 200, key="max_peaks")
-        minRoundness = st.slider("Min peak roundness", 0.0, 1.0, 0.75, 0.05, key="roundness")
-
-        st.markdown("###### Feature Matching")
-        patchSize = st.slider("Match patch size", 5, 51, 21, step=2, key="patch_size")
-        searchRadius = st.slider("Match search radius (pixels)", 10, 500, 100, key="search_radius")
-
-# --- Populate Column 2: Data Setup ---
-with col2:
-    st.subheader("2. Data Setup")
-    f_data = st.file_uploader("Upload Data Image (to be warped)", type=["tif", "tiff"])
-
-st.markdown("---")
-
-# --- Run Button and Results Display ---
-if f_reg and f_data:
-    if st.button("🚀 Run Registration", use_container_width=True):
-        imgRegistration = tifffile.imread(io.BytesIO(f_reg.read()))
-        imgData = tifffile.imread(io.BytesIO(f_data.read()))
-        peakParams = {'minPeaks': minPeaks, 'maxPeaks': maxPeaks, 'minRoundness': minRoundness}
-        matchParams = {'patchSize': patchSize, 'searchRadius': searchRadius}
-
-        log_stream = io.StringIO()
-        with st.spinner("Registration in progress... this may take a moment."):
-            with contextlib.redirect_stdout(log_stream):
-                output_stack = run_registration_workflow(
-                    imgRegistration, imgData, activeQuads, peakParams, matchParams
-                )
-        
-        st.session_state['output_stack'] = output_stack
-        st.session_state['log'] = log_stream.getvalue()
-
-# --- Display Results ---
-if 'output_stack' in st.session_state and st.session_state['output_stack'] is not None:
-    st.success("✅ Registration complete!")
+def run():
+    # ==============================================================================
+    #  STREAMLIT GUI
+    # ==============================================================================
     
-    # Display the processing log in a column to keep layout consistent
-    log_col, res_col = st.columns([1, 2])
-    with log_col:
+    st.set_page_config(layout="wide")
+    st.title("🔬 Quadrant-Based Image Cross-Registration")
+    st.markdown("---")
+    
+    # --- Define layout columns ---
+    col1, col2 = st.columns(2)
+    
+    # --- Populate Column 1: Registration Setup ---
+    with col1:
+        st.subheader("1. Registration Setup")
+        f_reg = st.file_uploader("Upload Registration Image (with fiducials)", type=["tif", "tiff"])
+    
+        with st.expander("Set Registration Parameters", expanded=True):
+            activeQuads = st.multiselect(
+                "Active quadrants (first is reference)",
+                options=[1, 2, 3, 4],
+                default=[1, 2, 3, 4]
+            )
+            st.markdown("###### Peak Detection")
+            minPeaks = st.slider("Min desired peaks", 5, 500, 10, key="min_peaks")
+            maxPeaks = st.slider("Max desired peaks", 10, 1000, 200, key="max_peaks")
+            minRoundness = st.slider("Min peak roundness", 0.0, 1.0, 0.75, 0.05, key="roundness")
+    
+            st.markdown("###### Feature Matching")
+            patchSize = st.slider("Match patch size", 5, 51, 21, step=2, key="patch_size")
+            searchRadius = st.slider("Match search radius (pixels)", 10, 500, 100, key="search_radius")
+    
+    # --- Populate Column 2: Data Setup ---
+    with col2:
+        st.subheader("2. Data Setup")
+        f_data = st.file_uploader("Upload Data Image (to be warped)", type=["tif", "tiff"])
+    
+    st.markdown("---")
+    
+    # --- Run Button and Results Display ---
+    if f_reg and f_data:
+        if st.button("🚀 Run Registration", use_container_width=True):
+            imgRegistration = tifffile.imread(io.BytesIO(f_reg.read()))
+            imgData = tifffile.imread(io.BytesIO(f_data.read()))
+            peakParams = {'minPeaks': minPeaks, 'maxPeaks': maxPeaks, 'minRoundness': minRoundness}
+            matchParams = {'patchSize': patchSize, 'searchRadius': searchRadius}
+    
+            log_stream = io.StringIO()
+            with st.spinner("Registration in progress... this may take a moment."):
+                with contextlib.redirect_stdout(log_stream):
+                    output_stack = run_registration_workflow(
+                        imgRegistration, imgData, activeQuads, peakParams, matchParams
+                    )
+            
+            st.session_state['output_stack'] = output_stack
+            st.session_state['log'] = log_stream.getvalue()
+    
+    # --- Display Results ---
+    if 'output_stack' in st.session_state and st.session_state['output_stack'] is not None:
+        st.success("✅ Registration complete!")
+        
+        # Display the processing log in a column to keep layout consistent
+        log_col, res_col = st.columns([1, 2])
+        with log_col:
+            with st.expander("Show Processing Log"):
+                st.text(st.session_state['log'])
+    
+            # Prepare data for download button
+            buffer = io.BytesIO()
+            tifffile.imwrite(buffer, st.session_state['output_stack'], imagej=True)
+            buffer.seek(0)
+            
+            st.download_button(
+                label="💾 Download Registered 4-Channel TIFF",
+                data=buffer,
+                file_name="registered_output.tif",
+                mime="image/tiff",
+                use_container_width=True
+            )
+    
+        with res_col:
+            stack = st.session_state['output_stack']
+            fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+            fig.suptitle('Registered Output Channels', fontsize=16)
+            for i, ax in enumerate(axes.flat):
+                channel_data = stack[i]
+                if channel_data.max() > 0:
+                    norm_data = cv2.normalize(channel_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                    ax.imshow(norm_data, cmap='viridis')
+                else:
+                    ax.imshow(np.zeros_like(channel_data), cmap='gray', vmin=0, vmax=255)
+                ax.set_title(f"Channel {i+1} (From Quad {i+1})")
+                ax.axis('off')
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+            st.pyplot(fig)
+    
+    elif 'log' in st.session_state:
+        st.error("Registration failed. Please check the log for details.")
         with st.expander("Show Processing Log"):
             st.text(st.session_state['log'])
-
-        # Prepare data for download button
-        buffer = io.BytesIO()
-        tifffile.imwrite(buffer, st.session_state['output_stack'], imagej=True)
-        buffer.seek(0)
-        
-        st.download_button(
-            label="💾 Download Registered 4-Channel TIFF",
-            data=buffer,
-            file_name="registered_output.tif",
-            mime="image/tiff",
-            use_container_width=True
-        )
-
-    with res_col:
-        stack = st.session_state['output_stack']
-        fig, axes = plt.subplots(2, 2, figsize=(10, 10))
-        fig.suptitle('Registered Output Channels', fontsize=16)
-        for i, ax in enumerate(axes.flat):
-            channel_data = stack[i]
-            if channel_data.max() > 0:
-                norm_data = cv2.normalize(channel_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                ax.imshow(norm_data, cmap='viridis')
-            else:
-                ax.imshow(np.zeros_like(channel_data), cmap='gray', vmin=0, vmax=255)
-            ax.set_title(f"Channel {i+1} (From Quad {i+1})")
-            ax.axis('off')
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        st.pyplot(fig)
-
-elif 'log' in st.session_state:
-    st.error("Registration failed. Please check the log for details.")
-    with st.expander("Show Processing Log"):
-        st.text(st.session_state['log'])
