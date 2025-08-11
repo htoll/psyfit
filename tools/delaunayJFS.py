@@ -166,67 +166,83 @@ def find_correlated_peaks(peak_sets, radius):
     }
     
     return filtered_peak_sets
+
 def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams, matchParams, correlationRadius):
-    """Encapsulates the entire registration process."""
+    """Encapsulates the entire registration process with robust handling of missing data."""
+    # --- Part 1: Initial Peak Finding ---
     print("\nStep 1: Finding initial peaks in all active quadrants...")
     initial_peaks = {}
+    quads_with_peaks = []
     for quad_idx in activeQuads:
         quad_img = getQuadrant(imgRegistration, quad_idx)
         peaks, _ = findOptimalPeaks(quad_img, **peakParams)
         if len(peaks) > 0:
             offset = getQuadrantOffset(imgRegistration.shape, quad_idx)
             initial_peaks[quad_idx] = peaks + offset
+            quads_with_peaks.append(quad_idx)
+            print(f"  Quadrant {quad_idx}: Found {len(initial_peaks[quad_idx])} peaks.")
         else:
             initial_peaks[quad_idx] = np.array([])
-        print(f"  Quadrant {quad_idx}: Found {len(initial_peaks[quad_idx])} peaks.")
+            print(f"  Quadrant {quad_idx}: No peaks found.")
     
-    print(f"\nStep 2: Finding 1:1 correlated peaks within a {correlationRadius} pixel radius...")
-    correlated_peaks = find_correlated_peaks(initial_peaks, correlationRadius)
-    
-    peak_arrays = [arr for arr in correlated_peaks.values() if arr.size > 0]
-    all_detected_peaks = np.vstack(peak_arrays) if peak_arrays else np.array([])
-    
-    refQuadIndex = activeQuads[0]
-    refPeaksGlobal = correlated_peaks.get(refQuadIndex, np.array([]))
-    if len(refPeaksGlobal) < 3:
-        print("Error: Not enough correlated peaks found to perform registration. Try increasing the correlation radius.")
-        return None, all_detected_peaks
-
-    sourceQuadIndices = [q for q in activeQuads if q != refQuadIndex]
-    
+    # --- Part 2: Correlation and Transformation ---
     transformations = {}
-    print("\nStep 3: Matching feature patches for final transform calculation...")
-    for srcQuadIndex in sourceQuadIndices:
-        srcPeaksGlobal = correlated_peaks.get(srcQuadIndex, np.array([]))
-        if len(srcPeaksGlobal) == 0:
-            continue
-            
-        print(f"  Matching features between quadrant {srcQuadIndex} and {refQuadIndex}...")
-        matchedSourcePoints, matchedTargetPoints = matchFeatures(imgRegistration, srcPeaksGlobal, imgRegistration, refPeaksGlobal, **matchParams)
-        print(f"  Found {len(matchedSourcePoints)} final matching points.")
+    all_detected_peaks = np.array([])
+    refQuadIndex = activeQuads[0]
 
-        if len(matchedSourcePoints) >= 3:
-            transformations[srcQuadIndex] = (matchedSourcePoints, matchedTargetPoints)
+    # Proceed only if the reference quadrant has peaks and there's at least one other quadrant with peaks
+    if refQuadIndex in quads_with_peaks and len(quads_with_peaks) > 1:
+        print(f"\nStep 2: Finding 1:1 correlated peaks within a {correlationRadius} pixel radius...")
+        # Correlate only among quadrants that actually have peaks
+        peak_sets_to_correlate = {idx: initial_peaks[idx] for idx in quads_with_peaks}
+        correlated_peaks = find_correlated_peaks(peak_sets_to_correlate, correlationRadius)
+
+        peak_arrays = [arr for arr in correlated_peaks.values() if arr.size > 0]
+        all_detected_peaks = np.vstack(peak_arrays) if peak_arrays else np.array([])
+        
+        refPeaksGlobal = correlated_peaks.get(refQuadIndex, np.array([]))
+        if len(refPeaksGlobal) < 3:
+            print("Warning: Not enough correlated peaks found to perform registration.")
         else:
-            print(f"  Not enough patch matches to calculate transform for quadrant {srcQuadIndex}.")
+            print("\nStep 3: Matching feature patches for final transform calculation...")
+            sourceQuadIndices = [q for q in activeQuads if q != refQuadIndex and q in quads_with_peaks]
+            for srcQuadIndex in sourceQuadIndices:
+                srcPeaksGlobal = correlated_peaks.get(srcQuadIndex, np.array([]))
+                if len(srcPeaksGlobal) == 0: continue
+                
+                print(f"  Matching features between quadrant {srcQuadIndex} and {refQuadIndex}...")
+                matchedSourcePoints, matchedTargetPoints = matchFeatures(imgRegistration, srcPeaksGlobal, imgRegistration, refPeaksGlobal, **matchParams)
+                print(f"  Found {len(matchedSourcePoints)} final matching points.")
 
-    # --- Warping and Saving ---
-    # (This part is unchanged)
-    print("\nStep 4: Applying transformations to data image and building output file...")
+                if len(matchedSourcePoints) >= 3:
+                    transformations[srcQuadIndex] = (matchedSourcePoints, matchedTargetPoints)
+                else:
+                    print(f"  Warning: Not enough patch matches to calculate transform for quadrant {srcQuadIndex}.")
+    else:
+        print("\nWarning: Registration skipped. The reference quadrant has no peaks or no other quadrants have peaks.")
+
+    # --- Part 3: Build Final Output Stack ---
+    print("\nStep 4: Assembling final 4-channel image...")
     quad_h, quad_w = imgData.shape[0] // 2, imgData.shape[1] // 2
     output_stack = np.zeros((4, quad_h, quad_w), dtype=imgData.dtype)
-    
-    refDataQuad = getQuadrant(imgData, refQuadIndex)
-    output_stack[refQuadIndex - 1] = refDataQuad
-    print(f"Quadrant {refQuadIndex} (reference) placed in channel {refQuadIndex - 1}.")
-    
-    for srcQuadIndex, (srcPoints, tgtPoints) in transformations.items():
-        print(f"Warping data for quadrant {srcQuadIndex}...")
-        warpedFullDataImage = warpImagePiecewise(imgData, srcPoints, tgtPoints)
-        ref_x, ref_y = getQuadrantOffset(imgData.shape, refQuadIndex)
-        warpedData = warpedFullDataImage[ref_y:ref_y+quad_h, ref_x:ref_x+quad_w]
-        output_stack[srcQuadIndex - 1] = warpedData
-        print(f"Warped data from quadrant {srcQuadIndex} placed in channel {srcQuadIndex - 1}.")
+
+    for i in range(1, 5):
+        if i in activeQuads:
+            # Check if this quadrant was successfully transformed
+            if i in transformations:
+                srcPoints, tgtPoints = transformations[i]
+                warpedFullDataImage = warpImagePiecewise(imgData, srcPoints, tgtPoints)
+                ref_x, ref_y = getQuadrantOffset(imgData.shape, refQuadIndex)
+                warpedData = warpedFullDataImage[ref_y:ref_y+quad_h, ref_x:ref_x+quad_w]
+                output_stack[i - 1] = warpedData
+                print(f"  Quadrant {i}: Placed registered data into Channel {i-1}.")
+            # Otherwise, use the original, unaligned data
+            else:
+                output_stack[i - 1] = getQuadrant(imgData, i)
+                if i != refQuadIndex:
+                    print(f"  Quadrant {i}: Could not be aligned. Using original data for Channel {i-1}.")
+                else:
+                    print(f"  Quadrant {i}: (Reference) Using original data for Channel {i-1}.")
     
     print("\nProcessing complete.")
     return output_stack, all_detected_peaks
