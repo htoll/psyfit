@@ -8,8 +8,9 @@ import matplotlib.pyplot as plt
 from scipy.spatial import Delaunay, cKDTree
 
 # ==============================================================================
-#  HELPER FUNCTIONS (Unchanged from previous version)
+#  HELPER FUNCTIONS (create_manually_offset_image is new)
 # ==============================================================================
+
 def findOptimalPeaks(image, minPeaks=10, maxPeaks=100, minRoundness=0.8):
     # This function is unchanged.
     print(f"Searching for optimal threshold in image of shape {image.shape}...")
@@ -104,19 +105,70 @@ def find_pairwise_matches(points1, points2, radius):
     mutual_mask = (idx2[idx1[matches1]] == matches1) & (dist1 < radius)
     return points1[idx1[matches1[mutual_mask]]], points2[matches1[mutual_mask]]
 
+# --- NEW HELPER FUNCTION ---
+def create_manually_offset_image(image, active_quads, manual_offsets):
+    """Reassembles the registration image with manual offsets applied for visualization."""
+    if not active_quads:
+        return image
+        
+    output_image = np.zeros_like(image)
+    ref_idx = active_quads[0]
+
+    # Place all quadrants initially
+    for i in range(1, 5):
+        quad_img = getQuadrant(image, i)
+        if quad_img is not None:
+            x_offset, y_offset = getQuadrantOffset(image.shape, i)
+            output_image[y_offset:y_offset+quad_img.shape[0], x_offset:x_offset+quad_img.shape[1]] = quad_img
+    
+    # Shift the source quadrants
+    for quad_idx in active_quads:
+        if quad_idx == ref_idx:
+            continue
+            
+        quad_img = getQuadrant(image, quad_idx)
+        if quad_img is None:
+            continue
+            
+        x_off, y_off = manual_offsets.get(quad_idx, (0, 0))
+        
+        # Erase the old area before drawing the shifted one
+        x_orig, y_orig = getQuadrantOffset(image.shape, quad_idx)
+        output_image[y_orig:y_orig+quad_img.shape[0], x_orig:x_orig+quad_img.shape[1]] = 0
+        
+        # Apply shift
+        trans_mat = np.float32([[1, 0, x_off], [0, 1, y_off]])
+        shifted_quad = cv2.warpAffine(quad_img, trans_mat, (quad_img.shape[1], quad_img.shape[0]))
+        
+        # Place the shifted quadrant, being careful not to go out of bounds
+        new_x, new_y = x_orig + x_off, y_orig + y_off
+        h, w = shifted_quad.shape
+        
+        # Define source and destination regions for safe placement
+        x_start_dest, y_start_dest = max(0, new_x), max(0, new_y)
+        x_end_dest, y_end_dest = min(output_image.shape[1], new_x + w), min(output_image.shape[0], new_y + h)
+        
+        x_start_src, y_start_src = max(0, -new_x), max(0, -new_y)
+        x_end_src, y_end_src = w - max(0, (new_x + w) - output_image.shape[1]), h - max(0, (new_y + h) - output_image.shape[0])
+        
+        if x_end_dest > x_start_dest and y_end_dest > y_start_dest:
+             output_image[y_start_dest:y_end_dest, x_start_dest:x_end_dest] = shifted_quad[y_start_src:y_end_src, x_start_src:x_end_src]
+             
+    return output_image
+
+
 # ==============================================================================
-#  MAIN REGISTRATION WORKFLOW (MODIFIED TO ACCEPT MANUAL OFFSETS)
+#  MAIN REGISTRATION WORKFLOW 
 # ==============================================================================
 def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams, matchParams, correlationRadius, manualOffsets):
     """Encapsulates the entire registration process using a robust pairwise approach."""
-    # --- Part 1: Initial Peak Finding ---
+    # --- Part 1: Initial Peak Finding with manual offsets ---
     print("\nStep 1: Finding initial peaks in all active quadrants...")
     initial_peaks = {}
     for quad_idx in activeQuads:
         quad_img = getQuadrant(imgRegistration, quad_idx)
         peaks, _ = findOptimalPeaks(quad_img, **peakParams)
         if len(peaks) > 0:
-            # Apply quadrant offset AND manual offset
             quadrantOffset = getQuadrantOffset(imgRegistration.shape, quad_idx)
             manualOffset = manualOffsets.get(quad_idx, (0, 0))
             initial_peaks[quad_idx] = peaks + quadrantOffset + manualOffset
@@ -127,7 +179,6 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
     
     # --- Part 2: Pairwise Registration Loop ---
     transformations = {}
-    all_used_peaks = []
     if not activeQuads:
         print("Warning: No active quadrants selected."); return np.zeros((4, imgData.shape[0]//2, imgData.shape[1]//2), dtype=imgData.dtype), {}
     
@@ -137,7 +188,6 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
     if len(refPeaksGlobal) < 3:
         print(f"Error: Cannot perform registration. Reference quadrant {refQuadIndex} has fewer than 3 peaks.")
     else:
-        all_used_peaks.append(refPeaksGlobal)
         sourceQuadIndices = [q for q in activeQuads if q != refQuadIndex]
         for srcQuadIndex in sourceQuadIndices:
             print(f"\n--- Processing Pair: Reference {refQuadIndex} <-> Source {srcQuadIndex} ---")
@@ -158,7 +208,6 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
             print(f"  Found {len(final_src_pts)} final matching points after patch comparison.")
             if len(final_src_pts) >= 3:
                 transformations[srcQuadIndex] = (final_src_pts, final_ref_pts)
-                all_used_peaks.append(final_src_pts)
             else:
                 print(f"Skipping quadrant {srcQuadIndex}: fewer than 3 final matched points.")
 
@@ -182,6 +231,7 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
     print("\nProcessing complete.")
     return output_stack, initial_peaks
 
+
 # ==============================================================================
 #  STREAMLIT GUI
 # ==============================================================================
@@ -190,11 +240,9 @@ def run():
     st.title("🔬 Quadrant-Based Image Cross-Registration")
     st.markdown("---")
 
-    # Initialize session state for manual offsets
     if 'manual_offsets' not in st.session_state:
         st.session_state.manual_offsets = {2: (0, 0), 3: (0, 0), 4: (0, 0)}
 
-    # --- UI Columns ---
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("1. Load Images")
@@ -205,9 +253,7 @@ def run():
     
     st.markdown("---")
 
-    # --- Manual Pre-alignment Section ---
     if f_reg:
-        # Load image into memory once for the preview section
         if 'reg_img_data' not in st.session_state or st.session_state.f_reg_name != f_reg.name:
             st.session_state.reg_img_data = tifffile.imread(io.BytesIO(f_reg.getvalue()))
             st.session_state.f_reg_name = f_reg.name
@@ -215,7 +261,6 @@ def run():
         reg_img = st.session_state.reg_img_data
         
         st.subheader("3. Manual Pre-alignment (Optional)")
-        # Get potential source quadrants based on a default selection
         activeQuads_preview = st.multiselect("Active quadrants (first is reference)", options=[1, 2, 3, 4], default=[1, 2, 3, 4], key="active_quads_selector")
         source_quads = [q for q in activeQuads_preview if q != activeQuads_preview[0]] if activeQuads_preview else []
 
@@ -228,44 +273,32 @@ def run():
                 st.session_state.manual_offsets[quad_to_offset] = (x_offset, y_offset)
 
             with preview_col2:
-                # Create the overlayed preview
                 ref_quad_img = getQuadrant(reg_img, activeQuads_preview[0])
                 src_quad_img = getQuadrant(reg_img, quad_to_offset)
-
-                # Normalize to 8-bit for color display
                 ref_norm = cv2.normalize(ref_quad_img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
                 src_norm = cv2.normalize(src_quad_img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                
-                # Create colored versions (Ref=Magenta, Src=Green)
                 ref_color = cv2.merge([ref_norm, np.zeros_like(ref_norm), ref_norm])
                 src_color = cv2.merge([np.zeros_like(src_norm), src_norm, np.zeros_like(src_norm)])
-
-                # Apply manual offset to the source image
                 trans_mat = np.float32([[1, 0, x_offset], [0, 1, y_offset]])
                 src_shifted = cv2.warpAffine(src_color, trans_mat, (src_color.shape[1], src_color.shape[0]))
-                
-                # Blend the images
                 blended = cv2.addWeighted(ref_color, 1.0, src_shifted, 1.0, 0)
                 st.image(blended, caption=f"Overlay: Quad {activeQuads_preview[0]} (Magenta) vs. Quad {quad_to_offset} (Green, Shifted)")
         else:
             st.info("Select at least two active quadrants to enable manual pre-alignment.")
     st.markdown("---")
 
-    # --- Automated Registration Section ---
     st.subheader("4. Automated Registration")
     with st.expander("Set Automated Registration Parameters"):
         activeQuads = st.multiselect("Confirm active quadrants for processing", options=[1, 2, 3, 4], default=[1, 2, 3, 4], key="active_quads_process")
-        st.markdown("###### Peak Detection")
         minPeaks, maxPeaks = st.slider("Min/Max desired peaks", 5, 1000, (10, 200), key="minmax_peaks")
         minRoundness = st.slider("Min peak roundness", 0.0, 1.0, 0.75, 0.05, key="roundness")
-        st.markdown("###### Geometric Correlation & Feature Matching")
         correlationRadius = st.slider("Peak correlation radius (pixels)", 1, 20, 4, key="correlation_radius")
         patchSize = st.slider("Match patch size", 5, 51, 21, step=2, key="patch_size")
         searchRadius = st.slider("Match search radius (pixels)", 10, 500, 100, key="search_radius")
 
     if f_reg and f_data:
         if st.button("🚀 Run Full Registration", use_container_width=True):
-            imgRegistration = st.session_state.reg_img_data # Use cached image
+            imgRegistration = st.session_state.reg_img_data
             imgData = tifffile.imread(io.BytesIO(f_data.read()))
             peakParams = {'minPeaks': minPeaks, 'maxPeaks': maxPeaks, 'minRoundness': minRoundness}
             matchParams = {'patchSize': patchSize, 'searchRadius': searchRadius}
@@ -279,23 +312,30 @@ def run():
             st.session_state.log = log_stream.getvalue()
             st.session_state.detected_peaks = detected_peaks_dict
             st.session_state.registration_image_final = imgRegistration
+            st.session_state.active_quads_processed = activeQuads # Save the quads used for the run
 
-    # --- Results Display Section ---
     if 'output_stack' in st.session_state and st.session_state.output_stack is not None:
         st.markdown("---")
         st.header("✅ Registration Results")
         res_col1, res_col2 = st.columns(2)
         with res_col1:
             st.subheader("Initially Detected Peaks")
+            # --- CHANGE: Create the manually offset background image for plotting ---
+            offset_reg_image = create_manually_offset_image(
+                st.session_state.registration_image_final,
+                st.session_state.active_quads_processed,
+                st.session_state.manual_offsets
+            )
             fig_peaks, ax_peaks = plt.subplots(figsize=(8, 8))
-            ax_peaks.imshow(st.session_state.registration_image_final, cmap='gray')
+            ax_peaks.imshow(offset_reg_image, cmap='gray')
+            
             colors = {1: 'red', 2: 'blue', 3: 'green', 4: 'cyan'}
             peaks_dict = st.session_state.detected_peaks
             if peaks_dict:
                 for quad_idx, peaks in peaks_dict.items():
                     if peaks is not None and len(peaks) > 0:
                         ax_peaks.plot(peaks[:, 0], peaks[:, 1], '+', color=colors.get(quad_idx, 'white'), markersize=8, label=f'Quad {quad_idx}: {len(peaks)} peaks')
-            ax_peaks.set_title("All Initially Detected Fiducials (with manual offsets)")
+            ax_peaks.set_title("Detected Fiducials on (Manually Offset) Image")
             ax_peaks.axis('off'); ax_peaks.legend()
             st.pyplot(fig_peaks)
             with st.expander("Show Processing Log"): st.text(st.session_state.log)
@@ -318,6 +358,5 @@ def run():
         st.error("Registration failed. Please check the log for details.")
         with st.expander("Show Processing Log"): st.text(st.session_state.log)
 
-# Main entry point
 if __name__ == "__main__":
     run()
