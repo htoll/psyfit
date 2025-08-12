@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial import Delaunay, cKDTree
 
 # ==============================================================================
-#  HELPER FUNCTIONS (UNCHANGED FROM PREVIOUS VERSION)
+#  HELPER FUNCTIONS (Unchanged from previous version)
 # ==============================================================================
 def findOptimalPeaks(image, minPeaks=10, maxPeaks=100, minRoundness=0.8):
     # This function is unchanged.
@@ -16,7 +16,6 @@ def findOptimalPeaks(image, minPeaks=10, maxPeaks=100, minRoundness=0.8):
     image_max = np.iinfo(image.dtype).max if np.issubdtype(image.dtype, np.integer) else np.max(image)
     start_thresh, end_thresh = int(image_max * 0.98), int(image_max * 0.20)
     step = -max(1, int(image_max / 200))
-
     for threshold in range(start_thresh, end_thresh, step):
         binaryMask = cv2.threshold(image, threshold, 255, cv2.THRESH_BINARY)[1].astype(np.uint8)
         contours, _ = cv2.findContours(binaryMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -97,22 +96,18 @@ def getQuadrantOffset(image_shape, quad_index):
 
 def find_pairwise_matches(points1, points2, radius):
     # This function is unchanged.
-    if len(points1) == 0 or len(points2) == 0:
-        return np.array([]), np.array([])
-    tree1 = cKDTree(points1)
-    tree2 = cKDTree(points2)
+    if len(points1) == 0 or len(points2) == 0: return np.array([]), np.array([])
+    tree1, tree2 = cKDTree(points1), cKDTree(points2)
     dist1, idx1 = tree1.query(points2, k=1)
     dist2, idx2 = tree2.query(points1, k=1)
     matches1 = np.arange(len(points2))
     mutual_mask = (idx2[idx1[matches1]] == matches1) & (dist1 < radius)
-    matched_indices1 = idx1[matches1[mutual_mask]]
-    matched_indices2 = matches1[mutual_mask]
-    return points1[matched_indices1], points2[matched_indices2]
+    return points1[idx1[matches1[mutual_mask]]], points2[matches1[mutual_mask]]
 
 # ==============================================================================
-#  MAIN REGISTRATION WORKFLOW (MODIFIED TO RETURN INITIAL PEAKS)
+#  MAIN REGISTRATION WORKFLOW (MODIFIED TO ACCEPT MANUAL OFFSETS)
 # ==============================================================================
-def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams, matchParams, correlationRadius):
+def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams, matchParams, correlationRadius, manualOffsets):
     """Encapsulates the entire registration process using a robust pairwise approach."""
     # --- Part 1: Initial Peak Finding ---
     print("\nStep 1: Finding initial peaks in all active quadrants...")
@@ -121,25 +116,28 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
         quad_img = getQuadrant(imgRegistration, quad_idx)
         peaks, _ = findOptimalPeaks(quad_img, **peakParams)
         if len(peaks) > 0:
-            offset = getQuadrantOffset(imgRegistration.shape, quad_idx)
-            initial_peaks[quad_idx] = peaks + offset
-            print(f"  Quadrant {quad_idx}: Found {len(initial_peaks[quad_idx])} peaks.")
+            # Apply quadrant offset AND manual offset
+            quadrantOffset = getQuadrantOffset(imgRegistration.shape, quad_idx)
+            manualOffset = manualOffsets.get(quad_idx, (0, 0))
+            initial_peaks[quad_idx] = peaks + quadrantOffset + manualOffset
+            print(f"  Quadrant {quad_idx}: Found {len(initial_peaks[quad_idx])} peaks (manual offset {manualOffset} applied).")
         else:
             initial_peaks[quad_idx] = np.array([])
             print(f"  Quadrant {quad_idx}: No peaks found.")
     
     # --- Part 2: Pairwise Registration Loop ---
     transformations = {}
+    all_used_peaks = []
     if not activeQuads:
-        print("Warning: No active quadrants selected.")
-        return np.zeros((4, imgData.shape[0]//2, imgData.shape[1]//2), dtype=imgData.dtype), initial_peaks
-
+        print("Warning: No active quadrants selected."); return np.zeros((4, imgData.shape[0]//2, imgData.shape[1]//2), dtype=imgData.dtype), {}
+    
     refQuadIndex = activeQuads[0]
     refPeaksGlobal = initial_peaks.get(refQuadIndex, np.array([]))
     
     if len(refPeaksGlobal) < 3:
         print(f"Error: Cannot perform registration. Reference quadrant {refQuadIndex} has fewer than 3 peaks.")
     else:
+        all_used_peaks.append(refPeaksGlobal)
         sourceQuadIndices = [q for q in activeQuads if q != refQuadIndex]
         for srcQuadIndex in sourceQuadIndices:
             print(f"\n--- Processing Pair: Reference {refQuadIndex} <-> Source {srcQuadIndex} ---")
@@ -154,10 +152,13 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
                 print(f"Skipping quadrant {srcQuadIndex}: fewer than 3 correlated peaks."); continue
 
             print("Step 2b: Matching feature patches for final refinement...")
-            final_src_pts, final_ref_pts = matchFeatures(imgRegistration, corr_src, imgRegistration, corr_ref, **matchParams)
+            # We must UNDO the manual offset for feature matching, which uses original image data
+            corr_src_original_coords = corr_src - manualOffsets.get(srcQuadIndex, (0,0))
+            final_src_pts, final_ref_pts = matchFeatures(imgRegistration, corr_src_original_coords, imgRegistration, corr_ref, **matchParams)
             print(f"  Found {len(final_src_pts)} final matching points after patch comparison.")
             if len(final_src_pts) >= 3:
                 transformations[srcQuadIndex] = (final_src_pts, final_ref_pts)
+                all_used_peaks.append(final_src_pts)
             else:
                 print(f"Skipping quadrant {srcQuadIndex}: fewer than 3 final matched points.")
 
@@ -175,108 +176,148 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
                 print(f"  Quadrant {i}: Placed registered data into Channel {i-1}.")
             else:
                 output_stack[i - 1] = getQuadrant(imgData, i)
-                if i != refQuadIndex:
-                    print(f"  Quadrant {i}: Could not be aligned. Using original data for Channel {i-1}.")
-                else:
-                    print(f"  Quadrant {i}: (Reference) Using original data for Channel {i-1}.")
+                if i != refQuadIndex: print(f"  Quadrant {i}: Could not be aligned. Using original data for Channel {i-1}.")
+                else: print(f"  Quadrant {i}: (Reference) Using original data for Channel {i-1}.")
     
     print("\nProcessing complete.")
-    # --- CHANGE: RETURN THE INITIAL PEAKS DICTIONARY FOR VISUALIZATION ---
     return output_stack, initial_peaks
 
 # ==============================================================================
-#  STREAMLIT GUI (PLOTTING LOGIC IS MODIFIED)
+#  STREAMLIT GUI
 # ==============================================================================
 def run():
     st.set_page_config(layout="wide")
     st.title("🔬 Quadrant-Based Image Cross-Registration")
     st.markdown("---")
+
+    # Initialize session state for manual offsets
+    if 'manual_offsets' not in st.session_state:
+        st.session_state.manual_offsets = {2: (0, 0), 3: (0, 0), 4: (0, 0)}
+
+    # --- UI Columns ---
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("1. Registration Setup")
+        st.subheader("1. Load Images")
         f_reg = st.file_uploader("Upload Registration Image (with fiducials)", type=["tif", "tiff"])
-        with st.expander("Set Registration Parameters", expanded=True):
-            activeQuads = st.multiselect("Active quadrants (first is reference)", options=[1, 2, 3, 4], default=[1, 2, 3, 4])
-            st.markdown("###### Peak Detection")
-            minPeaks = st.slider("Min desired peaks (per quad)", 5, 500, 10, key="min_peaks")
-            maxPeaks = st.slider("Max desired peaks (per quad)", 10, 1000, 200, key="max_peaks")
-            minRoundness = st.slider("Min peak roundness", 0.0, 1.0, 0.75, 0.05, key="roundness")
-            st.markdown("###### Geometric Correlation")
-            correlationRadius = st.slider("Peak correlation radius (pixels)", 1, 20, 4, key="correlation_radius")
-            st.markdown("###### Feature Matching")
-            patchSize = st.slider("Match patch size", 5, 51, 21, step=2, key="patch_size")
-            searchRadius = st.slider("Match search radius (pixels)", 10, 500, 100, key="search_radius")
     with col2:
-        st.subheader("2. Data Setup")
+        st.subheader("2. Load Data")
         f_data = st.file_uploader("Upload Data Image (to be warped)", type=["tif", "tiff"])
+    
     st.markdown("---")
+
+    # --- Manual Pre-alignment Section ---
+    if f_reg:
+        # Load image into memory once for the preview section
+        if 'reg_img_data' not in st.session_state or st.session_state.f_reg_name != f_reg.name:
+            st.session_state.reg_img_data = tifffile.imread(io.BytesIO(f_reg.getvalue()))
+            st.session_state.f_reg_name = f_reg.name
+        
+        reg_img = st.session_state.reg_img_data
+        
+        st.subheader("3. Manual Pre-alignment (Optional)")
+        # Get potential source quadrants based on a default selection
+        activeQuads_preview = st.multiselect("Active quadrants (first is reference)", options=[1, 2, 3, 4], default=[1, 2, 3, 4], key="active_quads_selector")
+        source_quads = [q for q in activeQuads_preview if q != activeQuads_preview[0]] if activeQuads_preview else []
+
+        if source_quads:
+            preview_col1, preview_col2 = st.columns([1, 2])
+            with preview_col1:
+                quad_to_offset = st.selectbox("Select quadrant to offset:", source_quads)
+                x_offset = st.slider(f"X Offset for Quad {quad_to_offset}", -100, 100, st.session_state.manual_offsets[quad_to_offset][0])
+                y_offset = st.slider(f"Y Offset for Quad {quad_to_offset}", -100, 100, st.session_state.manual_offsets[quad_to_offset][1])
+                st.session_state.manual_offsets[quad_to_offset] = (x_offset, y_offset)
+
+            with preview_col2:
+                # Create the overlayed preview
+                ref_quad_img = getQuadrant(reg_img, activeQuads_preview[0])
+                src_quad_img = getQuadrant(reg_img, quad_to_offset)
+
+                # Normalize to 8-bit for color display
+                ref_norm = cv2.normalize(ref_quad_img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                src_norm = cv2.normalize(src_quad_img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                
+                # Create colored versions (Ref=Magenta, Src=Green)
+                ref_color = cv2.merge([ref_norm, np.zeros_like(ref_norm), ref_norm])
+                src_color = cv2.merge([np.zeros_like(src_norm), src_norm, np.zeros_like(src_norm)])
+
+                # Apply manual offset to the source image
+                trans_mat = np.float32([[1, 0, x_offset], [0, 1, y_offset]])
+                src_shifted = cv2.warpAffine(src_color, trans_mat, (src_color.shape[1], src_color.shape[0]))
+                
+                # Blend the images
+                blended = cv2.addWeighted(ref_color, 1.0, src_shifted, 1.0, 0)
+                st.image(blended, caption=f"Overlay: Quad {activeQuads_preview[0]} (Magenta) vs. Quad {quad_to_offset} (Green, Shifted)")
+        else:
+            st.info("Select at least two active quadrants to enable manual pre-alignment.")
+    st.markdown("---")
+
+    # --- Automated Registration Section ---
+    st.subheader("4. Automated Registration")
+    with st.expander("Set Automated Registration Parameters"):
+        activeQuads = st.multiselect("Confirm active quadrants for processing", options=[1, 2, 3, 4], default=[1, 2, 3, 4], key="active_quads_process")
+        st.markdown("###### Peak Detection")
+        minPeaks, maxPeaks = st.slider("Min/Max desired peaks", 5, 1000, (10, 200), key="minmax_peaks")
+        minRoundness = st.slider("Min peak roundness", 0.0, 1.0, 0.75, 0.05, key="roundness")
+        st.markdown("###### Geometric Correlation & Feature Matching")
+        correlationRadius = st.slider("Peak correlation radius (pixels)", 1, 20, 4, key="correlation_radius")
+        patchSize = st.slider("Match patch size", 5, 51, 21, step=2, key="patch_size")
+        searchRadius = st.slider("Match search radius (pixels)", 10, 500, 100, key="search_radius")
+
     if f_reg and f_data:
-        if st.button("🚀 Run Registration", use_container_width=True):
-            imgRegistration = tifffile.imread(io.BytesIO(f_reg.read()))
+        if st.button("🚀 Run Full Registration", use_container_width=True):
+            imgRegistration = st.session_state.reg_img_data # Use cached image
             imgData = tifffile.imread(io.BytesIO(f_data.read()))
             peakParams = {'minPeaks': minPeaks, 'maxPeaks': maxPeaks, 'minRoundness': minRoundness}
             matchParams = {'patchSize': patchSize, 'searchRadius': searchRadius}
             log_stream = io.StringIO()
-            with st.spinner("Registration in progress... this may take a moment."):
+            with st.spinner("Registration in progress..."):
                 with contextlib.redirect_stdout(log_stream):
                     output_stack, detected_peaks_dict = run_registration_workflow(
-                        imgRegistration, imgData, activeQuads, peakParams, matchParams, correlationRadius
+                        imgRegistration, imgData, activeQuads, peakParams, matchParams, correlationRadius, st.session_state.manual_offsets
                     )
-            st.session_state['output_stack'] = output_stack
-            st.session_state['log'] = log_stream.getvalue()
-            # --- CHANGE: STORE THE DICTIONARY OF PEAKS ---
-            st.session_state['detected_peaks'] = detected_peaks_dict
-            st.session_state['registration_image'] = imgRegistration
-            
-    if 'output_stack' in st.session_state and st.session_state['output_stack'] is not None:
-        st.success("✅ Registration complete!")
+            st.session_state.output_stack = output_stack
+            st.session_state.log = log_stream.getvalue()
+            st.session_state.detected_peaks = detected_peaks_dict
+            st.session_state.registration_image_final = imgRegistration
+
+    # --- Results Display Section ---
+    if 'output_stack' in st.session_state and st.session_state.output_stack is not None:
+        st.markdown("---")
+        st.header("✅ Registration Results")
         res_col1, res_col2 = st.columns(2)
         with res_col1:
-            # --- CHANGE: NEW PLOTTING LOGIC FOR ALL INITIAL PEAKS ---
             st.subheader("Initially Detected Peaks")
             fig_peaks, ax_peaks = plt.subplots(figsize=(8, 8))
-            ax_peaks.imshow(st.session_state['registration_image'], cmap='gray')
-            
-            # Define colors for each quadrant
+            ax_peaks.imshow(st.session_state.registration_image_final, cmap='gray')
             colors = {1: 'red', 2: 'blue', 3: 'green', 4: 'cyan'}
-            
-            peaks_dict = st.session_state['detected_peaks']
+            peaks_dict = st.session_state.detected_peaks
             if peaks_dict:
                 for quad_idx, peaks in peaks_dict.items():
                     if peaks is not None and len(peaks) > 0:
-                        color = colors.get(quad_idx, 'white')
-                        ax_peaks.plot(peaks[:, 0], peaks[:, 1], '+', color=color, markersize=8, 
-                                      label=f'Quad {quad_idx}: {len(peaks)} peaks')
-
-            ax_peaks.set_title("All Initially Detected Fiducials")
-            ax_peaks.axis('off')
-            ax_peaks.legend()
+                        ax_peaks.plot(peaks[:, 0], peaks[:, 1], '+', color=colors.get(quad_idx, 'white'), markersize=8, label=f'Quad {quad_idx}: {len(peaks)} peaks')
+            ax_peaks.set_title("All Initially Detected Fiducials (with manual offsets)")
+            ax_peaks.axis('off'); ax_peaks.legend()
             st.pyplot(fig_peaks)
-            
-            with st.expander("Show Processing Log"):
-                st.text(st.session_state['log'])
+            with st.expander("Show Processing Log"): st.text(st.session_state.log)
             buffer = io.BytesIO()
-            tifffile.imwrite(buffer, st.session_state['output_stack'], imagej=True)
-            buffer.seek(0)
-            st.download_button(
-                label="💾 Download Registered 4-Channel TIFF", data=buffer, file_name="registered_output.tif", mime="image/tiff", use_container_width=True
-            )
+            tifffile.imwrite(buffer, st.session_state.output_stack, imagej=True); buffer.seek(0)
+            st.download_button(label="💾 Download Registered 4-Channel TIFF", data=buffer, file_name="registered_output.tif", mime="image/tiff", use_container_width=True)
         with res_col2:
             st.subheader("Registered Data Channels")
-            stack = st.session_state['output_stack']
+            stack = st.session_state.output_stack
             fig_channels, axes_channels = plt.subplots(2, 2, figsize=(8, 8))
             for i, ax in enumerate(axes_channels.flat):
                 channel_data = stack[i]
                 if channel_data.max() > 0:
                     norm_data = cv2.normalize(channel_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
                     ax.imshow(norm_data, cmap='viridis')
-                else:
-                    ax.imshow(np.zeros_like(channel_data), cmap='gray', vmin=0, vmax=255)
-                ax.set_title(f"Channel {i+1} (From Quad {i+1})")
-                ax.axis('off')
-            plt.tight_layout()
-            st.pyplot(fig_channels)
+                else: ax.imshow(np.zeros_like(channel_data), cmap='gray', vmin=0, vmax=255)
+                ax.set_title(f"Channel {i+1} (From Quad {i+1})"); ax.axis('off')
+            plt.tight_layout(); st.pyplot(fig_channels)
     elif 'log' in st.session_state:
         st.error("Registration failed. Please check the log for details.")
-        with st.expander("Show Processing Log"):
-            st.text(st.session_state['log'])
+        with st.expander("Show Processing Log"): st.text(st.session_state.log)
+
+# Main entry point
+if __name__ == "__main__":
+    run()
