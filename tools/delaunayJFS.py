@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial import Delaunay, cKDTree
 
 # ==============================================================================
-#  HELPER FUNCTIONS (UNCHANGED)
+#  HELPER FUNCTIONS (find_correlated_peaks REMOVED, find_pairwise_matches ADDED)
 # ==============================================================================
 
 def findOptimalPeaks(image, minPeaks=10, maxPeaks=100, minRoundness=0.8):
@@ -86,157 +86,112 @@ def getQuadrant(image, quad_index):
     # This function is unchanged.
     h, w = image.shape[:2]
     h_half, w_half = h // 2, w // 2
-    quadrants = {
-        1: image[0:h_half, 0:w_half], 2: image[0:h_half, w_half:w],
-        3: image[h_half:h, 0:w_half], 4: image[h_half:h, w_half:w]
-    }
+    quadrants = {1: image[0:h_half, 0:w_half], 2: image[0:h_half, w_half:w], 3: image[h_half:h, 0:w_half], 4: image[h_half:h, w_half:w]}
     return quadrants.get(quad_index)
 
 def getQuadrantOffset(image_shape, quad_index):
     # This function is unchanged.
     h, w = image_shape[:2]
     h_half, w_half = h // 2, w // 2
-    offsets = {
-        1: (0, 0), 2: (w_half, 0), 3: (0, h_half), 4: (w_half, h_half)
-    }
+    offsets = {1: (0, 0), 2: (w_half, 0), 3: (0, h_half), 4: (w_half, h_half)}
     return offsets.get(quad_index, (0, 0))
-def find_correlated_peaks(peak_sets, radius):
-    """
-    Filters peaks to find 1:1 correspondences across all active quadrants.
-    
-    Parameters:
-    - peak_sets: Dict where key is quad_index and value is np.array of peak coords.
-    - radius: The max distance in pixels to consider a match.
-    
-    Returns:
-    - A new dict with the same structure, but containing only correlated peaks.
-    """
-    if not peak_sets or len(peak_sets) < 2:
-        return peak_sets
 
-    quad_indices = list(peak_sets.keys())
-    ref_idx = quad_indices[0]
-    source_indices = quad_indices[1:]
+def find_pairwise_matches(points1, points2, radius):
+    """Finds mutual nearest neighbors between two sets of points."""
+    if len(points1) == 0 or len(points2) == 0:
+        return np.array([]), np.array([])
     
-    ref_peaks = peak_sets[ref_idx]
-    if len(ref_peaks) == 0:
-        return {idx: np.array([]) for idx in quad_indices}
-
-    # Use KD-Trees for efficient nearest neighbor searching
-    source_trees = {idx: cKDTree(peak_sets[idx]) for idx in source_indices if len(peak_sets[idx]) > 0}
+    tree1 = cKDTree(points1)
+    tree2 = cKDTree(points2)
     
-    # Also need a tree for the reference peaks for the mutual check
-    ref_tree = cKDTree(ref_peaks)
+    dist1, idx1 = tree1.query(points2, k=1)
+    dist2, idx2 = tree2.query(points1, k=1)
     
-    correlated_indices = {idx: [] for idx in quad_indices}
-
-    for i, p_ref in enumerate(ref_peaks):
-        is_fully_correlated = True
-        potential_matches = {ref_idx: i}
-
-        for src_idx in source_indices:
-            if src_idx not in source_trees:
-                is_fully_correlated = False
-                break
-
-            # Find nearest source peak to the reference peak
-            dist, j = source_trees[src_idx].query(p_ref, k=1)
-            
-            if dist > radius:
-                is_fully_correlated = False
-                break
-            
-            # Mutual check: find nearest reference peak to the source peak
-            p_src = peak_sets[src_idx][j]
-            _, mutual_i = ref_tree.query(p_src, k=1)
-
-            if i == mutual_i:
-                potential_matches[src_idx] = j
-            else:
-                is_fully_correlated = False
-                break
-        
-        if is_fully_correlated:
-            for idx, peak_idx in potential_matches.items():
-                correlated_indices[idx].append(peak_idx)
+    matches1 = np.arange(len(points2))
+    mutual_mask = (idx2[idx1[matches1]] == matches1) & (dist1 < radius)
     
-    # Build the final filtered peak sets
-    filtered_peak_sets = {
-        idx: peak_sets[idx][correlated_indices[idx]] for idx in quad_indices
-    }
+    matched_indices1 = idx1[matches1[mutual_mask]]
+    matched_indices2 = matches1[mutual_mask]
     
-    return filtered_peak_sets
+    return points1[matched_indices1], points2[matched_indices2]
 
+# ==============================================================================
+#  MAIN REGISTRATION WORKFLOW (REWRITTEN FOR PAIRWISE LOGIC)
+# ==============================================================================
 def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams, matchParams, correlationRadius):
-    """Encapsulates the entire registration process with robust handling of missing data."""
+    """Encapsulates the entire registration process using a robust pairwise approach."""
     # --- Part 1: Initial Peak Finding ---
     print("\nStep 1: Finding initial peaks in all active quadrants...")
     initial_peaks = {}
-    quads_with_peaks = []
     for quad_idx in activeQuads:
         quad_img = getQuadrant(imgRegistration, quad_idx)
         peaks, _ = findOptimalPeaks(quad_img, **peakParams)
         if len(peaks) > 0:
             offset = getQuadrantOffset(imgRegistration.shape, quad_idx)
             initial_peaks[quad_idx] = peaks + offset
-            quads_with_peaks.append(quad_idx)
             print(f"  Quadrant {quad_idx}: Found {len(initial_peaks[quad_idx])} peaks.")
         else:
             initial_peaks[quad_idx] = np.array([])
             print(f"  Quadrant {quad_idx}: No peaks found.")
     
-    # --- Part 2: Correlation and Transformation ---
+    # --- Part 2: Pairwise Registration Loop ---
     transformations = {}
-    all_detected_peaks = np.array([])
+    all_used_peaks = []
+    
+    if not activeQuads:
+        print("Warning: No active quadrants selected.")
+        return np.zeros((4, imgData.shape[0]//2, imgData.shape[1]//2), dtype=imgData.dtype), np.array([])
+
     refQuadIndex = activeQuads[0]
-
-    # Proceed only if the reference quadrant has peaks and there's at least one other quadrant with peaks
-    if refQuadIndex in quads_with_peaks and len(quads_with_peaks) > 1:
-        print(f"\nStep 2: Finding 1:1 correlated peaks within a {correlationRadius} pixel radius...")
-        # Correlate only among quadrants that actually have peaks
-        peak_sets_to_correlate = {idx: initial_peaks[idx] for idx in quads_with_peaks}
-        correlated_peaks = find_correlated_peaks(peak_sets_to_correlate, correlationRadius)
-
-        peak_arrays = [arr for arr in correlated_peaks.values() if arr.size > 0]
-        all_detected_peaks = np.vstack(peak_arrays) if peak_arrays else np.array([])
-        
-        refPeaksGlobal = correlated_peaks.get(refQuadIndex, np.array([]))
-        if len(refPeaksGlobal) < 3:
-            print("Warning: Not enough correlated peaks found to perform registration.")
-        else:
-            print("\nStep 3: Matching feature patches for final transform calculation...")
-            sourceQuadIndices = [q for q in activeQuads if q != refQuadIndex and q in quads_with_peaks]
-            for srcQuadIndex in sourceQuadIndices:
-                srcPeaksGlobal = correlated_peaks.get(srcQuadIndex, np.array([]))
-                if len(srcPeaksGlobal) == 0: continue
-                
-                print(f"  Matching features between quadrant {srcQuadIndex} and {refQuadIndex}...")
-                matchedSourcePoints, matchedTargetPoints = matchFeatures(imgRegistration, srcPeaksGlobal, imgRegistration, refPeaksGlobal, **matchParams)
-                print(f"  Found {len(matchedSourcePoints)} final matching points.")
-
-                if len(matchedSourcePoints) >= 3:
-                    transformations[srcQuadIndex] = (matchedSourcePoints, matchedTargetPoints)
-                else:
-                    print(f"  Warning: Not enough patch matches to calculate transform for quadrant {srcQuadIndex}.")
+    refPeaksGlobal = initial_peaks.get(refQuadIndex, np.array([]))
+    
+    if len(refPeaksGlobal) < 3:
+        print(f"Error: Cannot perform registration. Reference quadrant {refQuadIndex} has fewer than 3 peaks.")
     else:
-        print("\nWarning: Registration skipped. The reference quadrant has no peaks or no other quadrants have peaks.")
+        all_used_peaks.append(refPeaksGlobal)
+        sourceQuadIndices = [q for q in activeQuads if q != refQuadIndex]
+        
+        for srcQuadIndex in sourceQuadIndices:
+            print(f"\n--- Processing Pair: Reference {refQuadIndex} <-> Source {srcQuadIndex} ---")
+            srcPeaksGlobal = initial_peaks.get(srcQuadIndex, np.array([]))
+
+            if len(srcPeaksGlobal) < 3:
+                print(f"Skipping quadrant {srcQuadIndex}: fewer than 3 peaks found.")
+                continue
+
+            # Step 2a: Geometric Correlation for this pair
+            print(f"Step 2a: Correlating peaks within {correlationRadius} pixel radius...")
+            corr_ref, corr_src = find_pairwise_matches(refPeaksGlobal, srcPeaksGlobal, correlationRadius)
+            print(f"  Found {len(corr_ref)} geometrically correlated pairs.")
+
+            if len(corr_ref) < 3:
+                print(f"Skipping quadrant {srcQuadIndex}: fewer than 3 correlated peaks.")
+                continue
+
+            # Step 2b: Feature Matching for this pair
+            print("Step 2b: Matching feature patches for final refinement...")
+            final_src_pts, final_ref_pts = matchFeatures(imgRegistration, corr_src, imgRegistration, corr_ref, **matchParams)
+            print(f"  Found {len(final_src_pts)} final matching points after patch comparison.")
+            
+            if len(final_src_pts) >= 3:
+                transformations[srcQuadIndex] = (final_src_pts, final_ref_pts)
+                all_used_peaks.append(final_src_pts)
+            else:
+                print(f"Skipping quadrant {srcQuadIndex}: fewer than 3 final matched points.")
 
     # --- Part 3: Build Final Output Stack ---
-    print("\nStep 4: Assembling final 4-channel image...")
+    print("\nStep 3: Assembling final 4-channel image...")
     quad_h, quad_w = imgData.shape[0] // 2, imgData.shape[1] // 2
     output_stack = np.zeros((4, quad_h, quad_w), dtype=imgData.dtype)
 
     for i in range(1, 5):
         if i in activeQuads:
-            # Check if this quadrant was successfully transformed
             if i in transformations:
                 srcPoints, tgtPoints = transformations[i]
                 warpedFullDataImage = warpImagePiecewise(imgData, srcPoints, tgtPoints)
                 ref_x, ref_y = getQuadrantOffset(imgData.shape, refQuadIndex)
-                warpedData = warpedFullDataImage[ref_y:ref_y+quad_h, ref_x:ref_x+quad_w]
-                output_stack[i - 1] = warpedData
+                output_stack[i - 1] = warpedFullDataImage[ref_y:ref_y+quad_h, ref_x:ref_x+quad_w]
                 print(f"  Quadrant {i}: Placed registered data into Channel {i-1}.")
-            # Otherwise, use the original, unaligned data
             else:
                 output_stack[i - 1] = getQuadrant(imgData, i)
                 if i != refQuadIndex:
@@ -244,75 +199,63 @@ def run_registration_workflow(imgRegistration, imgData, activeQuads, peakParams,
                 else:
                     print(f"  Quadrant {i}: (Reference) Using original data for Channel {i-1}.")
     
+    final_peak_list = np.vstack(all_used_peaks) if all_used_peaks else np.array([])
     print("\nProcessing complete.")
-    return output_stack, all_detected_peaks
+    return output_stack, final_peak_list
 
 # ==============================================================================
-#  STREAMLIT GUI (MODIFIED TO ADD CORRELATION RADIUS SLIDER)
+#  STREAMLIT GUI (UNCHANGED)
 # ==============================================================================
 def run():
     st.set_page_config(layout="wide")
     st.title("🔬 Quadrant-Based Image Cross-Registration")
     st.markdown("---")
-    
     col1, col2 = st.columns(2)
-    
     with col1:
         st.subheader("1. Registration Setup")
         f_reg = st.file_uploader("Upload Registration Image (with fiducials)", type=["tif", "tiff"])
         with st.expander("Set Registration Parameters", expanded=True):
             activeQuads = st.multiselect("Active quadrants (first is reference)", options=[1, 2, 3, 4], default=[1, 2, 3, 4])
-            
             st.markdown("###### Peak Detection")
             minPeaks = st.slider("Min desired peaks (per quad)", 5, 500, 10, key="min_peaks")
             maxPeaks = st.slider("Max desired peaks (per quad)", 10, 1000, 200, key="max_peaks")
             minRoundness = st.slider("Min peak roundness", 0.0, 1.0, 0.75, 0.05, key="roundness")
-    
-            # --- NEW WIDGET ---
             st.markdown("###### Geometric Correlation")
             correlationRadius = st.slider("Peak correlation radius (pixels)", 1, 20, 4, key="correlation_radius")
-    
             st.markdown("###### Feature Matching")
             patchSize = st.slider("Match patch size", 5, 51, 21, step=2, key="patch_size")
             searchRadius = st.slider("Match search radius (pixels)", 10, 500, 100, key="search_radius")
-    
     with col2:
         st.subheader("2. Data Setup")
         f_data = st.file_uploader("Upload Data Image (to be warped)", type=["tif", "tiff"])
-    
     st.markdown("---")
-    
     if f_reg and f_data:
         if st.button("🚀 Run Registration", use_container_width=True):
             imgRegistration = tifffile.imread(io.BytesIO(f_reg.read()))
             imgData = tifffile.imread(io.BytesIO(f_data.read()))
             peakParams = {'minPeaks': minPeaks, 'maxPeaks': maxPeaks, 'minRoundness': minRoundness}
             matchParams = {'patchSize': patchSize, 'searchRadius': searchRadius}
-    
             log_stream = io.StringIO()
             with st.spinner("Registration in progress... this may take a moment."):
                 with contextlib.redirect_stdout(log_stream):
                     output_stack, detected_peaks = run_registration_workflow(
                         imgRegistration, imgData, activeQuads, peakParams, matchParams, correlationRadius
                     )
-            
             st.session_state['output_stack'] = output_stack
             st.session_state['log'] = log_stream.getvalue()
             st.session_state['detected_peaks'] = detected_peaks
             st.session_state['registration_image'] = imgRegistration
-    
-    # --- Results Display (Unchanged) ---
     if 'output_stack' in st.session_state and st.session_state['output_stack'] is not None:
         st.success("✅ Registration complete!")
         res_col1, res_col2 = st.columns(2)
         with res_col1:
-            st.subheader("Correlated Peaks")
+            st.subheader("Used Peaks for Registration")
             fig_peaks, ax_peaks = plt.subplots(figsize=(8, 8))
             ax_peaks.imshow(st.session_state['registration_image'], cmap='gray')
             peaks = st.session_state['detected_peaks']
             if peaks is not None and len(peaks) > 0:
-                ax_peaks.plot(peaks[:, 0], peaks[:, 1], 'r+', markersize=8, label=f'{len(peaks)} correlated peaks')
-            ax_peaks.set_title("Correlated Fiducials on Registration Image")
+                ax_peaks.plot(peaks[:, 0], peaks[:, 1], 'r+', markersize=8, label=f'{len(peaks)} peaks used')
+            ax_peaks.set_title("Fiducials Used for Successful Alignments")
             ax_peaks.axis('off')
             ax_peaks.legend()
             st.pyplot(fig_peaks)
