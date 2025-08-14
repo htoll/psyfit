@@ -6,7 +6,7 @@ import io
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from tools import analyze_single_sif, batch_convert, colocalization, monomers, delaunayJFS
+from tools import analyze_single_sif, batch_convert, colocalization, monomers, delaunayJFS, minimal_upload_debug
 import sif_parser
 
 from skimage.feature import peak_local_max
@@ -45,7 +45,8 @@ tool = st.sidebar.radio("Analyze:", [
     "Brightness",
     "Monomer + Conc Estimation",
     "UNDER CONSTRUCTION Colocalization Set",
-    "Delaunay Colocalization"
+    "Delaunay Colocalization",
+    "debug"
     
 ])
 col1, col2 = st.columns([1, 2])
@@ -64,7 +65,9 @@ elif tool == "Batch Convert":
 
 elif tool == 'Monomer + Conc Estimation':
     monomers.run()
-    
+
+elif tool == "debug":
+    minimal_upload_debug.run()
 #elif tool == 'Delaunay Colocalization':
     #delaunayJFS.run() #HWT250814, was givign AxiosError: timeout exceeded on other tools upon file upload, terminal output:
         #  /home/adminuser/venv/lib/python3.13/site-packages/streamlit/runtime/scriptru  
