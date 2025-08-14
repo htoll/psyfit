@@ -11,3 +11,5 @@ scikit-image
 opencv-python-headless
 tifffile
 git+https://github.com/fujiisoup/sif_parser.git
+streamlit==1.48.0
+
