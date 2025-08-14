@@ -65,7 +65,7 @@ elif tool == "Batch Convert":
 elif tool == 'Monomer + Conc Estimation':
     monomers.run()
     
-elif tool == 'Delaunay Colocalization':
+#elif tool == 'Delaunay Colocalization':
     #delaunayJFS.run() #HWT250814, was givign AxiosError: timeout exceeded on other tools upon file upload, terminal output:
         #  /home/adminuser/venv/lib/python3.13/site-packages/streamlit/runtime/scriptru  
         
@@ -138,7 +138,6 @@ elif tool == 'Delaunay Colocalization':
         # <tifffile.TiffTag 5033 @530884> coercing invalid ASCII to bytes, due to UnicodeDecodeError('charmap', b'\x8d', 0, 1, 'character maps to <undefined>')
         
         # <tifffile.TiffTag 5033 @530884> coercing invalid ASCII to bytes, due to UnicodeDecodeError('charmap', b'\x8d', 0, 1, 'character maps to <undefined>')
-    pass
 
 
 
