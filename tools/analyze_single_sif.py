@@ -8,6 +8,9 @@ import numpy as np
 
 def run():
     col1, col2 = st.columns([1, 2])
+    @st.cache_data
+    def df_to_csv_bytes(df):
+        return df.to_csv(index=False).encode("utf-8")
 
     with col1:
         st.header("Analyze SIF Files")
@@ -83,6 +86,16 @@ def run():
                             file_name=f"{selected_file_name}.svg",
                             mime="image/svg+xml"
                         )
+                        if combined_df is not None and not combined_df.empty:
+                            csv_bytes = df_to_csv_bytes(combined_df)
+                            st.download_button(
+                                label="Download as CSV",
+                                data=csv_bytes,
+                                file_name=f"{os.path.splitext(selected_file_name)[0]}_compiled.csv",
+                                mime="text/csv"
+                            )
+                        else:
+                            st.info("No compiled data available to download yet.")
     
                     with plot_col2:
                         if plot_brightness_histogram and not combined_df.empty:
