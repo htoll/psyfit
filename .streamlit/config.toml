@@ -1,8 +1,8 @@
 [server]
 maxUploadSize = 2048
 maxMessageSize = 2048
-enableXsrfProtection = false   # TEMPORARY for debugging
-enableCORS = false             # TEMPORARY for debugging
+# enableXsrfProtection = false   # TEMPORARY for debugging
+# enableCORS = false             # TEMPORARY for debugging
 
 [theme]
-base = "dark"                  # <-- visible proof the config is read
+base = "light"                 
