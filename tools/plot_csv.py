@@ -41,7 +41,7 @@ def run():
       palette_name = st.selectbox(
           "Color palette",
           [
-              "plotly", "plotly3", "viridis", "cividis", "plasma",
+              "plotly", "viridis", "cividis", "plasma",
               "inferno", "magma", "Turbo", "aggrnyl", "agsunset", "ice", "solar"
           ],
           help="A selection of Plotly palettes."
@@ -58,7 +58,6 @@ def run():
   # Helper palettes
   PLOTLY_PALETTES = {
       "plotly": px.colors.qualitative.Plotly,
-      "plotly3": px.colors.qualitative.Plotly3,
       "viridis": px.colors.sequential.Viridis,
       "cividis": px.colors.sequential.Cividis,
       "plasma": px.colors.sequential.Plasma,
