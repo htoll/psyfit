@@ -42,7 +42,7 @@ def run():
           "Color palette",
           [
               "plotly", "viridis", "cividis", "plasma",
-              "inferno", "magma", "Turbo", "aggrnyl", "agsunset", "solar"
+              "inferno", "magma", "Turbo", "aggrnyl", "agsunset"
           ],
           help="A selection of Plotly palettes."
       )
@@ -66,7 +66,6 @@ def run():
       "Turbo": px.colors.sequential.Turbo,
       "aggrnyl": px.colors.sequential.Aggrnyl,
       "agsunset": px.colors.sequential.Agsunset,
-      "solar": px.colors.sequential.Solar
   }
   
   def parse_custom_colors(s: str):
