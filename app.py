@@ -6,7 +6,7 @@ import io
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from tools import analyze_single_sif, batch_convert, colocalization, monomers, delaunayJFS
+from tools import analyze_single_sif, batch_convert, colocalization, monomers, delaunayJFS, plot_csv
 import sif_parser
 
 from skimage.feature import peak_local_max
@@ -45,7 +45,8 @@ tool = st.sidebar.radio("Analyze:", [
     "Brightness",
     "Monomer + Conc Estimation",
     "UNDER CONSTRUCTION Colocalization Set",
-    "Delaunay Colocalization"
+    "Delaunay Colocalization",
+    "Plot CSVs"
     
 ])
 col1, col2 = st.columns([1, 2])
@@ -67,6 +68,9 @@ elif tool == 'Monomer + Conc Estimation':
 
 elif tool == 'Delaunay Colocalization':
     delaunayJFS.run()
+
+elif tool == "Plot CSVs":
+    plot_csv.run()
 
 
 
