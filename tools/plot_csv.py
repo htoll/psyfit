@@ -156,9 +156,7 @@ def run():
             options=df.columns.tolist(), 
             default=[df.columns[1]]  # default to one column
         )
-        
-        long_df = df.melt(id_vars=[x_col], value_vars=y_cols,
-                          var_name="series", value_name="y")      
+     
         with col3:
           color_col = st.selectbox("Color / condition (optional)", ["(none)"] + all_cols)
   
@@ -196,46 +194,77 @@ def run():
           gb_cols = [x_col] + ([color_col] if color_col else [])
           base_df = base_df.groupby(gb_cols)[y_cols].agg(aggfunc).reset_index()
   
-      long_df = base_df.melt(id_vars=[c for c in [x_col, color_col] if c], value_vars=y_cols,
-                             var_name="series", value_name="y")
+      # Long form: one row per (x, series, y)
+      long_df = base_df.melt(
+          id_vars=[c for c in [x_col, color_col] if c],
+          value_vars=y_cols,
+          var_name="series",
+          value_name="y"
+      )
   
-      long_df = long_df.sort_values(by=[x_col, "series"])
-      # Apply smoothing within each series (+ color, if provided)
+      # Try to coerce X to numeric for proper ordering
+      x_is_numeric = False
+      try:
+          coerced = pd.to_numeric(long_df[x_col], errors="coerce")
+          if coerced.notna().any():
+              long_df[x_col] = coerced
+              x_is_numeric = True
+      except Exception:
+          pass
+  
+      if x_is_numeric:
+          # Drop rows with non-numeric X
+          long_df = long_df.dropna(subset=[x_col])
+          # Sort by series then X to keep each trace monotonic
+          long_df = long_df.sort_values(["series", x_col], kind="mergesort")
+          category_orders = None
+      else:
+          # For string/categorical X, enforce a deterministic order
+          # Preserve first-seen order within each series, then union
+          order = []
+          for _, g in long_df.groupby("series", sort=False):
+              seen = list(dict.fromkeys(g[x_col].tolist()))
+              # merge while preserving previously-added order
+              for v in seen:
+                  if v not in order:
+                      order.append(v)
+          category_orders = {x_col: order}
+          long_df = long_df.sort_values(["series"], kind="mergesort")
+  
+      # Optional smoothing within each series (+ color if provided)
       if color_col:
-          long_df["y"] = long_df.groupby(["series", color_col])["y"].transform(
+          long_df["y"] = long_df.groupby(["series", color_col], sort=False)["y"].transform(
               lambda s: maybe_smooth(s, smooth_window, smooth)
           )
       else:
-          long_df["y"] = long_df.groupby(["series"])["y"].transform(
+          long_df["y"] = long_df.groupby(["series"], sort=False)["y"].transform(
               lambda s: maybe_smooth(s, smooth_window, smooth)
           )
   
+      # Palette
       palette = parse_custom_colors(custom_colors) or PLOTLY_PALETTES.get(palette_name)
-      long_df = long_df.sort_values(by=x_col)
-      long_df = long_df.sort_values([ "series", x_col ])
-
-
+  
+      # Build figure
+      common_kwargs = dict(
+          x=x_col, y="y",
+          color=(color_col if color_col else "series"),
+          color_discrete_sequence=palette,
+      )
+      if not x_is_numeric and category_orders:
+          common_kwargs["category_orders"] = category_orders
   
       if plot_type == "Line":
-          fig = px.line(
-                        long_df, x=x_col, y="y",
-                        color="series"   # color by series name
-                        )
+          fig = px.line(long_df, **common_kwargs)
           if marker_mode:
-              fig.update_traces(mode="lines+markers", marker=dict(size=point_size), opacity=opacity)
+              fig.update_traces(mode="lines+markers", marker=dict(size=point_size), opacity=opacity, connectgaps=False)
           else:
-              fig.update_traces(mode="lines", opacity=opacity)
+              fig.update_traces(mode="lines", opacity=opacity, connectgaps=False)
           fig.update_traces(line=dict(width=width))
       else:
-          fig = px.scatter(
-              long_df, x=x_col, y="y",
-              color=color_col if color_col else "series",
-              symbol="series" if color_col else None,
-              color_discrete_sequence=palette,
-              opacity=opacity
-          )
+          fig = px.scatter(long_df, **common_kwargs, opacity=opacity)
           fig.update_traces(marker=dict(size=point_size))
   
+      # Axes
       fig.update_xaxes(type="log" if x_log else "linear", title=(x_title_override or x_col))
       fig.update_yaxes(type="log" if y_log else "linear", title=(y_title_override or "value"))
   
