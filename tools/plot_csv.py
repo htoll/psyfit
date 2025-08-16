@@ -150,8 +150,16 @@ def run():
       with col1:
           x_col = st.selectbox("X column", all_cols, index=all_cols.index(default_x) if default_x in all_cols else 0)
       with col2:
-          y_cols = st.multiselect("Y column(s)", all_cols, default=[default_y] if default_y in all_cols else [])
-      with col3:
+        # allow multiple Y cols
+        y_cols = st.multiselect(
+            "Y column(s)", 
+            options=df.columns.tolist(), 
+            default=[df.columns[1]]  # default to one column
+        )
+        
+        long_df = df.melt(id_vars=[x_col], value_vars=y_cols,
+                          var_name="series", value_name="y")      
+        with col3:
           color_col = st.selectbox("Color / condition (optional)", ["(none)"] + all_cols)
   
       filters = {}
@@ -203,14 +211,14 @@ def run():
           )
   
       palette = parse_custom_colors(custom_colors) or PLOTLY_PALETTES.get(palette_name)
+      long_df = long_df.sort_values(by=x_col)
+
   
       if plot_type == "Line":
           fig = px.line(
-              long_df, x=x_col, y="y",
-              color=color_col if color_col else "series",
-              line_group="series" if color_col else None,
-              color_discrete_sequence=palette
-          )
+                        long_df, x=x_col, y="y",
+                        color="series"   # color by series name
+                        )
           if marker_mode:
               fig.update_traces(mode="lines+markers", marker=dict(size=point_size), opacity=opacity)
           else:
