@@ -212,6 +212,8 @@ def run():
   
       palette = parse_custom_colors(custom_colors) or PLOTLY_PALETTES.get(palette_name)
       long_df = long_df.sort_values(by=x_col)
+      long_df = long_df.sort_values([ "series", x_col ])
+
 
   
       if plot_type == "Line":
