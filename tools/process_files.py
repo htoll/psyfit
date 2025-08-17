@@ -7,51 +7,38 @@ from utils import integrate_sif, plot_brightness, plot_histogram
 
 
 @st.cache_data
-def process_files(files_or_paths, region):
+def process_files(uploaded_files, region):
     """
-    Accepts either:
-      - iterable of Streamlit UploadedFile objects, or
-      - iterable of string file paths
-
-    Returns:
-      processed_data: dict keyed by base filename
-      combined_df: pandas DataFrame
+    Processes all uploaded .sif files and returns a dictionary of dataframes
+    and images, plus a single combined dataframe for the histogram.
     """
-    temp_dir = tempfile.mkdtemp()
-    local_paths = []  # [(display_name, local_path)]
-
-    for item in files_or_paths:
-        # Case 1: Streamlit UploadedFile-like object
-        if hasattr(item, "name") and hasattr(item, "getbuffer"):
-            display_name = os.path.basename(item.name)
-            local_path = os.path.join(temp_dir, display_name)
-            with open(local_path, "wb") as f:
-                f.write(item.getbuffer())
-            local_paths.append((display_name, local_path))
-
-        # Case 2: Already a path string
-        elif isinstance(item, str):
-            display_name = os.path.basename(item)
-            # Copy to a working temp dir (optional but keeps behavior consistent)
-            local_path = os.path.join(temp_dir, display_name)
-            if os.path.abspath(item) != os.path.abspath(local_path):
-                shutil.copy2(item, local_path)
-            local_paths.append((display_name, local_path))
-
-        else:
-            raise TypeError(
-                f"Unsupported item type {type(item)} in process_files; "
-                "expected UploadedFile or str path."
-            )
-
-    # ----- Your existing heavy processing goes here -----
     processed_data = {}
-    combined_df = pd.DataFrame()
-
-    for display_name, local_path in local_paths:
-        # parse/process the .sif at `local_path`
-        # populate `processed_data[display_name] = {"df": ..., "image": ...}`
-        # and extend/concat into `combined_df`
-        pass  # <-- keep your current logic here
-
+    all_dfs = []
+    
+    # Use a temporary directory to store files
+    temp_dir = "temp"
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    for uploaded_file in uploaded_files:
+        file_path = os.path.join(temp_dir, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        try:
+            df, image_data_cps = integrate_sif(file_path, region=region)
+            processed_data[uploaded_file.name] = {
+                "df": df,
+                "image": image_data_cps,
+            }
+            all_dfs.append(df)
+            
+        except Exception as e:
+            st.error(f"Error processing {uploaded_file.name}: {e}")
+            
+    # Combine all dataframes into a single one for the histogram
+    if all_dfs:
+        combined_df = pd.concat(all_dfs, ignore_index=True)
+    else:
+        combined_df = pd.DataFrame()
+        
     return processed_data, combined_df
