@@ -6,6 +6,7 @@ from matplotlib.colors import LogNorm
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import plotly.express as px
+import shutil
 
 from utils import integrate_sif, plot_brightness, plot_histogram, HWT_aesthetic
 from tools.process_files import process_files
