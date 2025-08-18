@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import plotly.express as px
 
-from utils import integrate_sif, plot_brightness, plot_histogram, HWT_aesthetic
+from utils import plot_brightness, plot_histogram, HWT_aesthetic
 from tools.process_files import process_files
 
 
@@ -43,11 +43,10 @@ def _process_files_cached(saved_records, region):
     saved_records: tuple[(display_name:str, temp_path:str), ...]
     region: str
 
-    Note: We deliberately bypass Streamlit's caching on `process_files`
-    by calling its undecorated original via `__wrapped__`, so we don't
-    need to hash un/picklable upload objects.
+    We call the *undecorated* process_files via __wrapped__ to prevent
+    Streamlit from hashing unhashable upload objects inside that function.
     """
-    # Minimal UploadedFile-like wrapper
+    # Minimal UploadedFile-like wrapper (no __slots__, so picklable if ever needed)
     class _FakeUpload:
         def __init__(self, name, path):
             self.name = name
@@ -58,15 +57,24 @@ def _process_files_cached(saved_records, region):
 
     uploads = [_FakeUpload(name, path) for (name, path) in saved_records]
 
-    # Call the undecorated function if available, else fallback
-    pf = getattr(process_files, "__wrapped__", process_files)
+    # Bypass @st.cache_data on process_files
+    pf = getattr(process_files, "__wrapped__", None)
+    if pf is None:
+        # Fallback: some Streamlit versions may use .__wrapped__ differently.
+        # If it doesn't exist, we *must not* call the decorated version with uploads,
+        # or the UnhashableParamError will occur again.
+        raise RuntimeError(
+            "process_files.__wrapped__ not found; cannot bypass Streamlit cache. "
+            "Please ensure tools/process_files.py is decorated with functools.wraps "
+            "or expose the original function."
+        )
     return pf(uploads, region)
 
 
 def run():
     col1, col2 = st.columns([1, 2])
 
-    # persistent state
+    # Persistent state
     if "saved_files" not in st.session_state:
         # key -> (display_name, temp_path)  (legacy may be plain path str)
         st.session_state.saved_files = {}
@@ -104,13 +112,12 @@ def run():
             )
             st.session_state.selected_file_name = selected_file_name
 
-            threshold = st.number_input(
+            # Parameters (kept to preserve existing UI)
+            st.number_input(
                 "Threshold", min_value=0, value=2,
-                help=(
-                    "Stringency of fit, higher value is more selective:\n"
-                    "- UCNP signal sets absolute peak cut off\n"
-                    "- Dye signal sets sensitivity of blob detection"
-                )
+                help=("Stringency of fit, higher value is more selective:\n"
+                      "- UCNP signal sets absolute peak cut off\n"
+                      "- Dye signal sets sensitivity of blob detection")
             )
             diagram = (
                 "Splits sif into quadrants (256x256 px):\n"
@@ -121,15 +128,13 @@ def run():
                 "└─┴─┘"
             )
             region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
-            signal = st.selectbox(
+            st.selectbox(
                 "Signal", options=["UCNP", "dye"],
-                help=(
-                    "Changes detection method:\n"
-                    "- UCNP for high SNR (sklearn peakfinder)\n"
-                    "- dye for low SNR (sklearn blob detection)"
-                )
+                help=("Changes detection method:\n"
+                      "- UCNP for high SNR (sklearn peakfinder)\n"
+                      "- dye for low SNR (sklearn blob detection)")
             )
-            cmap = st.selectbox("Colormap", options=["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
+            cmap = st.selectbox("Colormap", options=["magma", "viridis", "plasma", "hot", "gray", "hsv"])
             st.session_state["monomers_cmap"] = cmap
 
             # PROCESS (explicit)
