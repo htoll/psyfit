@@ -43,10 +43,8 @@ def _process_files_cached(saved_records, region):
     saved_records: tuple[(display_name:str, temp_path:str), ...]
     region: str
 
-    We call the *undecorated* process_files via __wrapped__ to prevent
-    Streamlit from hashing unhashable upload objects inside that function.
+    Bypass Streamlit's cache on process_files by calling __wrapped__.
     """
-    # Minimal UploadedFile-like wrapper (no __slots__, so picklable if ever needed)
     class _FakeUpload:
         def __init__(self, name, path):
             self.name = name
@@ -56,17 +54,10 @@ def _process_files_cached(saved_records, region):
                 return memoryview(f.read())
 
     uploads = [_FakeUpload(name, path) for (name, path) in saved_records]
-
-    # Bypass @st.cache_data on process_files
     pf = getattr(process_files, "__wrapped__", None)
     if pf is None:
-        # Fallback: some Streamlit versions may use .__wrapped__ differently.
-        # If it doesn't exist, we *must not* call the decorated version with uploads,
-        # or the UnhashableParamError will occur again.
         raise RuntimeError(
-            "process_files.__wrapped__ not found; cannot bypass Streamlit cache. "
-            "Please ensure tools/process_files.py is decorated with functools.wraps "
-            "or expose the original function."
+            "process_files.__wrapped__ not found; cannot bypass Streamlit cache."
         )
     return pf(uploads, region)
 
@@ -88,22 +79,66 @@ def run():
             "Upload .sif file", type=["sif"], accept_multiple_files=True
         )
 
-        # QUICK SAVE (no processing yet)
+        # --- SYNC PHASE: make session match current uploader selection ---
+        prev_keys = set(st.session_state.saved_files.keys())
+        changed = False
+
+        # 1) Add new uploads
+        current_keys = set()
         if uploaded_files:
             for f in uploaded_files:
                 key = f"{f.name}:{_hash_file(f)}"
+                current_keys.add(key)
                 if key not in st.session_state.saved_files:
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".sif") as tmp:
                         tmp.write(f.getbuffer())
                         st.session_state.saved_files[key] = (f.name, tmp.name)
+                    changed = True
 
-        # Build options from normalized state (handles legacy)
+        # 2) Remove files no longer present in the uploader
+        #    (also clean up their temp files)
+        stale_keys = [k for k in st.session_state.saved_files.keys() if k not in current_keys]
+        for k in stale_keys:
+            val = st.session_state.saved_files[k]
+            name, path = (val if isinstance(val, (tuple, list)) and len(val) == 2 else (os.path.basename(val), val))
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+            del st.session_state.saved_files[k]
+            changed = True
+
+        # 3) If the set of saved files changed (added/removed), invalidate results
+        if changed or (set(st.session_state.saved_files.keys()) != prev_keys):
+            st.session_state.processed = None
+            # If selected file no longer exists, clear selection
+            current_names = [v[0] if isinstance(v, (tuple, list)) else os.path.basename(v)
+                             for v in st.session_state.saved_files.values()]
+            if st.session_state.selected_file_name not in current_names:
+                st.session_state.selected_file_name = None
+
+        # Optional convenience: a quick "Clear all" button
+        if st.button("Clear all uploaded files"):
+            # delete temps
+            for v in list(st.session_state.saved_files.values()):
+                name, path = (v if isinstance(v, (tuple, list)) and len(v) == 2 else (os.path.basename(v), v))
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except Exception:
+                    pass
+            st.session_state.saved_files = {}
+            st.session_state.processed = None
+            st.session_state.selected_file_name = None
+            st.experimental_rerun()
+
+        # --- UI to select file & params (based on synced saved_files) ---
         current_values = list(st.session_state.saved_files.values())
         normalized_records = _normalize_saved_values(current_values)
         file_options = [display for (display, _) in normalized_records]
 
         if file_options:
-            # keep selection in session
             default_index = 0
             if st.session_state.selected_file_name in file_options:
                 default_index = file_options.index(st.session_state.selected_file_name)
