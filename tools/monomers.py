@@ -32,36 +32,35 @@ def _normalize_saved_values(values_iterable):
             name, path = v
             normalized.append((str(name), str(path)))
         elif isinstance(v, str):
-            # Legacy format: only a temp path stored
             name = os.path.basename(v)
             normalized.append((name, v))
-        else:
-            # Unexpected; skip gracefully
-            continue
     return normalized
 
 
 @st.cache_data(show_spinner=False)
 def _process_files_cached(saved_records, region):
     """
-    saved_records: tuple of (display_name:str, temp_path:str)
+    saved_records: tuple[(display_name:str, temp_path:str), ...]
     region: str
 
-    Reconstruct minimal UploadedFile-like wrappers that expose
-    `.name` and `.getbuffer()` so `process_files` can operate unchanged.
+    Note: We deliberately bypass Streamlit's caching on `process_files`
+    by calling its undecorated original via `__wrapped__`, so we don't
+    need to hash un/picklable upload objects.
     """
+    # Minimal UploadedFile-like wrapper
     class _FakeUpload:
-        __slots__ = ("name", "_path")
         def __init__(self, name, path):
             self.name = name
             self._path = path
         def getbuffer(self):
             with open(self._path, "rb") as f:
-                data = f.read()
-            return memoryview(data)
+                return memoryview(f.read())
 
     uploads = [_FakeUpload(name, path) for (name, path) in saved_records]
-    return process_files(uploads, region)
+
+    # Call the undecorated function if available, else fallback
+    pf = getattr(process_files, "__wrapped__", process_files)
+    return pf(uploads, region)
 
 
 def run():
@@ -69,7 +68,7 @@ def run():
 
     # persistent state
     if "saved_files" not in st.session_state:
-        # maps internal key -> (display_name, temp_path)  OR (legacy) -> temp_path
+        # key -> (display_name, temp_path)  (legacy may be plain path str)
         st.session_state.saved_files = {}
     if "processed" not in st.session_state:
         st.session_state.processed = None  # (processed_data, combined_df)
@@ -90,7 +89,7 @@ def run():
                         tmp.write(f.getbuffer())
                         st.session_state.saved_files[key] = (f.name, tmp.name)
 
-        # selection + params if anything saved
+        # Build options from normalized state (handles legacy)
         current_values = list(st.session_state.saved_files.values())
         normalized_records = _normalize_saved_values(current_values)
         file_options = [display for (display, _) in normalized_records]
@@ -131,14 +130,12 @@ def run():
                 )
             )
             cmap = st.selectbox("Colormap", options=["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
-            # stash cmap if you want to reuse on reruns
             st.session_state["monomers_cmap"] = cmap
 
             # PROCESS (explicit)
             if st.button("Process uploaded files"):
                 with st.spinner("Processing…"):
-                    # cache key is a tuple of tuples with only strings (hashable)
-                    saved_records = tuple(normalized_records)
+                    saved_records = tuple(normalized_records)  # hashable key of strings
                     processed_data, combined_df = _process_files_cached(saved_records, region)
                     st.session_state.processed = (processed_data, combined_df)
 
@@ -154,7 +151,6 @@ def run():
 
             selected_file_name = st.session_state.get("selected_file_name")
             if not selected_file_name and processed_data:
-                # fallback to first key
                 selected_file_name = next(iter(processed_data.keys()))
                 st.session_state.selected_file_name = selected_file_name
 
@@ -282,7 +278,7 @@ def run():
         # Summary PSF count bar plot in left column (col1)
         with col1:
             if st.session_state.get("processed"):
-                processed = st.session_state.processed[0]  # processed_data dict
+                processed = st.session_state.processed[0]
                 psf_counts = {os.path.basename(name): len(processed[name]["df"]) for name in processed.keys()}
 
                 def extract_sif_number(filename):
