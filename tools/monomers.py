@@ -1,15 +1,16 @@
+# tools/monomers.py
 import streamlit as st
-import os, io, tempfile, hashlib
+import os, io, tempfile, hashlib, re
 import pandas as pd
 import numpy as np
 from matplotlib.colors import LogNorm
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import plotly.express as px
-import shutil
 
 from utils import integrate_sif, plot_brightness, plot_histogram, HWT_aesthetic
 from tools.process_files import process_files
+
 
 def _hash_file(uploaded_file):
     # stable cache key for content
@@ -18,20 +19,40 @@ def _hash_file(uploaded_file):
     uploaded_file.seek(0)
     return h
 
+
 @st.cache_data(show_spinner=False)
-def _process_files_cached(file_paths, region):
-    # Do the heavy work ONCE per content/region combo
-    # (You can include other params if they affect processing)
-    return process_files(file_paths, region)
+def _process_files_cached(saved_records, region):
+    """
+    saved_records: tuple of (display_name:str, temp_path:str)
+    region: str
+    We reconstruct simple UploadedFile-like wrappers that expose
+    `.name` and `.getbuffer()` so process_files can operate unchanged.
+    """
+    class _FakeUpload:
+        __slots__ = ("name", "_path")
+        def __init__(self, name, path):
+            self.name = name
+            self._path = path
+        def getbuffer(self):
+            # Return a fresh memoryview each call, as Streamlit's UploadedFile does
+            data = open(self._path, "rb").read()
+            return memoryview(data)
+
+    uploads = [_FakeUpload(name, path) for (name, path) in saved_records]
+    return process_files(uploads, region)
+
 
 def run():
     col1, col2 = st.columns([1, 2])
 
-    # hold paths and keys between reruns
+    # hold paths and metadata between reruns
     if "saved_files" not in st.session_state:
-        st.session_state.saved_files = {}   # {display_name: local_path}
+        # maps internal key -> (display_name, temp_path)
+        st.session_state.saved_files = {}
     if "processed" not in st.session_state:
-        st.session_state.processed = None   # (processed_data, combined_df)
+        st.session_state.processed = None  # (processed_data, combined_df)
+    if "selected_file_name" not in st.session_state:
+        st.session_state.selected_file_name = None
 
     with col1:
         uploaded_files = st.file_uploader(
@@ -47,38 +68,54 @@ def run():
                         tmp.write(f.getbuffer())
                         st.session_state.saved_files[key] = (f.name, tmp.name)
 
-            file_options = [display for (display, _) in st.session_state.saved_files.values()]
-            selected_file_name = st.selectbox("Select sif to display:", options=file_options)
+        # If we have any saved files, allow selection and params
+        file_options = [display for (display, _) in st.session_state.saved_files.values()]
+        if file_options:
+            # keep user's choice in session so display phase works on rerun
+            default_index = 0
+            if st.session_state.selected_file_name in file_options:
+                default_index = file_options.index(st.session_state.selected_file_name)
+            selected_file_name = st.selectbox(
+                "Select sif to display:", options=file_options, index=default_index
+            )
+            st.session_state.selected_file_name = selected_file_name
 
-            threshold = st.number_input("Threshold", min_value=0, value=2, help='''
-                Stringency of fit, higher value is more selective:  
-                - UCNP signal sets absolute peak cut off  
-                - Dye signal sets sensitivity of blob detection
-            ''')
-            diagram = """ Splits sif into quadrants (256x256 px):  
-            ┌─┬─┐  
-            │ 1 │ 2 │  
-            ├─┼─┤  
-            │ 3 │ 4 │  
-            └─┴─┘
-            """
+            threshold = st.number_input(
+                "Threshold", min_value=0, value=2,
+                help=(
+                    "Stringency of fit, higher value is more selective:\n"
+                    "- UCNP signal sets absolute peak cut off\n"
+                    "- Dye signal sets sensitivity of blob detection"
+                )
+            )
+            diagram = (
+                "Splits sif into quadrants (256x256 px):\n"
+                "┌─┬─┐\n"
+                "│ 1 │ 2 │\n"
+                "├─┼─┤\n"
+                "│ 3 │ 4 │\n"
+                "└─┴─┘"
+            )
             region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
-            signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''
-                Changes detection method:  
-                - UCNP for high SNR (sklearn peakfinder)  
-                - dye for low SNR (sklearn blob detection)
-            ''')
+            signal = st.selectbox(
+                "Signal", options=["UCNP", "dye"],
+                help=(
+                    "Changes detection method:\n"
+                    "- UCNP for high SNR (sklearn peakfinder)\n"
+                    "- dye for low SNR (sklearn blob detection)"
+                )
+            )
             cmap = st.selectbox("Colormap", options=["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
 
             # PROCESS PHASE (explicit)
-            to_process_paths = [p for (_, p) in st.session_state.saved_files.values()]
+            # Cache with a hashable tuple of (display_name, temp_path)
+            saved_records = tuple(st.session_state.saved_files.values())
             if st.button("Process uploaded files"):
                 with st.spinner("Processing…"):
-                    # Use cached heavy function — returns fast on rerun
-                    processed_data, combined_df = _process_files_cached(tuple(to_process_paths), region)
+                    processed_data, combined_df = _process_files_cached(saved_records, region)
                     st.session_state.processed = (processed_data, combined_df)
 
-    # DISPLAY PHASE (safe to render anytime)
+    # DISPLAY PHASE (safe to render anytime after processing)
     if st.session_state.get("processed"):
         processed_data, combined_df = st.session_state.processed
 
@@ -88,42 +125,39 @@ def run():
             show_fits = st.checkbox("Show fits")
             normalization = st.checkbox("Log Image Scaling")
 
-            # map selected display name back to the processed key
-            if uploaded_files:
-                selected_display = st.session_state.get("selected_display")  # optional if you store it
-                # your original lookup by name still works if keys match
-                # but if process_files keyed by base filename only, ensure it matches here:
-                # e.g., selected_file_name = st.selectbox(...) above can be kept in session_state
+            selected_file_name = st.session_state.get("selected_file_name")
+            if not selected_file_name:
+                # fallback to first available
+                selected_file_name = next(iter(processed_data.keys()), None)
+                st.session_state.selected_file_name = selected_file_name
 
-            # If your processed_data keys are the original basenames:
-            # selected_file_name comes from the selectbox above
-            if uploaded_files:
-                if selected_file_name in processed_data:
-                    data_to_plot = processed_data[selected_file_name]
-                    df_selected = data_to_plot["df"]
-                    image_data_cps = data_to_plot["image"]
-                    normalization_to_use = LogNorm() if normalization else None
+            if selected_file_name in processed_data:
+                data_to_plot = processed_data[selected_file_name]
+                df_selected = data_to_plot["df"]
+                image_data_cps = data_to_plot["image"]
+                normalization_to_use = LogNorm() if normalization else None
 
-                    fig_image = plot_brightness(
-                        image_data_cps,
-                        df_selected,
-                        show_fits=show_fits,
-                        normalization=normalization_to_use,
-                        pix_size_um=0.1,
-                        cmap=cmap
-                    )
-                    st.pyplot(fig_image)
+                fig_image = plot_brightness(
+                    image_data_cps,
+                    df_selected,
+                    show_fits=show_fits,
+                    normalization=normalization_to_use,
+                    pix_size_um=0.1,
+                    cmap=st.session_state.get("cmap", "magma") if 'cmap' in st.session_state else None
+                    or 'magma'  # harmless default; the function accepts a name
+                )
+                st.pyplot(fig_image)
 
-                    svg_buffer = io.StringIO()
-                    fig_image.savefig(svg_buffer, format='svg')
-                    st.download_button(
-                        label="Download PSFs",
-                        data=svg_buffer.getvalue(),
-                        file_name=f"{selected_file_name}.svg",
-                        mime="image/svg+xml"
-                    )
-                else:
-                    st.error(f"Data for file '{selected_file_name}' not found.")
+                svg_buffer = io.StringIO()
+                fig_image.savefig(svg_buffer, format='svg')
+                st.download_button(
+                    label="Download PSFs",
+                    data=svg_buffer.getvalue(),
+                    file_name=f"{selected_file_name}.svg",
+                    mime="image/svg+xml"
+                )
+            else:
+                st.error(f"Data for file '{selected_file_name}' not found.")
 
         with plot_col2:
             if not combined_df.empty:
@@ -135,7 +169,8 @@ def run():
                 user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
 
                 try:
-                    user_min_val = float(user_min_val_str); user_max_val = float(user_max_val_str)
+                    user_min_val = float(user_min_val_str)
+                    user_max_val = float(user_max_val_str)
                 except ValueError:
                     st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
                     st.stop()
@@ -143,7 +178,11 @@ def run():
                 if user_min_val >= user_max_val:
                     st.warning("Min brightness must be less than max brightness.")
                 else:
-                    thresholding_method = st.selectbox("Choose thresholding method:", options=["Automatic (Mu/Sigma)", "Manual"], help="Automatic sets thresholds at 1.5μ, 2.5μ, 3.5μ")
+                    thresholding_method = st.selectbox(
+                        "Choose thresholding method:",
+                        options=["Automatic (Mu/Sigma)", "Manual"],
+                        help="Automatic sets thresholds at 1.5μ, 2.5μ, 3.5μ"
+                    )
                     num_bins = st.number_input("# Bins:", value=50)
 
                     fig_hist, mu, sigma = plot_histogram(
@@ -183,12 +222,15 @@ def run():
                             bins_for_pie = [user_min_val] + thresholds + [user_max_val]
                             num_bins_pie = len(bins_for_pie) - 1
                             base_labels = ["Monomers", "Dimers", "Trimers", "Multimers"]
-                            labels_for_pie = base_labels[:num_bins_pie] if num_bins_pie <= len(base_labels) else base_labels + [f"Group {i+1}" for i in range(len(base_labels), num_bins_pie)]
+                            labels_for_pie = (
+                                base_labels[:num_bins_pie]
+                                if num_bins_pie <= len(base_labels)
+                                else base_labels + [f"Group {i+1}" for i in range(len(base_labels), num_bins_pie)]
+                            )
 
                             if len(labels_for_pie) != num_bins_pie:
                                 st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins_pie} bins.")
                             else:
-                                import pandas as pd, matplotlib.colors as mcolors, plotly.express as px
                                 categories = pd.cut(
                                     combined_df['brightness_fit'],
                                     bins=bins_for_pie,
@@ -216,10 +258,10 @@ def run():
         with col1:
             if st.session_state.get("processed"):
                 psf_counts = {
-                    os.path.basename(name): len(processed_data[name]["df"])
-                    for name in processed_data.keys()
+                    os.path.basename(name): len(st.session_state.processed[0][name]["df"])
+                    for name in st.session_state.processed[0].keys()
                 }
-                import re
+
                 def extract_sif_number(filename):
                     m = re.search(r'_([0-9]+)\.sif$', filename)
                     return m.group(1) if m else filename
