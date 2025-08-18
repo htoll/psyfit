@@ -13,11 +13,32 @@ from tools.process_files import process_files
 
 
 def _hash_file(uploaded_file):
-    # stable cache key for content
     uploaded_file.seek(0)
     h = hashlib.md5(uploaded_file.read()).hexdigest()
     uploaded_file.seek(0)
     return h
+
+
+def _normalize_saved_values(values_iterable):
+    """
+    Accept values that might be either:
+      - (display_name, temp_path) tuples (new format), OR
+      - plain path strings from older runs (legacy)
+    Return a list of (display_name, temp_path) tuples.
+    """
+    normalized = []
+    for v in values_iterable:
+        if isinstance(v, (tuple, list)) and len(v) == 2:
+            name, path = v
+            normalized.append((str(name), str(path)))
+        elif isinstance(v, str):
+            # Legacy format: only a temp path stored
+            name = os.path.basename(v)
+            normalized.append((name, v))
+        else:
+            # Unexpected; skip gracefully
+            continue
+    return normalized
 
 
 @st.cache_data(show_spinner=False)
@@ -25,8 +46,9 @@ def _process_files_cached(saved_records, region):
     """
     saved_records: tuple of (display_name:str, temp_path:str)
     region: str
-    We reconstruct simple UploadedFile-like wrappers that expose
-    `.name` and `.getbuffer()` so process_files can operate unchanged.
+
+    Reconstruct minimal UploadedFile-like wrappers that expose
+    `.name` and `.getbuffer()` so `process_files` can operate unchanged.
     """
     class _FakeUpload:
         __slots__ = ("name", "_path")
@@ -34,8 +56,8 @@ def _process_files_cached(saved_records, region):
             self.name = name
             self._path = path
         def getbuffer(self):
-            # Return a fresh memoryview each call, as Streamlit's UploadedFile does
-            data = open(self._path, "rb").read()
+            with open(self._path, "rb") as f:
+                data = f.read()
             return memoryview(data)
 
     uploads = [_FakeUpload(name, path) for (name, path) in saved_records]
@@ -45,9 +67,9 @@ def _process_files_cached(saved_records, region):
 def run():
     col1, col2 = st.columns([1, 2])
 
-    # hold paths and metadata between reruns
+    # persistent state
     if "saved_files" not in st.session_state:
-        # maps internal key -> (display_name, temp_path)
+        # maps internal key -> (display_name, temp_path)  OR (legacy) -> temp_path
         st.session_state.saved_files = {}
     if "processed" not in st.session_state:
         st.session_state.processed = None  # (processed_data, combined_df)
@@ -59,7 +81,7 @@ def run():
             "Upload .sif file", type=["sif"], accept_multiple_files=True
         )
 
-        # QUICK SAVE PHASE (do NOT process yet)
+        # QUICK SAVE (no processing yet)
         if uploaded_files:
             for f in uploaded_files:
                 key = f"{f.name}:{_hash_file(f)}"
@@ -68,10 +90,13 @@ def run():
                         tmp.write(f.getbuffer())
                         st.session_state.saved_files[key] = (f.name, tmp.name)
 
-        # If we have any saved files, allow selection and params
-        file_options = [display for (display, _) in st.session_state.saved_files.values()]
+        # selection + params if anything saved
+        current_values = list(st.session_state.saved_files.values())
+        normalized_records = _normalize_saved_values(current_values)
+        file_options = [display for (display, _) in normalized_records]
+
         if file_options:
-            # keep user's choice in session so display phase works on rerun
+            # keep selection in session
             default_index = 0
             if st.session_state.selected_file_name in file_options:
                 default_index = file_options.index(st.session_state.selected_file_name)
@@ -106,16 +131,18 @@ def run():
                 )
             )
             cmap = st.selectbox("Colormap", options=["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
+            # stash cmap if you want to reuse on reruns
+            st.session_state["monomers_cmap"] = cmap
 
-            # PROCESS PHASE (explicit)
-            # Cache with a hashable tuple of (display_name, temp_path)
-            saved_records = tuple(st.session_state.saved_files.values())
+            # PROCESS (explicit)
             if st.button("Process uploaded files"):
                 with st.spinner("Processing…"):
+                    # cache key is a tuple of tuples with only strings (hashable)
+                    saved_records = tuple(normalized_records)
                     processed_data, combined_df = _process_files_cached(saved_records, region)
                     st.session_state.processed = (processed_data, combined_df)
 
-    # DISPLAY PHASE (safe to render anytime after processing)
+    # DISPLAY
     if st.session_state.get("processed"):
         processed_data, combined_df = st.session_state.processed
 
@@ -126,9 +153,9 @@ def run():
             normalization = st.checkbox("Log Image Scaling")
 
             selected_file_name = st.session_state.get("selected_file_name")
-            if not selected_file_name:
-                # fallback to first available
-                selected_file_name = next(iter(processed_data.keys()), None)
+            if not selected_file_name and processed_data:
+                # fallback to first key
+                selected_file_name = next(iter(processed_data.keys()))
                 st.session_state.selected_file_name = selected_file_name
 
             if selected_file_name in processed_data:
@@ -143,8 +170,7 @@ def run():
                     show_fits=show_fits,
                     normalization=normalization_to_use,
                     pix_size_um=0.1,
-                    cmap=st.session_state.get("cmap", "magma") if 'cmap' in st.session_state else None
-                    or 'magma'  # harmless default; the function accepts a name
+                    cmap=st.session_state.get("monomers_cmap", "magma"),
                 )
                 st.pyplot(fig_image)
 
@@ -169,8 +195,7 @@ def run():
                 user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
 
                 try:
-                    user_min_val = float(user_min_val_str)
-                    user_max_val = float(user_max_val_str)
+                    user_min_val = float(user_min_val_str); user_max_val = float(user_max_val_str)
                 except ValueError:
                     st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
                     st.stop()
@@ -257,10 +282,8 @@ def run():
         # Summary PSF count bar plot in left column (col1)
         with col1:
             if st.session_state.get("processed"):
-                psf_counts = {
-                    os.path.basename(name): len(st.session_state.processed[0][name]["df"])
-                    for name in st.session_state.processed[0].keys()
-                }
+                processed = st.session_state.processed[0]  # processed_data dict
+                psf_counts = {os.path.basename(name): len(processed[name]["df"]) for name in processed.keys()}
 
                 def extract_sif_number(filename):
                     m = re.search(r'_([0-9]+)\.sif$', filename)
@@ -268,7 +291,7 @@ def run():
 
                 file_names = [extract_sif_number(n) for n in psf_counts.keys()]
                 counts = list(psf_counts.values())
-                mean_count = np.mean(counts)
+                mean_count = np.mean(counts) if counts else 0
 
                 fig_count, ax_count = plt.subplots(figsize=(5, 3))
                 ax_count.bar(file_names, counts)
