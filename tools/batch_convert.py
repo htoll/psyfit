@@ -48,7 +48,7 @@ def run():
         
         if st.session_state.convert and uploaded_files:
             try:
-                processed_data, combined_df = process_files(uploaded_files, region)
+                processed_data, combined_df = process_files(uploaded_files, region, threshold = threshold, signal = signal)
                 
                 plot_all_sifs(sif_files=uploaded_files, 
                             df_dict=processed_data,
