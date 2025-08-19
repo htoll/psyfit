@@ -194,7 +194,7 @@ def run():
 
         with plot_col1:
             show_fits = st.checkbox("Show fits", value=True)
-            normalization = st.checkbox("Log Image Scaling", Value = True)
+            normalization = st.checkbox("Log Image Scaling", value = True)
 
             selected_file_name = st.session_state.get("selected_file_name")
             if not selected_file_name and processed_data:
