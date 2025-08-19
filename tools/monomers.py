@@ -162,6 +162,13 @@ def run():
                                           "- UCNP for high SNR (sklearn peakfinder)\n"
                                           "- dye for low SNR (sklearn blob detection)")
                                     )
+            diagram = """ Splits sif into quadrants (256x256 px):  
+                                ┌─┬─┐  
+                                │ 1 │ 2 │  
+                                ├─┼─┤  
+                                │ 3 │ 4 │  
+                                └─┴─┘
+                                """
             region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
 
             cmap = st.selectbox("Colormap", options=["magma", "viridis", "plasma", "hot", "gray", "hsv"])
