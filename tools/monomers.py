@@ -38,13 +38,7 @@ def _normalize_saved_values(values_iterable):
 
 
 @st.cache_data(show_spinner=False)
-def _process_files_cached(saved_records, region):
-    """
-    saved_records: tuple[(display_name:str, temp_path:str), ...]
-    region: str
-
-    Bypass Streamlit's cache on process_files by calling __wrapped__.
-    """
+def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3):
     class _FakeUpload:
         def __init__(self, name, path):
             self.name = name
@@ -56,10 +50,17 @@ def _process_files_cached(saved_records, region):
     uploads = [_FakeUpload(name, path) for (name, path) in saved_records]
     pf = getattr(process_files, "__wrapped__", None)
     if pf is None:
-        raise RuntimeError(
-            "process_files.__wrapped__ not found; cannot bypass Streamlit cache."
-        )
-    return pf(uploads, region)
+        raise RuntimeError("process_files.__wrapped__ not found; cannot bypass Streamlit cache.")
+
+    # FORWARD the parameters to process_files.__wrapped__
+    return pf(
+        uploads,
+        region=region,
+        threshold=threshold,
+        signal=signal,
+        pix_size_um=pix_size_um,
+        sig_threshold=sig_threshold,
+    )
 
 
 def run():
@@ -148,35 +149,34 @@ def run():
             st.session_state.selected_file_name = selected_file_name
 
             # Parameters (kept to preserve existing UI)
-            st.number_input(
-                "Threshold", min_value=0, value=2,
-                help=("Stringency of fit, higher value is more selective:\n"
-                      "- UCNP signal sets absolute peak cut off\n"
-                      "- Dye signal sets sensitivity of blob detection")
-            )
-            diagram = (
-                "Splits sif into quadrants (256x256 px):\n"
-                "┌─┬─┐\n"
-                "│ 1 │ 2 │\n"
-                "├─┼─┤\n"
-                "│ 3 │ 4 │\n"
-                "└─┴─┘"
-            )
+            threshold = st.number_input(
+                                        "Threshold", min_value=0, value=2,
+                                        help=("Stringency of fit, higher value is more selective:\n"
+                                              "- UCNP signal sets absolute peak cut off\n"
+                                              "- Dye signal sets sensitivity of blob detection")
+                                        )
+
+            signal = st.selectbox(
+                                    "Signal", options=["UCNP", "dye"],
+                                    help=("Changes detection method:\n"
+                                          "- UCNP for high SNR (sklearn peakfinder)\n"
+                                          "- dye for low SNR (sklearn blob detection)")
+                                    )
             region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
-            st.selectbox(
-                "Signal", options=["UCNP", "dye"],
-                help=("Changes detection method:\n"
-                      "- UCNP for high SNR (sklearn peakfinder)\n"
-                      "- dye for low SNR (sklearn blob detection)")
-            )
+
             cmap = st.selectbox("Colormap", options=["magma", "viridis", "plasma", "hot", "gray", "hsv"])
             st.session_state["monomers_cmap"] = cmap
 
             # PROCESS (explicit)
             if st.button("Process uploaded files"):
                 with st.spinner("Processing…"):
-                    saved_records = tuple(normalized_records)  # hashable key of strings
-                    processed_data, combined_df = _process_files_cached(saved_records, region)
+                    saved_records = tuple(normalized_records)
+                    processed_data, combined_df = _process_files_cached(
+                        saved_records,
+                        region=region,
+                        threshold=threshold,   # NEW
+                        signal=signal,         # NEW
+                    )
                     st.session_state.processed = (processed_data, combined_df)
 
     # DISPLAY
