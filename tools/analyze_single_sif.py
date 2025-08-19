@@ -51,7 +51,7 @@ def run():
     
         if st.session_state.analyze_clicked and uploaded_files:
             try:
-                processed_data, combined_df = process_files(uploaded_files, region)
+                processed_data, combined_df = process_files(uploaded_files, region, threshold = threshold, signal=signal)
     
                 if len(uploaded_files) > 1:
                     file_options = [f.name for f in uploaded_files]
