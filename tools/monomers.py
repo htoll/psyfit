@@ -150,7 +150,7 @@ def run():
 
             # Parameters (kept to preserve existing UI)
             threshold = st.number_input(
-                                        "Threshold", min_value=0, value=2,
+                                        "Threshold", min_value=0, value=10,
                                         help=("Stringency of fit, higher value is more selective:\n"
                                               "- UCNP signal sets absolute peak cut off\n"
                                               "- Dye signal sets sensitivity of blob detection")
@@ -181,8 +181,8 @@ def run():
                     processed_data, combined_df = _process_files_cached(
                         saved_records,
                         region=region,
-                        threshold=threshold,   # NEW
-                        signal=signal,         # NEW
+                        threshold=threshold,   
+                        signal=signal,         
                     )
                     st.session_state.processed = (processed_data, combined_df)
 
@@ -193,8 +193,8 @@ def run():
         plot_col1, plot_col2 = col2.columns(2)
 
         with plot_col1:
-            show_fits = st.checkbox("Show fits")
-            normalization = st.checkbox("Log Image Scaling")
+            show_fits = st.checkbox("Show fits", value=True)
+            normalization = st.checkbox("Log Image Scaling", Value = True)
 
             selected_file_name = st.session_state.get("selected_file_name")
             if not selected_file_name and processed_data:
