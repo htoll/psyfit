@@ -5,6 +5,8 @@
 
 import io
 import os
+import tempfile
+from pathlib import Path
 from typing import Dict, Tuple, List
 import numpy as np
 import pandas as pd
@@ -37,33 +39,31 @@ try:
 except Exception:
     sif_parser = None
 
-def _bytesio_with_name(uploaded_file) -> io.BytesIO:
-    """Return a fresh BytesIO carrying a .name attribute to mimic a real file object."""
+_TMP_DIR = Path(tempfile.gettempdir()) / "coloc_sifs"
+_TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+def _persist_to_temp(uploaded_file) -> Path:
+    """Write UploadedFile to a temp file with original name (ensures .sif extension & .name).
+    Returns the filesystem Path. We also reset the UploadedFile pointer for other tools.
+    """
     data = uploaded_file.read()
-    # Reset original pointer so other parts of the app can reuse the UploadedFile
     try:
         uploaded_file.seek(0)
     except Exception:
         pass
-    bio = io.BytesIO(data)
-    try:
-        bio.name = uploaded_file.name  # some libs (or your utils) inspect .name
-    except Exception:
-        pass
-    return bio
+    # Use original filename; ensure uniqueness by namespacing under a per-session dir
+    fname = Path(uploaded_file.name).name
+    path = _TMP_DIR / fname
+    # If file exists with different content, overwrite
+    with open(path, "wb") as out:
+        out.write(data)
+    return path
 
-def _preflight_nonblocking(bio_named: io.BytesIO) -> bool:
-    """Soft check: returns True if readable; but failures do NOT block downstream processing."""
+def _preflight_path(path: Path) -> bool:
     if sif_parser is None:
         return True
     try:
-        # Use a new handle for the read since np_open may consume it
-        temp = io.BytesIO(bio_named.getvalue())
-        try:
-            temp.name = getattr(bio_named, "name", None) or "uploaded.sif"
-        except Exception:
-            pass
-        arr, meta = sif_parser.np_open(temp, ignore_corrupt=True)
+        arr, meta = sif_parser.np_open(str(path), ignore_corrupt=True)
         arr = np.asarray(arr) if arr is not None else None
         return bool(arr is not None and arr.size > 0 and arr.ndim >= 2)
     except Exception:
@@ -107,24 +107,24 @@ def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: flo
     skipped: List[str] = []
     soft_failed: List[str] = []
 
+    # Persist all files to disk with original names
+    path_map: Dict[str, Path] = {}
     for f in sif_files:
-        # Create a Named BytesIO that preserves .name
-        bio = _bytesio_with_name(f)
-        # Soft preflight: warn but do not skip
-        if not _preflight_nonblocking(bio):
-            soft_failed.append(f.name)
         try:
-            fname = f.name
-            signal = "UCNP" if signal_guess_ucnp in fname else ("Dye" if signal_guess_dye in fname else "Unknown")
+            path_map[f.name] = _persist_to_temp(f)
+        except Exception as e:
+            skipped.append(f.name)
+            st.error(f"Failed to stage {f.name} to temp: {e}")
+
+    for fname, path in path_map.items():
+        # Soft preflight by PATH (do not block on failure)
+        if not _preflight_path(path):
+            soft_failed.append(fname)
+        try:
+            signal = "UCNP" if "976" in fname else ("Dye" if "638" in fname else "Unknown")
             img, meta, df_est = None, None, None
-            # Always pass a fresh stream to the utils call
-            bio_call = io.BytesIO(bio.getvalue())
             try:
-                bio_call.name = fname
-            except Exception:
-                pass
-            try:
-                out = utils.integrate_sif(bio_call, signal=signal, pix_size_um=pix_size_um)
+                out = utils.integrate_sif(str(path), signal=signal, pix_size_um=pix_size_um)
                 if isinstance(out, tuple) and len(out) >= 2:
                     img, meta = out[0], out[1]
                     if len(out) >= 3 and hasattr(out[2], "columns"):
@@ -132,25 +132,19 @@ def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: flo
                 else:
                     img = out
             except TypeError:
-                bio_call2 = io.BytesIO(bio.getvalue())
-                try:
-                    bio_call2.name = fname
-                except Exception:
-                    pass
-                out = utils.integrate_sif(bio_call2)
+                out = utils.integrate_sif(str(path))
                 if isinstance(out, tuple):
                     img = out[0]
                 else:
                     img = out
                 meta = {}
-
             base_noext = os.path.splitext(os.path.basename(fname))[0]
             df = fit_map.get(base_noext, None) or df_est or pd.DataFrame()
             df_dict_obj[fname] = {"df": df, "image": img}
             df_dict_tuple[fname] = (df, img)
         except Exception as e:
-            skipped.append(f.name)
-            st.error(f"Failed to process {f.name}: {e}")
+            skipped.append(fname)
+            st.error(f"Failed to process {fname}: {e}")
     return df_dict_obj, df_dict_tuple, skipped, soft_failed
 
 def run():
@@ -179,15 +173,13 @@ def run():
         st.info("Upload SIF files to begin.")
         return
 
-    # Prepare data
     fit_map = _load_fit_csvs(fit_csvs)
     df_dict_obj, df_dict_tuple, skipped, soft_failed = _build_df_dict(sif_files, fit_map, pix_size_um=pix_size_um)
     if soft_failed:
-        st.warning("Preflight could not verify these SIFs, but processing was attempted anyway: " + ", ".join(soft_failed))
+        st.warning("Preflight could not verify these SIFs (still processed): " + ", ".join(soft_failed))
     if skipped:
         st.warning("Skipped file(s) due to processing errors: " + ", ".join(skipped))
 
-    # Tabs: Grid view and Paired UCNP↔Dye view
     tab_grid, tab_pairs = st.tabs(["Grid of SIFs", "Paired UCNP ↔ Dye"])
 
     with tab_grid:
@@ -197,7 +189,6 @@ def run():
             normalization = "log"
         elif norm_choice.startswith("Normalize"):
             normalization = "percentile"
-
         if hasattr(utils, "plot_all_sifs"):
             try:
                 results_df = utils.plot_all_sifs(
@@ -220,7 +211,6 @@ def run():
             except Exception as e:
                 results_df = None
                 st.error(f"plot_all_sifs failed: {e}")
-
             if isinstance(results_df, pd.DataFrame) and not results_df.empty:
                 st.success(f"Found {len(results_df)} colocalized pairs across all images.")
                 st.dataframe(results_df)
