@@ -27,6 +27,9 @@ warnings.filterwarnings("ignore", message="Adding colorbar to a different Figure
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="divide by zero encountered in divide")
 warnings.filterwarnings("ignore", category=OptimizeWarning)
 
+# Constant pixel size used throughout
+PIX_SIZE_UM = 0.1
+
 # Ensure we can import the coloc utils file the user provided
 import sys
 if "/mnt/data" not in sys.path:
@@ -115,7 +118,7 @@ def _load_fit_csvs(csv_files) -> Dict[str, pd.DataFrame]:
     return mapping
 
 
-def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: float, signal_guess_ucnp="976", signal_guess_dye="638") -> Tuple[Dict[str, dict], Dict[str, Tuple[pd.DataFrame, np.ndarray]], List[str], List[str]]:
+def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], threshold: int, region: str, signal_guess_ucnp="976", signal_guess_dye="638") -> Tuple[Dict[str, dict], Dict[str, Tuple[pd.DataFrame, np.ndarray]], List[str], List[str]]:
     """Return df_dicts + two lists: skipped (errors) and soft_failed (preflight warnings).
     - df_dict_obj[name] = {"df": df, "image": img_full}
     - df_dict_tuple[name] = (df, img_full)
@@ -151,7 +154,7 @@ def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: flo
         # Try to obtain a DF from utils.integrate_sif (optional)
         df_est = None
         try:
-            out = utils.integrate_sif(str(path), signal=("UCNP" if "976" in fname else ("Dye" if "638" in fname else "Unknown")), pix_size_um=pix_size_um)
+            out = utils.integrate_sif(str(path), threshold=threshold, region=region, signal=("UCNP" if "976" in fname else ("Dye" if "638" in fname else "Unknown")), pix_size_um=PIX_SIZE_UM)
             if isinstance(out, tuple) and len(out) >= 3 and hasattr(out[2], "columns"):
                 df_est = out[2]
         except Exception:
@@ -168,30 +171,31 @@ def run():
     st.title("Colocalization Set (UNDER CONSTRUCTION)")
     st.caption("Single-file Streamlit app wrapper that uses your `utils.py` functions without modifying them.")
 
-    with st.sidebar:
-        st.header("Inputs")
-        sif_files = st.file_uploader("SIF files (UCNP + Dye)", type=["sif"], accept_multiple_files=True)
-        csv_help = "Optional: upload one combined CSV with a 'sif_name'/'file' column, or per-image CSVs."
-        fit_csvs = st.file_uploader("Fit CSVs (optional)", type=["csv"], accept_multiple_files=True, help=csv_help)
+    
+with st.sidebar:
+    st.header("Inputs")
+    sif_files = st.file_uploader("SIF files (UCNP + Dye)", type=["sif"], accept_multiple_files=True)
+    csv_help = "Optional: upload one combined CSV with a 'sif_name'/'file' column, or per-image CSVs."
+    fit_csvs = st.file_uploader("Fit CSVs (optional)", type=["csv"], accept_multiple_files=True, help=csv_help)
 
-        st.divider()
-        st.header("Parameters")
-        pix_size_um = st.number_input("Pixel size (µm)", min_value=0.01, max_value=5.0, value=0.10, step=0.01, format="%.2f")
-        coloc_radius_um = st.number_input("Colocalization radius (µm)", min_value=0.05, max_value=10.0, value=0.20, step=0.05, format="%.2f")
-        show_fits = st.checkbox("Overlay fits / circles / labels (requires fit columns)", value=True)
-        st.caption("Required DF columns: x_pix, y_pix, sigx_fit, sigy_fit, brightness_fit")
+    st.divider()
+    st.header("Fitting parameters")
+    threshold = st.number_input("Threshold", min_value=0, value=2, help="Higher is more selective")
+    region = st.selectbox("Region", options=["1","2","3","4","all"], index=4)
 
-        st.subheader("Display options")
-        univ_minmax = st.checkbox("Use universal min/max across all images", value=False)
-        norm_choice = st.selectbox("Normalization", ["None", "LogNorm", "Normalize (0-99% percentile)"])
-        save_format = st.selectbox("Save format", ["SVG", "PNG", "PDF"], index=0)
+    st.header("Display")
+    show_fits = st.checkbox("Overlay fits / circles / labels", value=True)
+    cmap = st.selectbox("Colormap", options=["magma", "viridis", "plasma", "hot", "gray", "hsv"], index=0)
+    univ_minmax = st.checkbox("Use universal min/max across all images", value=False)
+    norm_choice = st.selectbox("Normalization", ["None", "LogNorm", "Normalize (0-99% percentile)"])
+    save_format = st.selectbox("Save format", ["SVG", "PNG", "PDF"], index=0)
 
     if not sif_files:
         st.info("Upload SIF files to begin.")
         return
 
     fit_map = _load_fit_csvs(fit_csvs)
-    df_dict_obj, df_dict_tuple, skipped, soft_failed = _build_df_dict(sif_files, fit_map, pix_size_um=pix_size_um)
+    df_dict_obj, df_dict_tuple, skipped, soft_failed = _build_df_dict(sif_files, fit_map, threshold=threshold, region=region)
     if soft_failed:
         st.warning("Preflight could not verify these SIFs (still processed): " + ", ".join(soft_failed))
     if skipped:
@@ -207,27 +211,38 @@ def run():
         elif norm_choice.startswith("Normalize"):
             normalization = "percentile"
         if hasattr(utils, "plot_all_sifs"):
-            try:
-                results_df = utils.plot_all_sifs(
-                    sif_files=sif_files,
-                    df_dict=df_dict_obj,
-                    colocalization_radius=max(1, int(round(coloc_radius_um / pix_size_um))),
-                    show_fits=show_fits,
-                    pix_size_um=pix_size_um,
-                    normalization=normalization,
-                    save_format=save_format,
-                    univ_minmax=univ_minmax,
-                )
-            except TypeError:
-                try:
-                    results_df = utils.plot_all_sifs(sif_files, df_dict_obj)
-                    st.info("utils.plot_all_sifs signature differs; used minimal call.")
-                except Exception as e:
-                    results_df = None
-                    st.error(f"plot_all_sifs failed (minimal): {e}")
-            except Exception as e:
-                results_df = None
-                st.error(f"plot_all_sifs failed: {e}")
+            
+try:
+    # Try with full kwargs including cmap if supported
+    results_df = utils.plot_all_sifs(
+        sif_files=sif_files,
+        df_dict=df_dict_obj,
+        colocalization_radius=max(1, int(round(2 / PIX_SIZE_UM))),
+        show_fits=show_fits,
+        pix_size_um=PIX_SIZE_UM,
+        normalization=normalization,
+        save_format=save_format,
+        univ_minmax=univ_minmax,
+        cmap=cmap
+    )
+except TypeError:
+    try:
+        # Retry without cmap
+        results_df = utils.plot_all_sifs(
+            sif_files=sif_files,
+            df_dict=df_dict_obj,
+            colocalization_radius=max(1, int(round(2 / PIX_SIZE_UM))),
+            show_fits=show_fits,
+            pix_size_um=PIX_SIZE_UM,
+            normalization=normalization,
+            save_format=save_format,
+            univ_minmax=univ_minmax,
+        )
+    except TypeError:
+        # Minimal signature fallback
+        results_df = utils.plot_all_sifs(sif_files, df_dict_obj)
+        st.info("utils.plot_all_sifs signature differs; used minimal call.")
+
             if isinstance(results_df, pd.DataFrame) and not results_df.empty:
                 st.success(f"Found {len(results_df)} colocalized pairs across all images.")
                 st.dataframe(results_df)
@@ -282,3 +297,58 @@ def run():
 
 if __name__ == "__main__":
     run()
+
+
+# After pairing tab, show aggregate histograms/scatter like your single-sif tool
+st.divider()
+st.subheader("Aggregate analysis")
+# Combine all per-file DFs (fits) for histogram
+all_dfs = []
+for k, v in df_dict_obj.items():
+    dfk = v.get("df", pd.DataFrame())
+    if isinstance(dfk, pd.DataFrame) and not dfk.empty and "brightness_fit" in dfk.columns:
+        dfk = dfk.copy()
+        dfk["source_sif"] = k
+        all_dfs.append(dfk)
+combined_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+
+if combined_df.empty:
+    st.info("No fits available to plot histograms yet (upload fit CSVs or ensure integrate_sif returns fits).")
+else:
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm
+
+    # Histogram controls
+    bvals = combined_df["brightness_fit"].values
+    default_min = float(np.min(bvals))
+    default_max = float(np.max(bvals))
+    colA, colB, colC = st.columns([1,1,1])
+    with colA:
+        user_min = st.text_input("Min Brightness (pps)", value=f"{default_min:.2e}")
+    with colB:
+        user_max = st.text_input("Max Brightness (pps)", value=f"{default_max:.2e}")
+    with colC:
+        num_bins = st.number_input("# Bins", value=50)
+
+    try:
+        vmin = float(user_min)
+        vmax = float(user_max)
+    except Exception:
+        st.warning("Enter valid numeric bounds for histogram.")
+        vmin, vmax = default_min, default_max
+
+    if vmin < vmax:
+        fig_hist, axh = plt.subplots(figsize=(5,3))
+        axh.hist(np.clip(bvals, vmin, vmax), bins=int(num_bins))
+        axh.set_xlabel("Brightness (pps)")
+        axh.set_ylabel("Count")
+        st.pyplot(fig_hist)
+
+# If a colocalization results_df exists (from grid or pairs), show simple distance scatter if column present
+if 'results_df' in locals() and isinstance(results_df, pd.DataFrame) and not results_df.empty and "distance" in results_df.columns:
+    import matplotlib.pyplot as plt
+    fig_sc, ax = plt.subplots(figsize=(5,3))
+    ax.scatter(results_df["distance"], results_df.get("num_dyes", pd.Series([1]*len(results_df))), alpha=0.6)
+    ax.set_xlabel("Distance (µm)")
+    ax.set_ylabel("Number of Dyes per PSF")
+    st.pyplot(fig_sc)
