@@ -1,12 +1,13 @@
 
 # streamlit entry module for "UNDER CONSTRUCTION Colocalization Set"
-# This script wires your existing utils without modifying them.
+# Minimal UI: show matched UCNP↔Dye SIFs in two columns with selectable overlays.
 
-import io
 import os
+import re
+import io
 import tempfile
 from pathlib import Path
-from typing import Dict, Tuple, List
+from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
@@ -25,20 +26,22 @@ warnings.filterwarnings("ignore", message="Adding colorbar to a different Figure
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="divide by zero encountered in divide")
 warnings.filterwarnings("ignore", category=OptimizeWarning)
 
-PIX_SIZE_UM = 0.1  # fixed
-
 import sys
 if "/mnt/data" not in sys.path:
     sys.path.append("/mnt/data")
-import utils  # provided by you
+import utils
 
-# Try to import your working pipeline
+PIX_SIZE_UM = 0.1  # fixed
+
 try:
     from tools.process_files import process_files as _process_files_external  # type: ignore
 except Exception:
     _process_files_external = None
 
-# Local fallback that mirrors your process_files implementation
+# --- Helpers ---
+def natural_sort_key(s: str):
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
 def _process_files_fallback(uploaded_files, region, threshold=1, signal="UCNP", pix_size_um=PIX_SIZE_UM, sig_threshold=0.3):
     processed_data: Dict[str, Dict[str, object]] = {}
     all_dfs = []
@@ -70,10 +73,10 @@ def _process_files(uploaded_files, region, threshold, signal):
     return _process_files_fallback(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM)
 
 def _split_ucnp_dye(files):
-    # Use utils sorter if present
+    # Prefer utils sorter if available
     if hasattr(utils, "sort_UCNP_dye_sifs"):
         return utils.sort_UCNP_dye_sifs(files)
-    # Fallback by filename
+    # Fallback by guessing from name
     ucnp, dye = [], []
     for f in files:
         name = f.name.lower()
@@ -83,9 +86,80 @@ def _split_ucnp_dye(files):
             dye.append(f)
     return ucnp, dye
 
+def _match_ucnp_dye_files(ucnps: List[str], dyes: List[str]) -> List[Tuple[str, str]]:
+    # Deterministic sort
+    u_sorted = sorted(ucnps, key=natural_sort_key)
+    d_sorted = sorted(dyes, key=natural_sort_key)
+    # Build a lookup from trailing index -> full name
+    d_map = {}
+    for fn in d_sorted:
+        m = re.search(r"(\d+)\.sif$", fn)
+        if m:
+            d_map[int(m.group(1))] = fn
+    pairs = []
+    used = set()
+    for uf in u_sorted:
+        m = re.search(r"(\d+)\.sif$", uf)
+        if not m:
+            continue
+        uidx = int(m.group(1))
+        cand = []
+        if (uidx + 1) in d_map and (uidx + 1) not in used:
+            cand.append(uidx + 1)
+        if (uidx - 1) in d_map and (uidx - 1) not in used:
+            cand.append(uidx - 1)
+        if cand:
+            choice = cand[0]
+            pairs.append((uf, d_map[choice]))
+            used.add(choice)
+    return pairs
+
+def _overlay_circles(ax, df: pd.DataFrame, color: str, alpha: float, label: bool = False):
+    from matplotlib.patches import Circle
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return
+    required = {"x_pix","y_pix","sigx_fit","sigy_fit","brightness_fit"}
+    if not required.issubset(df.columns):
+        return
+    for _, row in df.iterrows():
+        try:
+            rad_px = 4 * float(max(row["sigx_fit"], row["sigy_fit"])) / PIX_SIZE_UM  # assumes sig in µm
+        except Exception:
+            rad_px = 6.0  # fallback
+        ax.add_patch(Circle((row["x_pix"], row["y_pix"]), radius=rad_px, color=color, fill=False, linewidth=1.2, alpha=alpha))
+        if label:
+            ax.text(row["x_pix"] + 8, row["y_pix"] + 8, f"{row['brightness_fit']/1000:.1f} kpps",
+                    color=color, fontsize=8, ha="center", va="center")
+
+def _compute_coloc_mask(df_u: pd.DataFrame, df_d: pd.DataFrame, radius_px: int):
+    if df_u is None or df_d is None or df_u.empty or df_d.empty:
+        return None, None, []
+    if not {"x_pix","y_pix"}.issubset(df_u.columns) or not {"x_pix","y_pix"}.issubset(df_d.columns):
+        return None, None, []
+    u_mask = np.zeros(len(df_u), dtype=bool)
+    d_mask = np.zeros(len(df_d), dtype=bool)
+    pairs = []
+    used_d = set()
+    for i_u, row_u in df_u.iterrows():
+        du = df_d.loc[~df_d.index.isin(used_d)]
+        if du.empty:
+            continue
+        dx = du["x_pix"].values - row_u["x_pix"]
+        dy = du["y_pix"].values - row_u["y_pix"]
+        dist = np.hypot(dx, dy)
+        j = dist.argmin()
+        if dist[j] <= radius_px:
+            d_idx = du.index[j]
+            u_mask[df_u.index.get_loc(i_u)] = True
+            d_mask[df_d.index.get_loc(d_idx)] = True
+            pairs.append((i_u, d_idx, float(dist[j])))
+            used_d.add(d_idx)
+    return u_mask, d_mask, pairs
+
+# --- App ---
 def run():
     st.title("Colocalization Set (UNDER CONSTRUCTION)")
-    st.caption("Streamlit wrapper that uses your `utils.py` and (if available) `tools.process_files`.")
+    st.caption("Matched UCNP↔Dye SIFs in two columns with overlays. Uses your existing fitting pipeline.")
 
     with st.sidebar:
         st.header("Inputs")
@@ -94,26 +168,26 @@ def run():
         fit_csvs = st.file_uploader("Fit CSVs (optional)", type=["csv"], accept_multiple_files=True, help=csv_help)
 
         st.divider()
-        st.header("Fitting parameters")
-        threshold = st.number_input("Threshold", min_value=0, value=2, help="Higher is more selective")
-        region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], index=4)
+        st.header("Fitting")
+        threshold = st.number_input("Threshold", min_value=0, value=2)
+        region = st.selectbox("Region", options=["1","2","3","4","all"], index=4)
+        radius_px = st.number_input("Colocalization radius (pixels)", min_value=1, value=2)
+
+        st.header("Overlays")
+        show_all_fits = st.checkbox("Show ALL fits", value=True)
+        show_coloc_fits = st.checkbox("Show COLOCALIZED fits", value=True)
 
         st.header("Display")
-        show_fits = st.checkbox("Overlay fits / circles / labels", value=True)
-        cmap = st.selectbox("Colormap", options=["magma", "viridis", "plasma", "hot", "gray", "hsv"], index=0)
-        norm_choice = st.selectbox("Normalization", ["None", "LogNorm", "Normalize (0-99% percentile)"])
-        univ_minmax = st.checkbox("Use universal min/max across all images", value=False)
-        save_format = st.selectbox("Save format", ["SVG", "PNG", "PDF"], index=0)
-        radius_px = st.number_input("Colocalization radius (pixels)", min_value=1, value=2)
+        cmap = st.selectbox("Colormap", options=["magma","viridis","plasma","hot","gray","hsv"], index=0)
+        use_lognorm = st.checkbox("Log image scaling", value=True)
 
     if not sif_files:
         st.info("Upload SIF files to begin.")
         return
 
-    # Optional: load fit CSVs (per-image or one combined with a sif_name/file column)
+    # Optional: load fit CSVs
     fit_map: Dict[str, pd.DataFrame] = {}
     if fit_csvs:
-        # combined
         if len(fit_csvs) == 1:
             df = pd.read_csv(fit_csvs[0])
             name_col = next((c for c in df.columns if c.lower() in ("sif_name","filename","file","image","sif")), None)
@@ -121,7 +195,6 @@ def run():
                 for name, sub in df.groupby(name_col):
                     base = os.path.basename(str(name))
                     fit_map[os.path.splitext(base)[0]] = sub.reset_index(drop=True)
-        # per-image
         if not fit_map:
             for f in fit_csvs:
                 base_noext = os.path.splitext(os.path.basename(f.name))[0]
@@ -130,142 +203,102 @@ def run():
                 except Exception as e:
                     st.warning(f"Could not read CSV '{f.name}': {e}")
 
-    # Split files by signal
+    # Split & process
     ucnp_files, dye_files = _split_ucnp_dye(sif_files)
+    u_data, _ = _process_files(ucnp_files, region=region, threshold=threshold, signal="UCNP") if ucnp_files else ({}, pd.DataFrame())
+    d_data, _ = _process_files(dye_files,  region=region, threshold=threshold, signal="dye")   if dye_files  else ({}, pd.DataFrame())
 
-    # Process each group with the correct detection mode
-    ucnp_data, ucnp_combined = _process_files(ucnp_files, region=region, threshold=threshold, signal="UCNP") if ucnp_files else ({}, pd.DataFrame())
-    dye_data, dye_combined   = _process_files(dye_files,  region=region, threshold=threshold, signal="dye")   if dye_files  else ({}, pd.DataFrame())
+    # Build simple name lists for matching (just the .name keys we used in dicts)
+    u_names = sorted(list(u_data.keys()), key=natural_sort_key)
+    d_names = sorted(list(d_data.keys()), key=natural_sort_key)
+    pairs = _match_ucnp_dye_files(u_names, d_names)
+    st.caption(f"Matched {len(pairs)} UCNP↔Dye pairs.")
 
-    # Merge into df_dicts that utils.coloc_subplots expects
-    df_dict_obj: Dict[str, dict] = {}
-    df_dict_tuple: Dict[str, Tuple[pd.DataFrame, np.ndarray]] = {}
-    for name, bundle in {**ucnp_data, **dye_data}.items():
-        df = bundle.get("df", pd.DataFrame())
-        img = bundle.get("image", None)
-        # If a fit CSV exists for this base name, prefer it
-        base_noext = os.path.splitext(os.path.basename(name))[0]
-        if base_noext in fit_map:
-            df = fit_map[base_noext]
-        df_dict_obj[name] = {"df": df, "image": img}
-        df_dict_tuple[name] = (df, img)
+    # Prepare Matplotlib
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm
 
-    # --- Tab 1: Grid of SIFs (full-frame from selected region) ---
-    tab_grid, tab_pairs = st.tabs(["Grid of SIFs", "Paired UCNP ↔ Dye"])
-    with tab_grid:
-        st.subheader("All SIFs (grid)")
-        import matplotlib.pyplot as plt
-        from matplotlib.colors import LogNorm
-        images = [(n, v.get("image", None)) for n, v in df_dict_obj.items()]
-        if not images:
-            st.info("No images to display yet.")
-        else:
-            n_files = len(images)
-            n_cols = 4
-            n_rows = (n_files + n_cols - 1) // n_cols
-            fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
-            axes = axes.flatten() if hasattr(axes, "flatten") else [axes]
+    # Accumulate matched-peak rows
+    matched_rows = []
 
-            # compute global min/max if requested
-            vmin = vmax = None
-            if univ_minmax:
-                vals = [img for _, img in images if isinstance(img, np.ndarray)]
-                if vals:
-                    vmin = min(float(np.nanmin(v)) for v in vals if v is not None)
-                    vmax = max(float(np.nanmax(v)) for v in vals if v is not None)
+    # Render each pair as a row with 2 columns
+    for u_name, d_name in pairs:
+        u_bundle = u_data.get(u_name, {})
+        d_bundle = d_data.get(d_name, {})
+        u_df = u_bundle.get("df", pd.DataFrame())
+        d_df = d_bundle.get("df", pd.DataFrame())
+        # Prefer CSV fits if present
+        base_u = os.path.splitext(os.path.basename(u_name))[0]
+        base_d = os.path.splitext(os.path.basename(d_name))[0]
+        if base_u in fit_map: u_df = fit_map[base_u]
+        if base_d in fit_map: d_df = fit_map[base_d]
+        u_img = u_bundle.get("image", None)
+        d_img = d_bundle.get("image", None)
 
-            norm = LogNorm() if norm_choice == "LogNorm" else None
-            for ax, (name, img) in zip(axes, images):
-                ax.set_xticks([]); ax.set_yticks([])
-                if isinstance(img, np.ndarray):
-                    ax.imshow(img + 1, cmap=cmap, norm=norm, origin="lower", vmin=vmin, vmax=vmax)
-                    ax.set_title(name, fontsize=10)
-                else:
-                    ax.text(0.5,0.5,"No image", ha="center", va="center")
-                    ax.set_title(name, fontsize=10)
-            for ax in axes[len(images):]:
-                ax.axis("off")
-            st.pyplot(fig)
+        colL, colR = st.columns(2)
+        with colL:
+            st.markdown(f"**UCNP:** {u_name}")
+            if isinstance(u_img, np.ndarray):
+                fig_u, ax_u = plt.subplots(figsize=(5,5))
+                ax_u.set_xticks([]); ax_u.set_yticks([])
+                norm = LogNorm() if use_lognorm else None
+                ax_u.imshow(u_img + 1, cmap=cmap, norm=norm, origin="lower")
+            else:
+                fig_u, ax_u = plt.subplots(figsize=(5,5))
+                ax_u.text(0.5,0.5,"No image", ha="center", va="center"); ax_u.axis("off")
 
-    # --- Tab 2: Pairing & colocalization ---
-    with tab_pairs:
-        st.subheader("UCNP ↔ Dye pairing & colocalization")
-        if hasattr(utils, "match_ucnp_dye_files") and hasattr(utils, "coloc_subplots"):
-            pairs = utils.match_ucnp_dye_files(ucnp_files, dye_files) if ucnp_files and dye_files else []
-            st.caption(f"Paired {len(pairs)} UCNP↔Dye sets.")
+        with colR:
+            st.markdown(f"**Dye:** {d_name}")
+            if isinstance(d_img, np.ndarray):
+                fig_d, ax_d = plt.subplots(figsize=(5,5))
+                ax_d.set_xticks([]); ax_d.set_yticks([])
+                norm = LogNorm() if use_lognorm else None
+                ax_d.imshow(d_img + 1, cmap=cmap, norm=norm, origin="lower")
+            else:
+                fig_d, ax_d = plt.subplots(figsize=(5,5))
+                ax_d.text(0.5,0.5,"No image", ha="center", va="center"); ax_d.axis("off")
 
-            collected = []
-            required = {"x_pix","y_pix","sigx_fit","sigy_fit","brightness_fit"}
-            for ucnp_f, dye_f in pairs:
-                u_df = df_dict_tuple.get(ucnp_f.name, (pd.DataFrame(),None))[0]
-                d_df = df_dict_tuple.get(dye_f.name, (pd.DataFrame(),None))[0]
-                has_ucnp = isinstance(u_df, pd.DataFrame) and required.issubset(u_df.columns)
-                has_dye  = isinstance(d_df, pd.DataFrame) and required.issubset(d_df.columns)
-                show_fits_eff = show_fits and has_ucnp and has_dye
+        # Compute coloc mask & overlay
+        u_mask, d_mask, pair_idx = _compute_coloc_mask(u_df, d_df, radius_px=radius_px)
 
-                try:
-                    df_local = utils.coloc_subplots(
-                        ucnp_file=ucnp_f,
-                        dye_file=dye_f,
-                        df_dict=df_dict_tuple,
-                        colocalization_radius=radius_px,
-                        show_fits=show_fits_eff,
-                        pix_size_um=PIX_SIZE_UM,
-                    )
-                    if isinstance(df_local, pd.DataFrame) and not df_local.empty:
-                        tmp = df_local.copy()
-                        tmp["ucnp_sif"] = ucnp_f.name
-                        tmp["dye_sif"]  = dye_f.name
-                        collected.append(tmp)
-                except Exception as e:
-                    st.error(f"coloc_subplots failed for {ucnp_f.name} vs {dye_f.name}: {e}")
+        # Overlays
+        if show_all_fits:
+            _overlay_circles(ax_u, u_df, color="white", alpha=0.7, label=False)
+            _overlay_circles(ax_d, d_df, color="white", alpha=0.7, label=False)
+        if show_coloc_fits and u_mask is not None and d_mask is not None:
+            _overlay_circles(ax_u, u_df[u_mask], color="lime", alpha=0.9, label=False)
+            _overlay_circles(ax_d, d_df[d_mask], color="lime", alpha=0.9, label=False)
 
-            if collected:
-                out = pd.concat(collected, ignore_index=True)
-                st.success(f"Aggregated {len(out)} colocalized matches.")
-                st.dataframe(out)
-                st.download_button(
-                    label="Download paired colocalization (CSV)",
-                    data=out.to_csv(index=False).encode("utf-8"),
-                    file_name="paired_colocalization.csv",
-                    mime="text/csv",
-                )
-        else:
-            st.warning("Pairing utilities not found in utils.py")
+        # Collect matched pairs data rows (if any)
+        if pair_idx:
+            for i_u, i_d, dist in pair_idx:
+                row_u = u_df.loc[i_u] if i_u in u_df.index else None
+                row_d = d_df.loc[i_d] if i_d in d_df.index else None
+                if row_u is not None and row_d is not None:
+                    matched_rows.append({
+                        "ucnp_sif": u_name,
+                        "dye_sif": d_name,
+                        "ucnp_x_pix": row_u.get("x_pix", np.nan),
+                        "ucnp_y_pix": row_u.get("y_pix", np.nan),
+                        "ucnp_brightness": row_u.get("brightness_fit", np.nan),
+                        "dye_x_pix": row_d.get("x_pix", np.nan),
+                        "dye_y_pix": row_d.get("y_pix", np.nan),
+                        "dye_brightness": row_d.get("brightness_fit", np.nan),
+                        "distance_px": dist,
+                    })
 
-    # --- Aggregate analysis (brightness histogram + optional distance scatter) ---
-    st.divider()
-    st.subheader("Aggregate analysis")
-    all_dfs = []
-    for bundle in {**ucnp_data, **dye_data}.values():
-        df = bundle.get("df", pd.DataFrame())
-        if isinstance(df, pd.DataFrame) and not df.empty and "brightness_fit" in df.columns:
-            all_dfs.append(df)
-    combined_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
-    if combined_df.empty:
-        st.info("No fits available to plot histograms yet (upload fit CSVs or ensure integrate_sif returns fits).")
-    else:
-        import matplotlib.pyplot as plt
-        bvals = combined_df["brightness_fit"].values
-        default_min = float(np.min(bvals))
-        default_max = float(np.max(bvals))
-        colA, colB, colC = st.columns([1,1,1])
-        with colA:
-            user_min = st.text_input("Min Brightness (pps)", value=f"{default_min:.2e}")
-        with colB:
-            user_max = st.text_input("Max Brightness (pps)", value=f"{default_max:.2e}")
-        with colC:
-            num_bins = st.number_input("# Bins", value=50)
-        try:
-            vmin = float(user_min); vmax = float(user_max)
-        except Exception:
-            st.warning("Enter valid numeric bounds for histogram.")
-            vmin, vmax = default_min, default_max
-        if vmin < vmax:
-            fig_hist, axh = plt.subplots(figsize=(5,3))
-            axh.hist(np.clip(bvals, vmin, vmax), bins=int(num_bins))
-            axh.set_xlabel("Brightness (pps)"); axh.set_ylabel("Count")
-            st.pyplot(fig_hist)
+        with colL: st.pyplot(fig_u)
+        with colR: st.pyplot(fig_d)
+
+    # Download matched results CSV
+    if matched_rows:
+        matched_df = pd.DataFrame(matched_rows)
+        st.download_button(
+            "Download colocalized pairs (CSV)",
+            data=matched_df.to_csv(index=False).encode("utf-8"),
+            file_name="colocalized_pairs.csv",
+            mime="text/csv",
+        )
 
 if __name__ == "__main__":
     run()
