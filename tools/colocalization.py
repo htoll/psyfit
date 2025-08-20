@@ -174,7 +174,6 @@ def run():
         st.header("Inputs")
         sif_files = st.file_uploader("SIF files (UCNP + Dye)", type=["sif"], accept_multiple_files=True)
         csv_help = "Optional: upload one combined CSV with a 'sif_name'/'file' column, or per-image CSVs."
-        fit_csvs = st.file_uploader("Fit CSVs (optional)", type=["csv"], accept_multiple_files=True, help=csv_help)
         st.header("IDs")
         ucnp_id = st.text_input("UCNP ID token", value="976", help="Substring used to identify UCNP files (matched in filename).")
         dye_id  = st.text_input("Dye ID token",  value="638", help="Substring used to identify Dye files (matched in filename).")
