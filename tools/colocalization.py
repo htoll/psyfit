@@ -69,20 +69,34 @@ def _process_files(uploaded_files, region, threshold, signal):
         return _process_files_external(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM)
     return _process_files_fallback(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM)
 
-def _split_ucnp_dye(files):
-    # Prefer utils sorter if available
-    if hasattr(utils, "sort_UCNP_dye_sifs"):
-        return utils.sort_UCNP_dye_sifs(files)
-    # Fallback by guessing from name
+def _split_ucnp_dye(files, ucnp_id="976", dye_id="638"):
+    """
+    Split uploaded SIFs into UCNP vs Dye sets by filename tokens.
+    - Case-insensitive substring match.
+    - If both tokens appear in a filename, we warn and skip that file.
+    - If neither token appears, we warn and skip that file.
+    """
+    u_tok = str(ucnp_id).lower().strip()
+    d_tok = str(dye_id).lower().strip()
+
     ucnp, dye = [], []
     for f in files:
-        name = f.name.lower()
-        if "976" in name and "638" not in name:
-            ucnp.append(f)
-        elif "638" in name and "976" not in name:
-            dye.append(f)
-    return ucnp, dye
+        name = f.name
+        lname = name.lower()
 
+        has_ucnp = u_tok in lname if u_tok else False
+        has_dye  = d_tok in lname if d_tok else False
+
+        if has_ucnp and not has_dye:
+            ucnp.append(f)
+        elif has_dye and not has_ucnp:
+            dye.append(f)
+        elif has_ucnp and has_dye:
+            st.warning(f"Filename matches both tokens — skipping: {name}")
+        else:
+            st.warning(f"Filename matches neither token — skipping: {name}")
+
+    return ucnp, dye
 def _match_ucnp_dye_files(ucnps: List[str], dyes: List[str]) -> List[Tuple[str, str]]:
     # Deterministic sort
     u_sorted = sorted(ucnps, key=natural_sort_key)
@@ -161,6 +175,9 @@ def run():
         sif_files = st.file_uploader("SIF files (UCNP + Dye)", type=["sif"], accept_multiple_files=True)
         csv_help = "Optional: upload one combined CSV with a 'sif_name'/'file' column, or per-image CSVs."
         fit_csvs = st.file_uploader("Fit CSVs (optional)", type=["csv"], accept_multiple_files=True, help=csv_help)
+        st.header("IDs")
+        ucnp_id = st.text_input("UCNP ID token", value="976", help="Substring used to identify UCNP files (matched in filename).")
+        dye_id  = st.text_input("Dye ID token",  value="638", help="Substring used to identify Dye files (matched in filename).")
 
         st.divider()
         st.header("Fitting")
@@ -186,7 +203,7 @@ def run():
     # Optional: load fit CSVs
 
     # Split & process
-    ucnp_files, dye_files = _split_ucnp_dye(sif_files)
+    ucnp_files, dye_files = _split_ucnp_dye(sif_files, ucnp_id=ucnp_id, dye_id=dye_id)
     u_data, _ = _process_files(ucnp_files, region=region_ucnp, threshold=threshold, signal="UCNP") if ucnp_files else ({}, pd.DataFrame())
     d_data, _ = _process_files(dye_files,  region=region_dye, threshold=threshold, signal="dye")   if dye_files  else ({}, pd.DataFrame())
 
@@ -306,7 +323,7 @@ def run():
             f"UCNP {overall_ucnp_hits}/{overall_ucnp_total} ({overall_ucnp_pct:.1f}%) — "
             f"Dye {overall_dye_hits}/{overall_dye_total} ({overall_dye_pct:.1f}%)"
         )
-    st.markdown(f"**Colocalized:** UCNP {u_hits}/{u_total} ({percent_ucnp_coloc:.1f}%) — Dye {d_hits}/{d_total} ({percent_dye_coloc:.1f}%)")
+#    st.markdown(f"**Colocalized:** UCNP {u_hits}/{u_total} ({percent_ucnp_coloc:.1f}%) — Dye {d_hits}/{d_total} ({percent_dye_coloc:.1f}%)")
 
 
     # Download matched results CSV
@@ -330,7 +347,7 @@ def run():
             if matched_df is None or matched_df.empty:
                 st.info("No matched peaks yet — open the Pairs tab first.")
             else:
-                mode = st.radio("Single-particle brightness", ["Automatic (Gaussian μ)", "Manual (enter pps)"], index=0, help="Automatic assumes most PSFs are single particles. If this is not true, use Manual.")
+                mode = st.radio("Single-particle brightness", ["Manual (enter pps)","Automatic (Gaussian μ)"], index=0, help="Automatic assumes most PSFs are single particles. If this is not true, use Manual.")
                 st.warning("Automatic mode assumes the majority of PSFs are single particles.")
 
                 if mode.startswith("Automatic"):
