@@ -240,6 +240,7 @@ def run():
         colL, colR = st.columns(2)
         with colL:
             st.markdown(f"**UCNP:** {u_name}")
+
             if isinstance(u_img, np.ndarray):
                 fig_u, ax_u = plt.subplots(figsize=(5,5))
                 ax_u.set_xticks([]); ax_u.set_yticks([])
@@ -272,6 +273,8 @@ def run():
             percent_ucnp_coloc = 100.0 * u_hits / max(u_total, 1)
         else:
             u_total = 0; u_hits = 0; percent_ucnp_coloc = 0.0
+        st.markdown(f"**Colocalized:** UCNP {u_hits}/{u_total} ({percent_ucnp_coloc:.1f}%) — Dye {d_hits}/{d_total} ({percent_dye_coloc:.1f}%)")
+
         
         if isinstance(d_df, pd.DataFrame) and not d_df.empty and d_mask is not None:
             d_total = len(d_df)
@@ -312,7 +315,6 @@ def run():
                         "dye_brightness": row_d.get("brightness_fit", np.nan),
                         "distance_px": dist,
                     })
-        st.markdown(f"**Colocalized:** UCNP {u_hits}/{u_total} ({percent_ucnp_coloc:.1f}%) — Dye {d_hits}/{d_total} ({percent_dye_coloc:.1f}%)")
 
 
         with colL: st.pyplot(fig_u)
