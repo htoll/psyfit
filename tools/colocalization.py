@@ -143,25 +143,45 @@ def _build_df_dict(
             continue
 
         # Optional fits from integrate_sif using region/threshold
-        df_est = None
-        try:
-            signal = "UCNP" if signal_guess_ucnp in fname else ("Dye" if signal_guess_dye in fname else "Unknown")
-            out = utils.integrate_sif(
-                str(path),
-                threshold=threshold,
-                region=region,
-                signal=signal,
-                pix_size_um=PIX_SIZE_UM,
-            )
-            if isinstance(out, tuple) and len(out) >= 3 and hasattr(out[2], "columns"):
-                df_est = out[2]
-        except Exception:
-            pass
+        
+df_out = pd.DataFrame()
+img_out = None
+try:
+    signal = "UCNP" if signal_guess_ucnp in fname else ("dye" if signal_guess_dye in fname else "Unknown")
+    out = utils.integrate_sif(
+        str(path),
+        threshold=threshold,
+        region=region,
+        signal=signal,
+        pix_size_um=PIX_SIZE_UM,
+    )
+    if isinstance(out, tuple) and len(out) == 2:
+        a, b = out
+        if hasattr(a, "columns"):  # a is DataFrame
+            df_out, img_out = a, b
+        elif hasattr(b, "columns"):
+            df_out, img_out = b, a
+        else:
+            # Unknown ordering; assume first is df-like if possible
+            df_out, img_out = (a, b)
+    else:
+        # Unexpected return; let it fall through
+        pass
+except Exception as e:
+    st.warning(f"integrate_sif failed for {fname}: {e}")
 
-        base_noext = os.path.splitext(os.path.basename(fname))[0]
-        df = fit_map.get(base_noext, None) or df_est or pd.DataFrame()
-        df_dict_obj[fname] = {"df": df, "image": img_full}
-        df_dict_tuple[fname] = (df, img_full)
+# Fallback image via full-frame loader if integrate_sif didn't supply one
+if img_out is None:
+    try:
+        img_out, _ = _full_image_cps_from_path(str(path))
+    except Exception:
+        img_out = None
+
+base_noext = os.path.splitext(os.path.basename(fname))[0]
+df = fit_map.get(base_noext, None) or df_out or pd.DataFrame()
+df_dict_obj[fname] = {"df": df, "image": img_out}
+df_dict_tuple[fname] = (df, img_out)
+
 
     return df_dict_obj, df_dict_tuple, skipped, soft_failed
 
