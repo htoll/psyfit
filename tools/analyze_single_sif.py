@@ -208,7 +208,6 @@ def run():
             # Smoothing controls
             smooth_sigma = st.slider("Smoothing (σ, px)", min_value=0.0, max_value=8.0, value=2.0, step=0.5,
                                      help="Apply Gaussian smoothing to reduce patchy coverage. Set to 0 for no smoothing.")
-            normalize_heat = st.checkbox("Log Heatmap Scaling", value=True)
             heat_cmap = st.selectbox("Heatmap colormap", options=["magma", "inferno", "plasma", "viridis", "hot", "cividis"], index=0)
     
             try:
@@ -237,8 +236,7 @@ def run():
                 # Plot
                 import matplotlib.pyplot as plt
                 fig_hm, ax_hm = plt.subplots()
-                norm = LogNorm() if normalize_heat else None
-                im = ax_hm.imshow(heatmap, origin="lower", cmap=heat_cmap, norm=norm)
+                im = ax_hm.imshow(heatmap, origin="lower", cmap=heat_cmap, norm=None)
                 ax_hm.set_title("Brightness Heatmap (All SIFs)")
                 ax_hm.set_xlabel("X (px)")
                 ax_hm.set_ylabel("Y (px)")
