@@ -186,8 +186,8 @@ def run():
         radius_px = st.number_input("Colocalization radius (pixels)", min_value=1, value=2)
 
         st.header("Overlays")
-        show_all_fits = st.checkbox("Show ALL fits", value=True)
-        show_coloc_fits = st.checkbox("Show COLOCALIZED fits", value=True)
+        show_all_fits = st.checkbox("Show all fits", value=False)
+        show_coloc_fits = st.checkbox("Show colocalized fits", value=True)
 
         st.header("Display")
         cmap = st.selectbox("Colormap", options=["magma","viridis","plasma","hot","gray","hsv"], index=0)
