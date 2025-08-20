@@ -312,6 +312,8 @@ def run():
                         "dye_brightness": row_d.get("brightness_fit", np.nan),
                         "distance_px": dist,
                     })
+        st.markdown(f"**Colocalized:** UCNP {u_hits}/{u_total} ({percent_ucnp_coloc:.1f}%) — Dye {d_hits}/{d_total} ({percent_dye_coloc:.1f}%)")
+
 
         with colL: st.pyplot(fig_u)
         with colR: st.pyplot(fig_d)
@@ -322,7 +324,6 @@ def run():
             f"UCNP {overall_ucnp_hits}/{overall_ucnp_total} ({overall_ucnp_pct:.1f}%) — "
             f"Dye {overall_dye_hits}/{overall_dye_total} ({overall_dye_pct:.1f}%)"
         )
-    st.markdown(f"**Colocalized:** UCNP {u_hits}/{u_total} ({percent_ucnp_coloc:.1f}%) — Dye {d_hits}/{d_total} ({percent_dye_coloc:.1f}%)")
 
 
     # Download matched results CSV
