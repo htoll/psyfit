@@ -296,7 +296,7 @@ def run():
     # Download matched results CSV
     if matched_rows:
         matched_df = pd.DataFrame(matched_rows)
-            st.session_state['coloc_matched_df'] = matched_df
+        st.session_state['coloc_matched_df'] = matched_df
 
         st.download_button(
             "Download colocalized pairs (CSV)",
