@@ -37,45 +37,42 @@ try:
 except Exception:
     sif_parser = None
 
-def _file_bytes(uploaded_file) -> bytes:
-    """Return the bytes of a Streamlit UploadedFile without leaving the pointer consumed."""
-    # Save current position
-    try:
-        pos = uploaded_file.tell()
-    except Exception:
-        pos = None
+def _bytesio_with_name(uploaded_file) -> io.BytesIO:
+    """Return a fresh BytesIO carrying a .name attribute to mimic a real file object."""
     data = uploaded_file.read()
-    # Reset pointer so other code (that just inspects .name) isn't impacted
+    # Reset original pointer so other parts of the app can reuse the UploadedFile
     try:
         uploaded_file.seek(0)
     except Exception:
         pass
-    return data
+    bio = io.BytesIO(data)
+    try:
+        bio.name = uploaded_file.name  # some libs (or your utils) inspect .name
+    except Exception:
+        pass
+    return bio
 
-def _preflight_sif_bytes(data: bytes) -> bool:
-    """Return True if the .sif byte payload appears readable and contains at least 1 frame."""
+def _preflight_nonblocking(bio_named: io.BytesIO) -> bool:
+    """Soft check: returns True if readable; but failures do NOT block downstream processing."""
     if sif_parser is None:
         return True
     try:
-        with io.BytesIO(data) as bio:
-            arr, meta = sif_parser.np_open(bio, ignore_corrupt=True)
-        if arr is None:
-            return False
-        arr = np.asarray(arr)
-        return arr.size > 0 and arr.ndim >= 2
+        # Use a new handle for the read since np_open may consume it
+        temp = io.BytesIO(bio_named.getvalue())
+        try:
+            temp.name = getattr(bio_named, "name", None) or "uploaded.sif"
+        except Exception:
+            pass
+        arr, meta = sif_parser.np_open(temp, ignore_corrupt=True)
+        arr = np.asarray(arr) if arr is not None else None
+        return bool(arr is not None and arr.size > 0 and arr.ndim >= 2)
     except Exception:
         return False
 
 def _load_fit_csvs(csv_files) -> Dict[str, pd.DataFrame]:
-    """Map basenames (without extension) of SIF files to DataFrames.
-    Accepts either one combined CSV (with a column 'sif_name' or 'file') or per-image CSVs.
-    Required columns for colocalization overlays: x_pix, y_pix, sigx_fit, sigy_fit, brightness_fit.
-    """
-    mapping = {}
+    mapping: Dict[str, pd.DataFrame] = {}
     if not csv_files:
         return mapping
-
-    # Heuristic 1: if exactly one CSV and it has a column indicating the sif name, split by it
     if len(csv_files) == 1:
         df = pd.read_csv(csv_files[0])
         name_col = None
@@ -89,8 +86,6 @@ def _load_fit_csvs(csv_files) -> Dict[str, pd.DataFrame]:
                 base_noext = os.path.splitext(base)[0]
                 mapping[base_noext] = sub.reset_index(drop=True)
             return mapping
-
-    # Otherwise, treat each CSV as per-image table
     for f in csv_files:
         base = os.path.basename(f.name if hasattr(f, "name") else str(f))
         base_noext = os.path.splitext(base)[0]
@@ -100,56 +95,63 @@ def _load_fit_csvs(csv_files) -> Dict[str, pd.DataFrame]:
             st.warning(f"Could not read CSV '{base}': {e}")
     return mapping
 
-def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: float, signal_guess_ucnp="976", signal_guess_dye="638") -> Tuple[Dict[str, dict], Dict[str, Tuple[pd.DataFrame, np.ndarray]], List[str]]:
-    """Return two parallel dictionaries and a list of skipped filenames:
+def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: float, signal_guess_ucnp="976", signal_guess_dye="638") -> Tuple[Dict[str, dict], Dict[str, Tuple[pd.DataFrame, np.ndarray]], List[str], List[str]]:
+    """Return df_dicts + two lists: skipped (errors) and soft_failed (preflight warnings).
     - df_dict_obj[name] = {"df": df, "image": img}
     - df_dict_tuple[name] = (df, img)
-    - skipped: list of basenames that failed preflight or processing
-    Where 'name' is the file's displayed name (UploadedFile.name).
-    If no DF is supplied for a given SIF, we provide an empty DF so plots still render.
+    - skipped: files that errored during integrate
+    - soft_failed: files that failed preflight but still attempted processing
     """
-    df_dict_obj = {}
-    df_dict_tuple = {}
+    df_dict_obj: Dict[str, dict] = {}
+    df_dict_tuple: Dict[str, Tuple[pd.DataFrame, np.ndarray]] = {}
     skipped: List[str] = []
+    soft_failed: List[str] = []
 
     for f in sif_files:
-        data = _file_bytes(f)  # safe copy of bytes; does not consume the UploadedFile for later use
-        if not _preflight_sif_bytes(data):
-            skipped.append(f.name)
-            continue
+        # Create a Named BytesIO that preserves .name
+        bio = _bytesio_with_name(f)
+        # Soft preflight: warn but do not skip
+        if not _preflight_nonblocking(bio):
+            soft_failed.append(f.name)
         try:
-            # Pick signal label used just for utils.integrate_sif title-keeping. Guess from filename.
             fname = f.name
             signal = "UCNP" if signal_guess_ucnp in fname else ("Dye" if signal_guess_dye in fname else "Unknown")
             img, meta, df_est = None, None, None
-            # Use a FRESH BytesIO for EVERY call (avoid consumed streams)
+            # Always pass a fresh stream to the utils call
+            bio_call = io.BytesIO(bio.getvalue())
             try:
-                out = utils.integrate_sif(io.BytesIO(data), signal=signal, pix_size_um=pix_size_um)
+                bio_call.name = fname
+            except Exception:
+                pass
+            try:
+                out = utils.integrate_sif(bio_call, signal=signal, pix_size_um=pix_size_um)
                 if isinstance(out, tuple) and len(out) >= 2:
                     img, meta = out[0], out[1]
                     if len(out) >= 3 and hasattr(out[2], "columns"):
                         df_est = out[2]
                 else:
-                    img = out  # fallback
+                    img = out
             except TypeError:
-                # Different signature; call with minimal args
-                out = utils.integrate_sif(io.BytesIO(data))
+                bio_call2 = io.BytesIO(bio.getvalue())
+                try:
+                    bio_call2.name = fname
+                except Exception:
+                    pass
+                out = utils.integrate_sif(bio_call2)
                 if isinstance(out, tuple):
                     img = out[0]
                 else:
                     img = out
                 meta = {}
 
-            # Choose DataFrame: user-provided > estimated > empty
             base_noext = os.path.splitext(os.path.basename(fname))[0]
             df = fit_map.get(base_noext, None) or df_est or pd.DataFrame()
-
             df_dict_obj[fname] = {"df": df, "image": img}
             df_dict_tuple[fname] = (df, img)
         except Exception as e:
             skipped.append(f.name)
             st.error(f"Failed to process {f.name}: {e}")
-    return df_dict_obj, df_dict_tuple, skipped
+    return df_dict_obj, df_dict_tuple, skipped, soft_failed
 
 def run():
     st.title("Colocalization Set (UNDER CONSTRUCTION)")
@@ -179,26 +181,25 @@ def run():
 
     # Prepare data
     fit_map = _load_fit_csvs(fit_csvs)
-    df_dict_obj, df_dict_tuple, skipped = _build_df_dict(sif_files, fit_map, pix_size_um=pix_size_um)
+    df_dict_obj, df_dict_tuple, skipped, soft_failed = _build_df_dict(sif_files, fit_map, pix_size_um=pix_size_um)
+    if soft_failed:
+        st.warning("Preflight could not verify these SIFs, but processing was attempted anyway: " + ", ".join(soft_failed))
     if skipped:
-        st.warning(f"Skipped {len(skipped)} file(s) that appear unreadable or failed processing: " + ", ".join(skipped))
+        st.warning("Skipped file(s) due to processing errors: " + ", ".join(skipped))
 
     # Tabs: Grid view and Paired UCNP↔Dye view
     tab_grid, tab_pairs = st.tabs(["Grid of SIFs", "Paired UCNP ↔ Dye"])
 
     with tab_grid:
         st.subheader("All SIFs (grid)")
-        # Convert UI normalization option into utils-expected enum
         normalization = None
         if norm_choice == "LogNorm":
             normalization = "log"
         elif norm_choice.startswith("Normalize"):
             normalization = "percentile"
 
-        # Try to call the user's grid plotter if available
         if hasattr(utils, "plot_all_sifs"):
             try:
-                # First try with rich kwargs
                 results_df = utils.plot_all_sifs(
                     sif_files=sif_files,
                     df_dict=df_dict_obj,
@@ -210,7 +211,6 @@ def run():
                     univ_minmax=univ_minmax,
                 )
             except TypeError:
-                # Retry with minimal signature
                 try:
                     results_df = utils.plot_all_sifs(sif_files, df_dict_obj)
                     st.info("utils.plot_all_sifs signature differs; used minimal call.")
@@ -235,7 +235,6 @@ def run():
 
     with tab_pairs:
         st.subheader("UCNP ↔ Dye pairing & colocalization")
-        # Separate files and pair them using provided utils
         if hasattr(utils, "sort_UCNP_dye_sifs") and hasattr(utils, "match_ucnp_dye_files") and hasattr(utils, "coloc_subplots"):
             ucnp_files, dye_files = utils.sort_UCNP_dye_sifs(sif_files)
             if len(ucnp_files) == 0 or len(dye_files) == 0:
@@ -243,7 +242,6 @@ def run():
             else:
                 pairs = utils.match_ucnp_dye_files(ucnp_files, dye_files)
                 st.caption(f"Paired {len(pairs)} UCNP↔Dye sets.")
-
                 collected = []
                 for ucnp_f, dye_f in pairs:
                     try:
@@ -256,14 +254,12 @@ def run():
                             pix_size_um=pix_size_um
                         )
                         if isinstance(df_local, pd.DataFrame) and not df_local.empty:
-                            # include identifiers
                             df_local = df_local.copy()
                             df_local["ucnp_sif"] = ucnp_f.name
                             df_local["dye_sif"] = dye_f.name
                             collected.append(df_local)
                     except Exception as e:
                         st.error(f"coloc_subplots failed for {ucnp_f.name} vs {dye_f.name}: {e}")
-
                 if collected:
                     out = pd.concat(collected, ignore_index=True)
                     st.success(f"Aggregated {len(out)} colocalized matches.")
@@ -277,6 +273,5 @@ def run():
         else:
             st.warning("One or more pairing/coloc helpers missing in utils.py; cannot run paired mode.")
 
-# Allow running directly via `streamlit run colocalization.py`
 if __name__ == "__main__":
     run()
