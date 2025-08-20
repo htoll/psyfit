@@ -1,7 +1,4 @@
 
-# streamlit entry module for "UNDER CONSTRUCTION Colocalization Set"
-# Minimal UI: show matched UCNP↔Dye SIFs in two columns with selectable overlays.
-
 import os
 import re
 import io
@@ -158,8 +155,6 @@ def _compute_coloc_mask(df_u: pd.DataFrame, df_d: pd.DataFrame, radius_px: int):
 
 # --- App ---
 def run():
-    st.title("Colocalization Set (UNDER CONSTRUCTION)")
-    st.caption("Matched UCNP↔Dye SIFs in two columns with overlays. Uses your existing fitting pipeline.")
 
     with st.sidebar:
         st.header("Inputs")
@@ -181,6 +176,8 @@ def run():
         st.header("Display")
         cmap = st.selectbox("Colormap", options=["magma","viridis","plasma","hot","gray","hsv"], index=0)
         use_lognorm = st.checkbox("Log image scaling", value=True)
+        show_colorbars = st.checkbox("Show colorbars on images", value=False)  # ← Add this
+
 
     if not sif_files:
         st.info("Upload SIF files to begin.")
@@ -208,6 +205,9 @@ def run():
 
     with tab_pairs:
         matched_rows = []
+        overall_placeholder = st.empty()
+        overall_ucnp_hits = overall_ucnp_total = 0
+        overall_dye_hits  = overall_dye_total  = 0
 
     # Render each pair as a row with 2 columns
     for u_name, d_name in pairs:
@@ -228,7 +228,9 @@ def run():
                 fig_u, ax_u = plt.subplots(figsize=(5,5))
                 ax_u.set_xticks([]); ax_u.set_yticks([])
                 norm = LogNorm() if use_lognorm else None
-                ax_u.imshow(u_img + 1, cmap=cmap, norm=norm, origin="lower")
+                im_u = ax_u.imshow(u_img + 1, cmap=cmap, norm=norm, origin="lower")  
+                if show_colorbars:
+                    fig_u.colorbar(im_u, ax=ax_u, fraction=0.046, pad=0.04)          
             else:
                 fig_u, ax_u = plt.subplots(figsize=(5,5))
                 ax_u.text(0.5,0.5,"No image", ha="center", va="center"); ax_u.axis("off")
@@ -239,13 +241,19 @@ def run():
                 fig_d, ax_d = plt.subplots(figsize=(5,5))
                 ax_d.set_xticks([]); ax_d.set_yticks([])
                 norm = LogNorm() if use_lognorm else None
-                ax_d.imshow(d_img + 1, cmap=cmap, norm=norm, origin="lower")
+                im_d = ax_d.imshow(d_img + 1, cmap=cmap, norm=norm, origin="lower")
+                if show_colorbars:
+                    fig_d.colorbar(im_d, ax=ax_d, fraction=0.046, pad=0.04)
             else:
                 fig_d, ax_d = plt.subplots(figsize=(5,5))
                 ax_d.text(0.5,0.5,"No image", ha="center", va="center"); ax_d.axis("off")
 
         # Compute coloc mask & overlay
         u_mask, d_mask, pair_idx = _compute_coloc_mask(u_df, d_df, radius_px=radius_px)
+        overall_ucnp_hits += u_hits
+        overall_ucnp_total += u_total
+        overall_dye_hits  += d_hits
+        overall_dye_total  += d_total
 
         # Percentages
         if isinstance(u_df, pd.DataFrame) and not u_df.empty and u_mask is not None:
@@ -292,6 +300,13 @@ def run():
 
         with colL: st.pyplot(fig_u)
         with colR: st.pyplot(fig_d)
+        overall_ucnp_pct = 100.0 * overall_ucnp_hits / max(overall_ucnp_total, 1)
+        overall_dye_pct  = 100.0 * overall_dye_hits  / max(overall_dye_total, 1)
+        overall_placeholder.markdown(
+            f"### Overall colocalized: "
+            f"UCNP {overall_ucnp_hits}/{overall_ucnp_total} ({overall_ucnp_pct:.1f}%) — "
+            f"Dye {overall_dye_hits}/{overall_dye_total} ({overall_dye_pct:.1f}%)"
+        )
 
     # Download matched results CSV
     if matched_rows:
@@ -354,7 +369,9 @@ def run():
                 ax_sc2.set_ylabel("Number of Dyes per PSF")
                 ax_sc2.set_title("Matched UCNPs")
                 ax_sc2.set_xlim(0, 5)
-                st.pyplot(fig_sc2)
+                colA, colB = st.columns(2)
+                with colA:
+                    st.pyplot(fig_sc2)
 
                 msk = (thresholded_df["num_ucnps"] >= 0) & (thresholded_df["num_ucnps"] <= 2)
                 y_subset = thresholded_df.loc[msk, "num_dyes"].dropna().to_numpy()
@@ -369,8 +386,8 @@ def run():
                     ax_h2.set_title("Single UCNPs: no data in [0, 2] after threshold")
                 ax_h2.set_xlabel("Number of Dyes per Single UCNP")
                 ax_h2.set_ylabel("Count")
-                st.pyplot(fig_h2)
-
+                with colB:
+                    st.pyplot(fig_h2)
                 st.download_button(
                     "Download thresholded results (CSV)",
                     data=thresholded_df.to_csv(index=False).encode("utf-8"),
