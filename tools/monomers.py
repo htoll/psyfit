@@ -132,7 +132,7 @@ def run():
             st.session_state.saved_files = {}
             st.session_state.processed = None
             st.session_state.selected_file_name = None
-            st.experimental_rerun()
+            st.rerun()
 
         # --- UI to select file & params (based on synced saved_files) ---
         current_values = list(st.session_state.saved_files.values())
