@@ -218,7 +218,7 @@ def run():
         # Prefer CSV fits if present
         base_u = os.path.splitext(os.path.basename(u_name))[0]
         base_d = os.path.splitext(os.path.basename(d_name))[0]
-                        u_img = u_bundle.get("image", None)
+        u_img = u_bundle.get("image", None)
         d_img = d_bundle.get("image", None)
 
         colL, colR = st.columns(2)
