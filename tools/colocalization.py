@@ -204,10 +204,10 @@ def run():
     from matplotlib.colors import LogNorm
 
     # Accumulate matched-peak rows
-            tab_pairs, tab_plots = st.tabs(["Pairs", "Plots"])
+    tab_pairs, tab_plots = st.tabs(["Pairs", "Plots"])
 
-        with tab_pairs:
-matched_rows = []
+    with tab_pairs:
+        matched_rows = []
 
     # Render each pair as a row with 2 columns
     for u_name, d_name in pairs:
