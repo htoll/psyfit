@@ -169,9 +169,10 @@ def run():
 
         st.divider()
         st.header("Fitting")
-        threshold = st.number_input("Threshold", min_value=0, value=2)
-        region = st.selectbox("Region", options=["1","2","3","4","all"], index=4)
-        radius_px = st.number_input("Colocalization radius (pixels)", min_value=1, value=2)
+threshold = st.number_input("Threshold", min_value=0, value=2)
+region_ucnp = st.selectbox("Region (UCNP)", options=["1","2","3","4","all"], index=0)
+region_dye  = st.selectbox("Region (Dye)",  options=["1","2","3","4","all"], index=0)
+radius_px = st.number_input("Colocalization radius (pixels)", min_value=1, value=2)
 
         st.header("Overlays")
         show_all_fits = st.checkbox("Show ALL fits", value=True)
@@ -186,27 +187,11 @@ def run():
         return
 
     # Optional: load fit CSVs
-    fit_map: Dict[str, pd.DataFrame] = {}
-    if fit_csvs:
-        if len(fit_csvs) == 1:
-            df = pd.read_csv(fit_csvs[0])
-            name_col = next((c for c in df.columns if c.lower() in ("sif_name","filename","file","image","sif")), None)
-            if name_col:
-                for name, sub in df.groupby(name_col):
-                    base = os.path.basename(str(name))
-                    fit_map[os.path.splitext(base)[0]] = sub.reset_index(drop=True)
-        if not fit_map:
-            for f in fit_csvs:
-                base_noext = os.path.splitext(os.path.basename(f.name))[0]
-                try:
-                    fit_map[base_noext] = pd.read_csv(f)
-                except Exception as e:
-                    st.warning(f"Could not read CSV '{f.name}': {e}")
 
     # Split & process
     ucnp_files, dye_files = _split_ucnp_dye(sif_files)
-    u_data, _ = _process_files(ucnp_files, region=region, threshold=threshold, signal="UCNP") if ucnp_files else ({}, pd.DataFrame())
-    d_data, _ = _process_files(dye_files,  region=region, threshold=threshold, signal="dye")   if dye_files  else ({}, pd.DataFrame())
+    u_data, _ = _process_files(ucnp_files, region=region_ucnp, threshold=threshold, signal="UCNP") if ucnp_files else ({}, pd.DataFrame())
+    d_data, _ = _process_files(dye_files,  region=region_dye, threshold=threshold, signal="dye")   if dye_files  else ({}, pd.DataFrame())
 
     # Build simple name lists for matching (just the .name keys we used in dicts)
     u_names = sorted(list(u_data.keys()), key=natural_sort_key)
@@ -219,7 +204,10 @@ def run():
     from matplotlib.colors import LogNorm
 
     # Accumulate matched-peak rows
-    matched_rows = []
+            tab_pairs, tab_plots = st.tabs(["Pairs", "Plots"])
+
+        with tab_pairs:
+matched_rows = []
 
     # Render each pair as a row with 2 columns
     for u_name, d_name in pairs:
@@ -230,9 +218,7 @@ def run():
         # Prefer CSV fits if present
         base_u = os.path.splitext(os.path.basename(u_name))[0]
         base_d = os.path.splitext(os.path.basename(d_name))[0]
-        if base_u in fit_map: u_df = fit_map[base_u]
-        if base_d in fit_map: d_df = fit_map[base_d]
-        u_img = u_bundle.get("image", None)
+                        u_img = u_bundle.get("image", None)
         d_img = d_bundle.get("image", None)
 
         colL, colR = st.columns(2)
@@ -260,6 +246,23 @@ def run():
 
         # Compute coloc mask & overlay
         u_mask, d_mask, pair_idx = _compute_coloc_mask(u_df, d_df, radius_px=radius_px)
+
+            # Percentages
+            if isinstance(u_df, pd.DataFrame) and not u_df.empty and u_mask is not None:
+                u_total = len(u_df)
+                u_hits = int(u_mask.sum())
+                percent_ucnp_coloc = 100.0 * u_hits / max(u_total, 1)
+            else:
+                u_total = 0; u_hits = 0; percent_ucnp_coloc = 0.0
+            if isinstance(d_df, pd.DataFrame) and not d_df.empty and d_mask is not None:
+                d_total = len(d_df)
+                d_hits = int(d_mask.sum())
+                percent_dye_coloc = 100.0 * d_hits / max(d_total, 1)
+            else:
+                d_total = 0; d_hits = 0; percent_dye_coloc = 0.0
+
+            st.markdown(f"**Colocalized:** UCNP {u_hits}/{u_total} ({percent_ucnp_coloc:.1f}%) — Dye {d_hits}/{d_total} ({percent_dye_coloc:.1f}%)")
+
 
         # Overlays
         if show_all_fits:
@@ -293,6 +296,8 @@ def run():
     # Download matched results CSV
     if matched_rows:
         matched_df = pd.DataFrame(matched_rows)
+            st.session_state['coloc_matched_df'] = matched_df
+
         st.download_button(
             "Download colocalized pairs (CSV)",
             data=matched_df.to_csv(index=False).encode("utf-8"),
@@ -300,5 +305,77 @@ def run():
             mime="text/csv",
         )
 
+
+
+        with tab_plots:
+            st.subheader("Plots")
+            matched_df = st.session_state.get("coloc_matched_df", pd.DataFrame())
+            if matched_df is None or matched_df.empty:
+                st.info("No matched peaks yet — open the Pairs tab first.")
+            else:
+                mode = st.radio("Single-particle brightness", ["Automatic (Gaussian μ)", "Manual (enter pps)"], index=0, help="Automatic assumes most PSFs are single particles. If this is not true, use Manual.")
+                st.warning("Automatic mode assumes the majority of PSFs are single particles.")
+
+                if mode.startswith("Automatic"):
+                    try:
+                        from scipy.stats import norm
+                        uvals = matched_df["ucnp_brightness"].astype(float).to_numpy()
+                        dvals = matched_df["dye_brightness"].astype(float).to_numpy()
+                        import numpy as _np
+                        uvals = uvals[_np.isfinite(uvals) & (uvals > 0)]
+                        dvals = dvals[_np.isfinite(dvals) & (dvals > 0)]
+                        mu_ucnp, _ = norm.fit(uvals) if uvals.size else (_np.nan, _np.nan)
+                        mu_dye,  _ = norm.fit(dvals) if dvals.size else (_np.nan, _np.nan)
+                        single_ucnp_brightness = float(mu_ucnp) if _np.isfinite(mu_ucnp) else 1.0
+                        single_dye_brightness  = float(mu_dye)  if _np.isfinite(mu_dye)  else 1.0
+                        st.caption(f"Estimated single UCNP = {single_ucnp_brightness:.3e} pps, single Dye = {single_dye_brightness:.3e} pps")
+                    except Exception as e:
+                        st.error(f"Gaussian fit failed: {e}")
+                        single_ucnp_brightness = 1.0
+                        single_dye_brightness = 1.0
+                else:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        single_ucnp_brightness = st.number_input("Single UCNP brightness (pps)", min_value=0.0, value=1e5, format="%.3e")
+                    with c2:
+                        single_dye_brightness  = st.number_input("Single Dye brightness (pps)", min_value=0.0, value=1e5, format="%.3e")
+
+                md = matched_df.copy()
+                md["num_ucnps"] = md["ucnp_brightness"].astype(float) / max(single_ucnp_brightness, 1e-12)
+                md["num_dyes"]  = md["dye_brightness"].astype(float)  / max(single_dye_brightness,  1e-12)
+
+                thresh_factor = st.number_input("Exclude UCNPs below factor × single UCNP", min_value=0.0, max_value=1.0, value=0.3, step=0.05)
+                thresholded_df = md[md["ucnp_brightness"] >= thresh_factor * single_ucnp_brightness].copy()
+
+                import matplotlib.pyplot as plt
+                fig_sc2, ax_sc2 = plt.subplots(figsize=(6,5))
+                ax_sc2.scatter(md["num_ucnps"].to_numpy(), md["num_dyes"].to_numpy(), alpha=0.6)
+                ax_sc2.set_xlabel("Number of UCNPs per PSF")
+                ax_sc2.set_ylabel("Number of Dyes per PSF")
+                ax_sc2.set_title("Matched UCNPs")
+                ax_sc2.set_xlim(0, 5)
+                st.pyplot(fig_sc2)
+
+                msk = (thresholded_df["num_ucnps"] >= 0) & (thresholded_df["num_ucnps"] <= 2)
+                y_subset = thresholded_df.loc[msk, "num_dyes"].dropna().to_numpy()
+                fig_h2, ax_h2 = plt.subplots(figsize=(6,5))
+                if y_subset.size:
+                    import numpy as _np
+                    mean_val = float(_np.mean(y_subset))
+                    ax_h2.hist(y_subset, bins=15, edgecolor="black")
+                    ax_h2.set_title(f"Single UCNPs: Mean = {mean_val:.1f}")
+                else:
+                    ax_h2.hist([], bins=15, edgecolor="black")
+                    ax_h2.set_title("Single UCNPs: no data in [0, 2] after threshold")
+                ax_h2.set_xlabel("Number of Dyes per Single UCNP")
+                ax_h2.set_ylabel("Count")
+                st.pyplot(fig_h2)
+
+                st.download_button(
+                    "Download thresholded results (CSV)",
+                    data=thresholded_df.to_csv(index=False).encode("utf-8"),
+                    file_name="thresholded_results.csv",
+                    mime="text/csv",
+                )
 if __name__ == "__main__":
     run()
