@@ -250,26 +250,25 @@ def run():
 
         # Compute coloc mask & overlay
         u_mask, d_mask, pair_idx = _compute_coloc_mask(u_df, d_df, radius_px=radius_px)
-        overall_ucnp_hits += u_hits
-        overall_ucnp_total += u_total
-        overall_dye_hits  += d_hits
-        overall_dye_total  += d_total
-
-        # Percentages
         if isinstance(u_df, pd.DataFrame) and not u_df.empty and u_mask is not None:
             u_total = len(u_df)
             u_hits = int(u_mask.sum())
             percent_ucnp_coloc = 100.0 * u_hits / max(u_total, 1)
         else:
             u_total = 0; u_hits = 0; percent_ucnp_coloc = 0.0
+        
         if isinstance(d_df, pd.DataFrame) and not d_df.empty and d_mask is not None:
             d_total = len(d_df)
             d_hits = int(d_mask.sum())
             percent_dye_coloc = 100.0 * d_hits / max(d_total, 1)
         else:
             d_total = 0; d_hits = 0; percent_dye_coloc = 0.0
+        
+        overall_ucnp_hits += u_hits
+        overall_ucnp_total += u_total
+        overall_dye_hits  += d_hits
+        overall_dye_total  += d_total
 
-        st.markdown(f"**Colocalized:** UCNP {u_hits}/{u_total} ({percent_ucnp_coloc:.1f}%) — Dye {d_hits}/{d_total} ({percent_dye_coloc:.1f}%)")
 
 
         # Overlays
@@ -319,6 +318,8 @@ def run():
             file_name="colocalized_pairs.csv",
             mime="text/csv",
         )
+    st.markdown(f"**Colocalized:** UCNP {u_hits}/{u_total} ({percent_ucnp_coloc:.1f}%) — Dye {d_hits}/{d_total} ({percent_dye_coloc:.1f}%)")
+
 
 
 
