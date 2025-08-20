@@ -39,6 +39,25 @@ try:
 except Exception:
     sif_parser = None
 
+
+def _full_image_cps_from_path(path: str):
+    """Read the FULL SIF frame and convert to cps using metadata (no cropping)."""
+    if sif_parser is None:
+        raise RuntimeError("sif_parser is required to load SIF images from path")
+    arr, meta = sif_parser.np_open(path, ignore_corrupt=True)
+    # Expect shape (frames, H, W) or (H, W) depending on parser; take first frame
+    a = np.asarray(arr)
+    if a.ndim == 3:
+        img_raw = a[0]
+    else:
+        img_raw = a
+    gain = float(meta.get("GainDAC", 1.0)) or 1.0
+    exp = float(meta.get("ExposureTime", 1.0)) or 1.0
+    acc = float(meta.get("AccumulatedCycles", 1.0)) or 1.0
+    cps = img_raw * (5.0 / gain) / exp / acc
+    return cps, meta
+
+
 _TMP_DIR = Path(tempfile.gettempdir()) / "coloc_sifs"
 _TMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -95,10 +114,11 @@ def _load_fit_csvs(csv_files) -> Dict[str, pd.DataFrame]:
             st.warning(f"Could not read CSV '{base}': {e}")
     return mapping
 
+
 def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: float, signal_guess_ucnp="976", signal_guess_dye="638") -> Tuple[Dict[str, dict], Dict[str, Tuple[pd.DataFrame, np.ndarray]], List[str], List[str]]:
     """Return df_dicts + two lists: skipped (errors) and soft_failed (preflight warnings).
-    - df_dict_obj[name] = {"df": df, "image": img}
-    - df_dict_tuple[name] = (df, img)
+    - df_dict_obj[name] = {"df": df, "image": img_full}
+    - df_dict_tuple[name] = (df, img_full)
     - skipped: files that errored during integrate
     - soft_failed: files that failed preflight but still attempted processing
     """
@@ -121,30 +141,27 @@ def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: flo
         if not _preflight_path(path):
             soft_failed.append(fname)
         try:
-            signal = "UCNP" if "976" in fname else ("Dye" if "638" in fname else "Unknown")
-            img, meta, df_est = None, None, None
-            try:
-                out = utils.integrate_sif(str(path), signal=signal, pix_size_um=pix_size_um)
-                if isinstance(out, tuple) and len(out) >= 2:
-                    img, meta = out[0], out[1]
-                    if len(out) >= 3 and hasattr(out[2], "columns"):
-                        df_est = out[2]
-                else:
-                    img = out
-            except TypeError:
-                out = utils.integrate_sif(str(path))
-                if isinstance(out, tuple):
-                    img = out[0]
-                else:
-                    img = out
-                meta = {}
-            base_noext = os.path.splitext(os.path.basename(fname))[0]
-            df = fit_map.get(base_noext, None) or df_est or pd.DataFrame()
-            df_dict_obj[fname] = {"df": df, "image": img}
-            df_dict_tuple[fname] = (df, img)
+            # Always build the FULL image from path
+            img_full, meta = _full_image_cps_from_path(str(path))
         except Exception as e:
             skipped.append(fname)
-            st.error(f"Failed to process {fname}: {e}")
+            st.error(f"Failed to read full image for {fname}: {e}")
+            continue
+
+        # Try to obtain a DF from utils.integrate_sif (optional)
+        df_est = None
+        try:
+            out = utils.integrate_sif(str(path), signal=("UCNP" if "976" in fname else ("Dye" if "638" in fname else "Unknown")), pix_size_um=pix_size_um)
+            if isinstance(out, tuple) and len(out) >= 3 and hasattr(out[2], "columns"):
+                df_est = out[2]
+        except Exception:
+            pass  # Optional
+
+        base_noext = os.path.splitext(os.path.basename(fname))[0]
+        df = fit_map.get(base_noext, None) or df_est or pd.DataFrame()
+        df_dict_obj[fname] = {"df": df, "image": img_full}
+        df_dict_tuple[fname] = (df, img_full)
+
     return df_dict_obj, df_dict_tuple, skipped, soft_failed
 
 def run():
