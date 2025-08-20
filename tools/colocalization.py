@@ -169,10 +169,10 @@ def run():
 
         st.divider()
         st.header("Fitting")
-threshold = st.number_input("Threshold", min_value=0, value=2)
-region_ucnp = st.selectbox("Region (UCNP)", options=["1","2","3","4","all"], index=0)
-region_dye  = st.selectbox("Region (Dye)",  options=["1","2","3","4","all"], index=0)
-radius_px = st.number_input("Colocalization radius (pixels)", min_value=1, value=2)
+        threshold = st.number_input("Threshold", min_value=0, value=2)
+        region_ucnp = st.selectbox("Region (UCNP)", options=["1","2","3","4","all"], index=0)
+        region_dye  = st.selectbox("Region (Dye)",  options=["1","2","3","4","all"], index=0)
+        radius_px = st.number_input("Colocalization radius (pixels)", min_value=1, value=2)
 
         st.header("Overlays")
         show_all_fits = st.checkbox("Show ALL fits", value=True)
