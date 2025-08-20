@@ -5,24 +5,22 @@
 
 import io
 import os
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 import numpy as np
 import pandas as pd
 
 # Import Streamlit and provide a compatibility shim for older code that still calls experimental_rerun.
 import streamlit as st
 if not hasattr(st, "experimental_rerun"):
-    # Map the old name to the new API if available
     if hasattr(st, "rerun"):
-        st.experimental_rerun = st.rerun  # type: ignore[attr-defined]
+        st.experimental_rerun = st.rerun  # type: ignore
 
 # Optionally quiet known non-fatal warnings originating from downstream plotting/fits.
 import warnings
 try:
     from scipy.optimize import OptimizeWarning  # type: ignore
-except Exception:  # scipy may not be present during import checks
-    class OptimizeWarning(Warning):
-        pass
+except Exception:
+    class OptimizeWarning(Warning): ...
 warnings.filterwarnings("ignore", message="Adding colorbar to a different Figure")
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="divide by zero encountered in divide")
 warnings.filterwarnings("ignore", category=OptimizeWarning)
@@ -32,6 +30,41 @@ import sys
 if "/mnt/data" not in sys.path:
     sys.path.append("/mnt/data")
 import utils  # provided by the user
+
+# Try to import sif_parser for preflight checks
+try:
+    import sif_parser
+except Exception:
+    sif_parser = None
+
+def _file_bytes(uploaded_file) -> bytes:
+    """Return the bytes of a Streamlit UploadedFile without leaving the pointer consumed."""
+    # Save current position
+    try:
+        pos = uploaded_file.tell()
+    except Exception:
+        pos = None
+    data = uploaded_file.read()
+    # Reset pointer so other code (that just inspects .name) isn't impacted
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+    return data
+
+def _preflight_sif_bytes(data: bytes) -> bool:
+    """Return True if the .sif byte payload appears readable and contains at least 1 frame."""
+    if sif_parser is None:
+        return True
+    try:
+        with io.BytesIO(data) as bio:
+            arr, meta = sif_parser.np_open(bio, ignore_corrupt=True)
+        if arr is None:
+            return False
+        arr = np.asarray(arr)
+        return arr.size > 0 and arr.ndim >= 2
+    except Exception:
+        return False
 
 def _load_fit_csvs(csv_files) -> Dict[str, pd.DataFrame]:
     """Map basenames (without extension) of SIF files to DataFrames.
@@ -67,37 +100,45 @@ def _load_fit_csvs(csv_files) -> Dict[str, pd.DataFrame]:
             st.warning(f"Could not read CSV '{base}': {e}")
     return mapping
 
-def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: float, signal_guess_ucnp="976", signal_guess_dye="638") -> Tuple[Dict[str, dict], Dict[str, Tuple[pd.DataFrame, np.ndarray]]]:
-    """Return two parallel dictionaries for different utils functions:
+def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: float, signal_guess_ucnp="976", signal_guess_dye="638") -> Tuple[Dict[str, dict], Dict[str, Tuple[pd.DataFrame, np.ndarray]], List[str]]:
+    """Return two parallel dictionaries and a list of skipped filenames:
     - df_dict_obj[name] = {"df": df, "image": img}
     - df_dict_tuple[name] = (df, img)
+    - skipped: list of basenames that failed preflight or processing
     Where 'name' is the file's displayed name (UploadedFile.name).
     If no DF is supplied for a given SIF, we provide an empty DF so plots still render.
     """
     df_dict_obj = {}
     df_dict_tuple = {}
+    skipped: List[str] = []
 
     for f in sif_files:
-        # Integrate SIF to get image & metadata via user's utils
+        data = _file_bytes(f)  # safe copy of bytes; does not consume the UploadedFile for later use
+        if not _preflight_sif_bytes(data):
+            skipped.append(f.name)
+            continue
         try:
             # Pick signal label used just for utils.integrate_sif title-keeping. Guess from filename.
             fname = f.name
             signal = "UCNP" if signal_guess_ucnp in fname else ("Dye" if signal_guess_dye in fname else "Unknown")
             img, meta, df_est = None, None, None
-            # utils.integrate_sif returns image cps and metadata; if a fitted DF is returned as well, accept it.
+            # Use a FRESH BytesIO for EVERY call (avoid consumed streams)
             try:
-                # Some versions may return (image, metadata)
-                out = utils.integrate_sif(f, signal=signal, pix_size_um=pix_size_um)
+                out = utils.integrate_sif(io.BytesIO(data), signal=signal, pix_size_um=pix_size_um)
                 if isinstance(out, tuple) and len(out) >= 2:
                     img, meta = out[0], out[1]
-                    # Optional third: df-like?
                     if len(out) >= 3 and hasattr(out[2], "columns"):
                         df_est = out[2]
                 else:
                     img = out  # fallback
             except TypeError:
                 # Different signature; call with minimal args
-                img, meta = utils.integrate_sif(f), {}
+                out = utils.integrate_sif(io.BytesIO(data))
+                if isinstance(out, tuple):
+                    img = out[0]
+                else:
+                    img = out
+                meta = {}
 
             # Choose DataFrame: user-provided > estimated > empty
             base_noext = os.path.splitext(os.path.basename(fname))[0]
@@ -106,8 +147,9 @@ def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: flo
             df_dict_obj[fname] = {"df": df, "image": img}
             df_dict_tuple[fname] = (df, img)
         except Exception as e:
+            skipped.append(f.name)
             st.error(f"Failed to process {f.name}: {e}")
-    return df_dict_obj, df_dict_tuple
+    return df_dict_obj, df_dict_tuple, skipped
 
 def run():
     st.title("Colocalization Set (UNDER CONSTRUCTION)")
@@ -137,7 +179,9 @@ def run():
 
     # Prepare data
     fit_map = _load_fit_csvs(fit_csvs)
-    df_dict_obj, df_dict_tuple = _build_df_dict(sif_files, fit_map, pix_size_um=pix_size_um)
+    df_dict_obj, df_dict_tuple, skipped = _build_df_dict(sif_files, fit_map, pix_size_um=pix_size_um)
+    if skipped:
+        st.warning(f"Skipped {len(skipped)} file(s) that appear unreadable or failed processing: " + ", ".join(skipped))
 
     # Tabs: Grid view and Paired UCNP↔Dye view
     tab_grid, tab_pairs = st.tabs(["Grid of SIFs", "Paired UCNP ↔ Dye"])
@@ -149,11 +193,12 @@ def run():
         if norm_choice == "LogNorm":
             normalization = "log"
         elif norm_choice.startswith("Normalize"):
-            normalization = "percentile"  # utils may treat specially
+            normalization = "percentile"
 
         # Try to call the user's grid plotter if available
         if hasattr(utils, "plot_all_sifs"):
             try:
+                # First try with rich kwargs
                 results_df = utils.plot_all_sifs(
                     sif_files=sif_files,
                     df_dict=df_dict_obj,
@@ -164,19 +209,27 @@ def run():
                     save_format=save_format,
                     univ_minmax=univ_minmax,
                 )
-                if isinstance(results_df, pd.DataFrame) and not results_df.empty:
-                    st.success(f"Found {len(results_df)} colocalized pairs across all images.")
-                    st.dataframe(results_df)
-                    st.download_button(
-                        "Download colocalization results (CSV)",
-                        data=results_df.to_csv(index=False).encode("utf-8"),
-                        file_name="colocalization_results.csv",
-                        mime="text/csv",
-                    )
             except TypeError:
-                st.warning("`utils.plot_all_sifs` signature differs; falling back to basic plotting only.")
+                # Retry with minimal signature
+                try:
+                    results_df = utils.plot_all_sifs(sif_files, df_dict_obj)
+                    st.info("utils.plot_all_sifs signature differs; used minimal call.")
+                except Exception as e:
+                    results_df = None
+                    st.error(f"plot_all_sifs failed (minimal): {e}")
             except Exception as e:
+                results_df = None
                 st.error(f"plot_all_sifs failed: {e}")
+
+            if isinstance(results_df, pd.DataFrame) and not results_df.empty:
+                st.success(f"Found {len(results_df)} colocalized pairs across all images.")
+                st.dataframe(results_df)
+                st.download_button(
+                    "Download colocalization results (CSV)",
+                    data=results_df.to_csv(index=False).encode("utf-8"),
+                    file_name="colocalization_results.csv",
+                    mime="text/csv",
+                )
         else:
             st.warning("utils.plot_all_sifs not found; skipping grid rendering.")
 
