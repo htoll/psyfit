@@ -1,211 +1,212 @@
-import streamlit as st
-import os
-import io
-from utils import integrate_sif, plot_brightness, plot_histogram, sort_UCNP_dye_sifs, coloc_subplots, match_ucnp_dye_files
-from tools.process_files import process_files
-from matplotlib.colors import LogNorm
-import matplotlib.pyplot as plt
-import numpy as np
-import tempfile
-import pandas as pd
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
 
+# streamlit entry module for "UNDER CONSTRUCTION Colocalization Set"
+# This script relies on helper functions defined in utils.py (must be importable on PYTHONPATH).
+# Do NOT modify any functions in utils.py; this module only orchestrates UI + data flow.
+
+import io
+import os
+from typing import Dict, Tuple
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# Ensure we can import the coloc utils file the user provided
+import sys
+if "/mnt/data" not in sys.path:
+    sys.path.append("/mnt/data")
+import utils  # provided by the user
+
+def _load_fit_csvs(csv_files) -> Dict[str, pd.DataFrame]:
+    """Map basenames (without extension) of SIF files to DataFrames.
+    Accepts either one combined CSV (with a column 'sif_name' or 'file') or per-image CSVs.
+    Required columns for colocalization overlays: x_pix, y_pix, sigx_fit, sigy_fit, brightness_fit.
+    """
+    mapping = {}
+    if not csv_files:
+        return mapping
+
+    # Heuristic 1: if exactly one CSV and it has a column indicating the sif name, split by it
+    if len(csv_files) == 1:
+        df = pd.read_csv(csv_files[0])
+        name_col = None
+        for c in df.columns:
+            if c.lower() in ("sif_name", "filename", "file", "image", "sif"):
+                name_col = c
+                break
+        if name_col is not None:
+            for name, sub in df.groupby(name_col):
+                base = os.path.basename(str(name))
+                base_noext = os.path.splitext(base)[0]
+                mapping[base_noext] = sub.reset_index(drop=True)
+            return mapping
+
+    # Otherwise, treat each CSV as per-image table
+    for f in csv_files:
+        base = os.path.basename(f.name if hasattr(f, "name") else str(f))
+        base_noext = os.path.splitext(base)[0]
+        try:
+            mapping[base_noext] = pd.read_csv(f)
+        except Exception as e:
+            st.warning(f"Could not read CSV '{base}': {e}")
+    return mapping
+
+def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: float, signal_guess_ucnp="976", signal_guess_dye="638") -> Tuple[Dict[str, dict], Dict[str, Tuple[pd.DataFrame, np.ndarray]]]:
+    """Return two parallel dictionaries for different utils functions:
+    - df_dict_obj[name] = {"df": df, "image": img}
+    - df_dict_tuple[name] = (df, img)
+    Where 'name' is the file's displayed name (UploadedFile.name).
+    If no DF is supplied for a given SIF, we provide an empty DF so plots still render.
+    """
+    df_dict_obj = {}
+    df_dict_tuple = {}
+
+    for f in sif_files:
+        # Integrate SIF to get image & metadata via user's utils
+        try:
+            # Pick signal label used just for utils.integrate_sif title-keeping. Guess from filename.
+            fname = f.name
+            signal = "UCNP" if signal_guess_ucnp in fname else ("Dye" if signal_guess_dye in fname else "Unknown")
+            img, meta, df_est = None, None, None
+            # utils.integrate_sif returns image cps and metadata; if a fitted DF is returned as well, accept it.
+            try:
+                # Some versions may return (image, metadata)
+                out = utils.integrate_sif(f, signal=signal, pix_size_um=pix_size_um)
+                if isinstance(out, tuple) and len(out) >= 2:
+                    img, meta = out[0], out[1]
+                    # Optional third: df-like?
+                    if len(out) >= 3 and hasattr(out[2], "columns"):
+                        df_est = out[2]
+                else:
+                    img = out  # fallback
+            except TypeError:
+                # Different signature; call with minimal args
+                img, meta = utils.integrate_sif(f), {}
+
+            # Choose DataFrame: user-provided > estimated > empty
+            base_noext = os.path.splitext(os.path.basename(fname))[0]
+            df = fit_map.get(base_noext, None) or df_est or pd.DataFrame()
+
+            df_dict_obj[fname] = {"df": df, "image": img}
+            df_dict_tuple[fname] = (df, img)
+        except Exception as e:
+            st.error(f"Failed to process {f.name}: {e}")
+    return df_dict_obj, df_dict_tuple
 
 def run():
-    col1, col2 = st.columns([1, 2])
+    st.title("Colocalization Set (UNDER CONSTRUCTION)")
+    st.caption("Single-file Streamlit app wrapper that uses your \`utils.py\` functions without modifying them.")
 
-    with col1:
-        st.header("Colocalize ##Beta##")
-        uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True,
-                                          help='''This function assumes dye and UCNP images are taken  
-                                          sequentially and uses the Andor Solis automatic numbering to sort order''')
-        ucnp_threshold = st.number_input("UCNP threshold", min_value=0, value=2, key="ucnp_threshold_input")
-        dye_threshold = st.number_input("Dye threshold", min_value=0, value=25, key="dye_threshold_input")
+    with st.sidebar:
+        st.header("Inputs")
+        sif_files = st.file_uploader("SIF files (UCNP + Dye)", type=["sif"], accept_multiple_files=True)
+        csv_help = "Optional: upload one combined CSV with a 'sif_name'/'file' column, or per-image CSVs."
+        fit_csvs = st.file_uploader("Fit CSVs (optional)", type=["csv"], accept_multiple_files=True, help=csv_help)
 
-        diagram = """ Splits sif into quadrants (256x256 px):
-        ┌─┬─┐
-        │ 1 │ 2 │
-        ├─╌─┤
-        │ 3 │ 4 │
-        └─┴─┘
-        """
-        ucnp_region = st.selectbox("UCNP Region", options=["1", "2", "3", "4", "all"], help=diagram)
-        dye_region = st.selectbox("Dye Region", options=["1", "2", "3", "4", "all"], help=diagram)
+        st.divider()
+        st.header("Parameters")
+        pix_size_um = st.number_input("Pixel size (µm)", min_value=0.01, max_value=5.0, value=0.10, step=0.01, format="%.2f")
+        coloc_radius_um = st.number_input("Colocalization radius (µm)", min_value=0.05, max_value=10.0, value=0.20, step=0.05, format="%.2f")
+        show_fits = st.checkbox("Overlay fits / circles / labels (requires fit columns)", value=True)
+        st.caption("Required DF columns: x_pix, y_pix, sigx_fit, sigy_fit, brightness_fit")
 
-        coloc_radius = st.number_input("Colocalization Radius", min_value=1, value=2, help='Max radius to associate two PSFs')
-        export_format = st.selectbox("Export Format", options=["SVG", "TIFF", "PNG", "JPEG"])
-        ucnp_id = st.text_input("UCNP ID:", value="976", help="Unique characters to identify UCNP sifs")
-        dye_id = st.text_input("Dye ID:", value="638", help="Unique characters to identify UCNP sifs")
+        st.subheader("Display options")
+        univ_minmax = st.checkbox("Use universal min/max across all images", value=False)
+        norm_choice = st.selectbox("Normalization", ["None", "LogNorm", "Normalize (0-99% percentile)"])
+        save_format = st.selectbox("Save format", ["SVG", "PNG", "PDF"], index=0)
 
-        single_ucnp_brightness = st.number_input("Single UCNP Brightness (pps)", min_value=1.0, value=25000.0)
-        single_dye_brightness = st.number_input("Single Dye Brightness (pps)", min_value=1.0, value=200.0)
+    if not sif_files:
+        st.info("Upload SIF files to begin.")
+        return
 
-    with col2:
-        show_fits = st.checkbox("Show fits")
-        use_log_norm = st.checkbox("Log Image Scaling")
-        univ_minmax = st.checkbox("Universal Scaling")
+    # Prepare data
+    fit_map = _load_fit_csvs(fit_csvs)
+    df_dict_obj, df_dict_tuple = _build_df_dict(sif_files, fit_map, pix_size_um=pix_size_um)
 
-        if "Analyze" not in st.session_state:
-            st.session_state.convert = False
+    # Tabs: Grid view and Paired UCNP↔Dye view
+    tab_grid, tab_pairs = st.tabs(["Grid of SIFs", "Paired UCNP ↔ Dye"])
 
-        if st.button("Analyze"):
-            st.session_state.convert = True
-            st.session_state.coloc_data = None  # reset cache
+    with tab_grid:
+        st.subheader("All SIFs (grid)")
+        # Convert UI normalization option into utils-expected enum
+        normalization = None
+        if norm_choice == "LogNorm":
+            normalization = "log"
+        elif norm_choice.startswith("Normalize"):
+            normalization = "percentile"  # utils will treat specially if implemented
 
-        if st.session_state.convert and uploaded_files and 'coloc_data' not in st.session_state:
-            ucnp_files, dye_files = sort_UCNP_dye_sifs(uploaded_files, ucnp_id, dye_id)
-            df_dict = {}
+        # Try to call the user's grid plotter if available
+        if hasattr(utils, "plot_all_sifs"):
+            try:
+                results_df = utils.plot_all_sifs(
+                    sif_files=sif_files,
+                    df_dict=df_dict_obj,
+                    colocalization_radius=max(1, int(round(coloc_radius_um / pix_size_um))),
+                    show_fits=show_fits,
+                    pix_size_um=pix_size_um,
+                    normalization=normalization,
+                    save_format=save_format,
+                    univ_minmax=univ_minmax,
+                )
+                if isinstance(results_df, pd.DataFrame) and not results_df.empty:
+                    st.success(f"Found {len(results_df)} colocalized pairs across all images.")
+                    st.dataframe(results_df)
+                    st.download_button(
+                        "Download colocalization results (CSV)",
+                        data=results_df.to_csv(index=False).encode("utf-8"),
+                        file_name="colocalization_results.csv",
+                        mime="text/csv",
+                    )
+            except TypeError:
+                st.warning("\`utils.plot_all_sifs\` signature differs; falling back to basic plotting only.")
+            except Exception as e:
+                st.error(f"plot_all_sifs failed: {e}")
+        else:
+            st.warning("utils.plot_all_sifs not found; skipping grid rendering.")
 
-            for f in ucnp_files + dye_files:
-                try:
-                    signal = 'UCNP' if f in ucnp_files else 'dye'
-                    region = ucnp_region if signal == 'UCNP' else dye_region
-                    threshold = int(ucnp_threshold) if signal == 'UCNP' else int(dye_threshold)
+    with tab_pairs:
+        st.subheader("UCNP ↔ Dye pairing & colocalization")
+        # Separate files and pair them using provided utils
+        if hasattr(utils, "sort_UCNP_dye_sifs") and hasattr(utils, "match_ucnp_dye_files") and hasattr(utils, "coloc_subplots"):                
+            ucnp_files, dye_files = utils.sort_UCNP_dye_sifs(sif_files)
+            if len(ucnp_files) == 0 or len(dye_files) == 0:
+                st.info("Need both UCNP and Dye files (filenames should contain '976' for UCNP and '638' for Dye by default).")
+            else:
+                pairs = utils.match_ucnp_dye_files(ucnp_files, dye_files)
+                st.caption(f"Paired {len(pairs)} UCNP↔Dye sets.")
 
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".sif") as tmp:
-                        f.seek(0)
-                        tmp.write(f.read())
-                        tmp_path = tmp.name
+                collected = []
+                for ucnp_f, dye_f in pairs:
+                    try:
+                        df_local = utils.coloc_subplots(
+                            ucnp_file=ucnp_f,
+                            dye_file=dye_f,
+                            df_dict=df_dict_tuple,
+                            colocalization_radius=max(1, int(round(coloc_radius_um / pix_size_um))),
+                            show_fits=show_fits,
+                            pix_size_um=pix_size_um
+                        )
+                        if isinstance(df_local, pd.DataFrame) and not df_local.empty:
+                            # include identifiers
+                            df_local = df_local.copy()
+                            df_local["ucnp_sif"] = ucnp_f.name
+                            df_local["dye_sif"] = dye_f.name
+                            collected.append(df_local)
+                    except Exception as e:
+                        st.error(f"coloc_subplots failed for {ucnp_f.name} vs {dye_f.name}: {e}")
 
-                    df, image = integrate_sif(tmp_path, threshold=threshold, region=region, signal=signal)
-                    df_dict[f.name] = (df, image)
-                except Exception as e:
-                    st.error(f"Failed to parse {f.name}: {e}")
+                if collected:
+                    out = pd.concat(collected, ignore_index=True)
+                    st.success(f"Aggregated {len(out)} colocalized matches.")
+                    st.dataframe(out)
+                    st.download_button(
+                        label="Download paired colocalization (CSV)",
+                        data=out.to_csv(index=False).encode("utf-8"),
+                        file_name="paired_colocalization.csv",
+                        mime="text/csv",
+                    )
+        else:
+            st.warning("One or more pairing/coloc helpers missing in utils.py; cannot run paired mode.")
 
-            pairs = match_ucnp_dye_files(ucnp_files, dye_files)
-
-            if not pairs:
-                st.warning("No matched UCNP/dye file pairs found.")
-                return
-
-            compiled_results = {}
-            pair_labels = []
-            for i, (uf, df_) in enumerate(pairs):
-                if uf.name not in df_dict or df_.name not in df_dict:
-                    st.warning(f"Skipping: Missing data for {uf.name} or {df_.name}")
-                    continue
-                # Colocalization with improved matching
-                ucnp_df, ucnp_img = df_dict[uf.name]
-                dye_df, dye_img = df_dict[df_.name]
-
-                required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
-                if not all(col in ucnp_df.columns for col in required_cols) or not all(col in dye_df.columns for col in required_cols):
-                    continue
-
-                coloc_records = []
-                matched_dye = set()
-
-                for idx_ucnp, row_ucnp in ucnp_df.iterrows():
-                    x_ucnp, y_ucnp = row_ucnp['x_pix'], row_ucnp['y_pix']
-                    dx = dye_df['x_pix'] - x_ucnp
-                    dy = dye_df['y_pix'] - y_ucnp
-                    distances = np.hypot(dx, dy)
-                    within_radius = distances <= coloc_radius
-                    candidate_idxs = dye_df.index[within_radius & ~dye_df.index.isin(matched_dye)]
-
-                    if len(candidate_idxs) == 0:
-                        continue
-
-                    closest_idx = candidate_idxs[np.argmin(distances[within_radius & ~dye_df.index.isin(matched_dye)])]
-                    row_dye = dye_df.loc[closest_idx]
-                    matched_dye.add(closest_idx)
-
-                    coloc_records.append({
-                        'x_pix': row_ucnp['x_pix'],
-                        'y_pix': row_ucnp['y_pix'],
-                        'ucnp_brightness': row_ucnp['brightness_fit'],
-                        'dye_brightness': row_dye['brightness_fit']
-                    })
-
-                coloc_df = pd.DataFrame(coloc_records)
-                st.write(f"{uf.name} & {df_.name}: {len(coloc_df)} colocalized PSFs")
-                st.write(f"{uf.name} & {df_.name}: {len(coloc_df)} colocalized PSFs")
-                if not coloc_df.empty:
-                    pair_key = f"{uf.name} ↔ {df_.name}"
-                    compiled_results[pair_key] = {
-                        "df": coloc_df,
-                        "ucnp_img": df_dict[uf.name][1],
-                        "ucnp_df": df_dict[uf.name][0]
-                    }
-                    pair_labels.append(pair_key)
-
-            if not compiled_results:
-                st.warning("No colocalized points found.")
-                return
-
-            st.session_state.coloc_data = {
-                "results": compiled_results,
-                "labels": pair_labels
-            }
-
-            if 'coloc_data' not in st.session_state:
-                st.warning("Run analysis first.")
-                return
-
-            compiled_results = st.session_state.coloc_data['results']
-            pair_labels = st.session_state.coloc_data['labels']
-
-            selected_pair = st.selectbox("Select a matched pair to view", pair_labels)
-            selected_result = compiled_results[selected_pair]
-            selected_df = selected_result["df"].copy()
-
-            # Optional: show dye image too
-            st.markdown("### Dye Image")
-            dye_file = selected_pair.split(" ↔ ")[1]
-            dye_img, dye_df = df_dict[dye_file][1], df_dict[dye_file][0]
-            fig_dye = plot_brightness(dye_img, dye_df, show_fits=show_fits, normalization=use_log_norm, pix_size_um=0.1, cmap="magma")
-            st.pyplot(fig_dye)
-
-            st.markdown("### Image View")
-            fig_image = plot_brightness(
-                selected_result["ucnp_img"],
-                selected_result["ucnp_df"],
-                show_fits=show_fits,
-                normalization=use_log_norm,
-                pix_size_um=0.1,
-                cmap="magma"
-            )
-            st.pyplot(fig_image)
-
-            selected_df['num_ucnps'] = selected_df['ucnp_brightness'] / single_ucnp_brightness
-            selected_df['num_dyes'] = selected_df['dye_brightness'] / single_dye_brightness
-
-            thresholded_df = selected_df[selected_df['ucnp_brightness'] >= 0.3 * single_ucnp_brightness]
-
-            st.dataframe(thresholded_df)
-
-            # Scatter + Histogram across ALL results
-            full_df = pd.concat([d['df'] for d in compiled_results.values()], ignore_index=True)
-            full_df['num_ucnps'] = full_df['ucnp_brightness'] / single_ucnp_brightness
-            full_df['num_dyes'] = full_df['dye_brightness'] / single_dye_brightness
-            filtered_df = full_df[full_df['ucnp_brightness'] >= 0.3 * single_ucnp_brightness]
-
-            x = filtered_df['num_ucnps'].values.reshape(-1, 1)
-            y = filtered_df['num_dyes'].values
-
-            model = LinearRegression().fit(x, y)
-            y_pred = model.predict(x)
-            r2 = r2_score(y, y_pred)
-
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-
-            ax1.scatter(x, y, alpha=0.6)
-            ax1.plot(x, y_pred, color='red', label=f'y = {model.coef_[0]:.2f}x + {model.intercept_:.1f}\nR² = {r2:.2f}')
-            ax1.set_xlabel('Number of UCNPs per PSF')
-            ax1.set_ylabel('Number of Dyes per PSF')
-            ax1.legend()
-
-            mask = (filtered_df['num_ucnps'] >= 0) & (filtered_df['num_ucnps'] <= 2)
-            y_subset = filtered_df.loc[mask, 'num_dyes']
-            mean_val = y_subset.mean()
-
-            ax2.hist(y_subset, bins=20, edgecolor='black', color='#bc5090')
-            ax2.set_xlabel('Number of Dyes per Single UCNP')
-            ax2.set_ylabel('Count')
-            ax2.set_title(f'Mean = {mean_val:.1f}')
-
-            st.pyplot(fig)
-
-            csv = thresholded_df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download Thresholded Colocalization Data", csv, "thresholded_colocalization.csv", "text/csv")
+# Allow running directly via `streamlit run colocalization.py`
+if __name__ == "__main__":
+    run()
