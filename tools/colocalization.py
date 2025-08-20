@@ -8,9 +8,24 @@ import os
 from typing import Dict, Tuple
 import numpy as np
 import pandas as pd
+
+# Import Streamlit and provide a compatibility shim for older code that still calls experimental_rerun.
 import streamlit as st
 if not hasattr(st, "experimental_rerun"):
-    st.experimental_rerun = st.rerun
+    # Map the old name to the new API if available
+    if hasattr(st, "rerun"):
+        st.experimental_rerun = st.rerun  # type: ignore[attr-defined]
+
+# Optionally quiet known non-fatal warnings originating from downstream plotting/fits.
+import warnings
+try:
+    from scipy.optimize import OptimizeWarning  # type: ignore
+except Exception:  # scipy may not be present during import checks
+    class OptimizeWarning(Warning):
+        pass
+warnings.filterwarnings("ignore", message="Adding colorbar to a different Figure")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="divide by zero encountered in divide")
+warnings.filterwarnings("ignore", category=OptimizeWarning)
 
 # Ensure we can import the coloc utils file the user provided
 import sys
@@ -96,7 +111,7 @@ def _build_df_dict(sif_files, fit_map: Dict[str, pd.DataFrame], pix_size_um: flo
 
 def run():
     st.title("Colocalization Set (UNDER CONSTRUCTION)")
-    st.caption("Single-file Streamlit app wrapper that uses your \`utils.py\` functions without modifying them.")
+    st.caption("Single-file Streamlit app wrapper that uses your `utils.py` functions without modifying them.")
 
     with st.sidebar:
         st.header("Inputs")
@@ -134,7 +149,7 @@ def run():
         if norm_choice == "LogNorm":
             normalization = "log"
         elif norm_choice.startswith("Normalize"):
-            normalization = "percentile"  # utils will treat specially if implemented
+            normalization = "percentile"  # utils may treat specially
 
         # Try to call the user's grid plotter if available
         if hasattr(utils, "plot_all_sifs"):
@@ -159,7 +174,7 @@ def run():
                         mime="text/csv",
                     )
             except TypeError:
-                st.warning("\`utils.plot_all_sifs\` signature differs; falling back to basic plotting only.")
+                st.warning("`utils.plot_all_sifs` signature differs; falling back to basic plotting only.")
             except Exception as e:
                 st.error(f"plot_all_sifs failed: {e}")
         else:
@@ -168,7 +183,7 @@ def run():
     with tab_pairs:
         st.subheader("UCNP ↔ Dye pairing & colocalization")
         # Separate files and pair them using provided utils
-        if hasattr(utils, "sort_UCNP_dye_sifs") and hasattr(utils, "match_ucnp_dye_files") and hasattr(utils, "coloc_subplots"):                
+        if hasattr(utils, "sort_UCNP_dye_sifs") and hasattr(utils, "match_ucnp_dye_files") and hasattr(utils, "coloc_subplots"):
             ucnp_files, dye_files = utils.sort_UCNP_dye_sifs(sif_files)
             if len(ucnp_files) == 0 or len(dye_files) == 0:
                 st.info("Need both UCNP and Dye files (filenames should contain '976' for UCNP and '638' for Dye by default).")
