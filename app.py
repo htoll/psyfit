@@ -43,8 +43,8 @@ st.sidebar.title("Tools")
 tool = st.sidebar.radio("Analyze:", [
     "Batch Convert",
     "Brightness",
-    "Colocalization",
     "Delaunay Colocalization",
+    "Dye Colocalization",
     "Monomer + Conc Estimation",
     "Plot CSVs"
     
@@ -56,7 +56,7 @@ if tool == "Brightness":
 
 
 # Tool: Analyze Colocalization Set
-elif tool == "Colocalization":
+elif tool == "Dye Colocalization":
     colocalization.run()
 
 # Tool: Batch Convert SIFs
