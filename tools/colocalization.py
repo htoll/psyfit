@@ -273,7 +273,6 @@ def run():
             percent_ucnp_coloc = 100.0 * u_hits / max(u_total, 1)
         else:
             u_total = 0; u_hits = 0; percent_ucnp_coloc = 0.0
-        st.markdown(f"**Colocalized:** UCNP {u_hits}/{u_total} ({percent_ucnp_coloc:.1f}%) — Dye {d_hits}/{d_total} ({percent_dye_coloc:.1f}%)")
 
         
         if isinstance(d_df, pd.DataFrame) and not d_df.empty and d_mask is not None:
@@ -282,6 +281,8 @@ def run():
             percent_dye_coloc = 100.0 * d_hits / max(d_total, 1)
         else:
             d_total = 0; d_hits = 0; percent_dye_coloc = 0.0
+        st.markdown(f"**Colocalized:** UCNP {u_hits}/{u_total} ({percent_ucnp_coloc:.1f}%) — Dye {d_hits}/{d_total} ({percent_dye_coloc:.1f}%)")
+
         
         overall_ucnp_hits += u_hits
         overall_ucnp_total += u_total
