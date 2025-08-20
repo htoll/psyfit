@@ -377,7 +377,12 @@ def run():
                 md["num_ucnps"] = md["ucnp_brightness"].astype(float) / max(single_ucnp_brightness, 1e-12)
                 md["num_dyes"]  = md["dye_brightness"].astype(float)  / max(single_dye_brightness,  1e-12)
 
-                thresh_factor = st.number_input("Exclude UCNPs below factor × single UCNP", min_value=0.0, max_value=1.0, value=0.3, step=0.05)
+
+                thresh_factor = st.number_input(
+                                "UCNP quality cutoff (× single UCNP brightness)",
+                                min_value=0.0, max_value=1.0, value=0.3, step=0.05,
+                                help="Exclude points with UCNP brightness below factor × single-UCNP brightness."
+                            )
                 thresholded_df = md[md["ucnp_brightness"] >= thresh_factor * single_ucnp_brightness].copy()
 
                 import matplotlib.pyplot as plt
