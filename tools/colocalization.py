@@ -9,6 +9,8 @@ from typing import Dict, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
+if not hasattr(st, "experimental_rerun"):
+    st.experimental_rerun = st.rerun
 
 # Ensure we can import the coloc utils file the user provided
 import sys
