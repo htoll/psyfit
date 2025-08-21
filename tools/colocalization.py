@@ -97,34 +97,73 @@ def _split_ucnp_dye(files, ucnp_id="976", dye_id="638"):
             st.warning(f"Filename matches neither token — skipping: {name}")
 
     return ucnp, dye
-def _match_ucnp_dye_files(ucnps: List[str], dyes: List[str]) -> List[Tuple[str, str]]:
+def _match_ucnp_dye_files(ucnps: List[str], dyes: List[str], u_token="IR", d_token="red") -> List[Tuple[str, str]]:
     # Deterministic sort
     u_sorted = sorted(ucnps, key=natural_sort_key)
     d_sorted = sorted(dyes, key=natural_sort_key)
-    # Build a lookup from trailing index -> full name
-    d_map = {}
-    for fn in d_sorted:
-        m = re.search(r"(\d+)\.sif$", fn)
-        if m:
-            d_map[int(m.group(1))] = fn
-    pairs = []
-    used = set()
-    for uf in u_sorted:
-        m = re.search(r"(\d+)\.sif$", uf)
-        if not m:
-            continue
-        uidx = int(m.group(1))
-        cand = []
-        if (uidx + 1) in d_map and (uidx + 1) not in used:
-            cand.append(uidx + 1)
-        if (uidx - 1) in d_map and (uidx - 1) not in used:
-            cand.append(uidx - 1)
-        if cand:
-            choice = cand[0]
-            pairs.append((uf, d_map[choice]))
-            used.add(choice)
-    return pairs
 
+    # --- Strategy A: trailing index pairing (original behavior) ---
+    def tail_index(fn: str):
+        m = re.search(r"(\d+)\.sif$", fn, flags=re.IGNORECASE)
+        return int(m.group(1)) if m else None
+
+    d_by_idx = {idx: fn for fn in d_sorted if (idx := tail_index(fn)) is not None}
+    pairs: List[Tuple[str, str]] = []
+    used_d = set()
+
+    for uf in u_sorted:
+        uidx = tail_index(uf)
+        if uidx is None:
+            continue
+        for cand in (uidx + 1, uidx - 1):
+            if cand in d_by_idx and cand not in used_d:
+                pairs.append((uf, d_by_idx[cand]))
+                used_d.add(cand)
+                break
+
+    # If Strategy A found matches for all, return early
+    if pairs and len(pairs) == min(len(u_sorted), len(d_sorted)):
+        return pairs
+
+    # --- Strategy B: normalized stem equality ---
+    def normalize_stem(fn: str) -> str:
+        stem = os.path.splitext(os.path.basename(fn))[0].lower()
+        # remove tokened drive terms like "IR1500mA" / "red80mA"
+        if u_token:
+            stem = re.sub(rf"{re.escape(u_token.lower())}\s*\d+\s*m?a?", "", stem)
+        if d_token:
+            stem = re.sub(rf"{re.escape(d_token.lower())}\s*\d+\s*m?a?", "", stem)
+        # collapse separators and spaces
+        stem = stem.replace("_", " ")
+        stem = re.sub(r"\s+", " ", stem).strip()
+        return stem
+
+    # Build map for dyes by normalized stem (skip the ones already used by A)
+    d_norm_map: Dict[str, str] = {}
+    for df in d_sorted:
+        if df in {pair[1] for pair in pairs}:
+            continue
+        d_norm_map.setdefault(normalize_stem(df), df)
+
+    # Try to pair remaining U files by equal normalized stem
+    used_d_files = {p[1] for p in pairs}
+    for uf in u_sorted:
+        if uf in {p[0] for p in pairs}:
+            continue
+        key = normalize_stem(uf)
+        df = d_norm_map.get(key)
+        if df and df not in used_d_files:
+            pairs.append((uf, df))
+            used_d_files.add(df)
+
+    # --- Strategy C: fallback by order (only for any still-unpaired) ---
+    if len(pairs) < min(len(u_sorted), len(d_sorted)):
+        remaining_u = [u for u in u_sorted if u not in {p[0] for p in pairs}]
+        remaining_d = [d for d in d_sorted if d not in {p[1] for p in pairs}]
+        for uf, df in zip(remaining_u, remaining_d):
+            pairs.append((uf, df))
+
+    return pairs
 def _overlay_circles(ax, df: pd.DataFrame, color: str, alpha: float, label: bool = False):
     from matplotlib.patches import Circle
     if not isinstance(df, pd.DataFrame) or df.empty:
