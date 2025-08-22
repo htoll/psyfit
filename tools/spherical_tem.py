@@ -18,6 +18,22 @@ from scipy.ndimage import distance_transform_edt
 import plotly.graph_objects as go
 from streamlit_plotly_events import plotly_events  # pip install streamlit-plotly-events
 
+# .dm3 reader
+try:
+    from ncempy.io import dm as ncem_dm
+except Exception:
+    ncem_dm = None  # We'll guard this and explain in the UI.
+
+
+st.set_page_config(page_title="PsyFit | TEM Particle Sizing", layout="wide")
+
+
+@dataclass
+class DM3Image:
+    data: np.ndarray
+    nm_per_px: float
+
+
 # -------------- Utilities --------------
 
 def try_read_dm3(file_bytes: bytes) -> DM3Image:
@@ -214,163 +230,141 @@ def save_hist_as_png(fig: go.Figure, filename_prefix: str) -> bytes:
 
 # -------------- Streamlit UI --------------
 
-def run():
-# .dm3 reader
-  try:
-      from ncempy.io import dm as ncem_dm
-  except Exception:
-      ncem_dm = None  # We'll guard this and explain in the UI.
-  
-  def run():
-    
-  st.set_page_config(page_title="PsyFit | TEM Particle Sizing", layout="wide")
-  
-  
-  @dataclass
-  class DM3Image:
-      data: np.ndarray
-      nm_per_px: float
-  
-  
-  
-  
-  st.title("PsyFit • TEM Particle Sizing from .dm3")
-  
-  st.caption(
-      "Upload one or more `.dm3` images, pick a thresholding method (Manual, K-means, or GMM), "
-      "then view and export the particle diameter histogram."
-  )
-  
-  col_left, col_right = st.columns([1, 1])
-  
-  with col_left:
-      files = st.file_uploader(
-          "Upload .dm3 file(s)",
-          accept_multiple_files=True,
-          type=["dm3"]
-      )
-  
-  with col_right:
-      method = st.selectbox(
-          "Threshold method",
-          ["GMM", "K-means", "Manual"],
-          index=0,
-          help="GMM: 2-component Gaussian mixture on intensity. K-means: 2 clusters of intensity. Manual: click the intensity histogram."
-      )
-      nbins_int = st.slider("Intensity histogram bins (for Manual/GMM valley search)", 20, 200, 60, step=5)
-  
-      # If pixel size isn't found in metadata, we ask here once and apply to all such files
-      default_nm_per_px = st.number_input(
-          "Fallback pixel size (nm per px) if absent in metadata",
-          min_value=0.0001,
-          max_value=1000.0,
-          value=1.0,
-          step=0.1,
-          help="Used only when a file has no pixel size in its metadata."
-      )
-  
-  # For manual clicks
-  if "manual_threshold" not in st.session_state:
-      st.session_state.manual_threshold = None
-  
-  diameters_all: List[float] = []
-  
-  if files:
-      with st.spinner("Processing…"):
-          for i, f in enumerate(files, start=1):
-              dm3 = try_read_dm3(f.read())
-              data = dm3.data
-              nm_per_px = dm3.nm_per_px if np.isfinite(dm3.nm_per_px) else default_nm_per_px
-  
-              st.subheader(f"Image {i}")
-              st.write(f"Shape: `{data.shape}` • nm/px: **{nm_per_px:.4g}**")
-  
-              # Manual: show intensity histogram and collect clicks
-              chosen_threshold = None
-              if method == "Manual":
-                  fig_h = fig_intensity_histogram(data, nbins_int, st.session_state.manual_threshold)
-                  clicked = plotly_events(fig_h, click_event=True, hover_event=False, select_event=False, key=f"click_{i}")
-                  if clicked:
-                      # Take the last click's x as threshold
-                      st.session_state.manual_threshold = float(clicked[-1]["x"])
-                  # Also offer a numeric override/finetune
-                  st.session_state.manual_threshold = st.number_input(
-                      "Manual threshold (intensity)",
-                      value=float(st.session_state.manual_threshold) if st.session_state.manual_threshold is not None else float(np.median(data)),
-                      format="%.6f",
-                      key=f"manual_thr_{i}"
-                  )
-                  chosen_threshold = float(st.session_state.manual_threshold)
-  
-              elif method == "K-means":
-                  chosen_threshold = kmeans_threshold(data)
-                  st.info(f"K-means threshold = **{chosen_threshold:.4f}**")
-                  st.plotly_chart(fig_intensity_histogram(data, nbins_int, chosen_threshold), use_container_width=True)
-  
-              else:  # GMM
-                  chosen_threshold = gmm_threshold(data, nbins_int)
-                  st.info(f"GMM threshold = **{chosen_threshold:.4f}**")
-                  st.plotly_chart(fig_intensity_histogram(data, nbins_int, chosen_threshold), use_container_width=True)
-  
-              # Segment + measure
-              diam_nm = segment_and_measure(
-                  data=data,
-                  threshold=chosen_threshold,
-                  nm_per_px=nm_per_px,
-                  min_area_px=5,               # tune if needed
-                  circ_lo=0.05, circ_hi=3.0    # MATLAB-style circularity filter
-              )
-  
-              if diam_nm.size == 0:
-                  st.warning("No particles detected after filtering.")
-              else:
-                  diameters_all.extend(diam_nm.tolist())
-                  st.success(f"Detected {len(diam_nm)} particles (≥ 2 nm).")
-  
-      # After all files: show diameter histogram & download
-      st.markdown("---")
-      st.subheader("Combined diameter histogram")
-      if len(diameters_all):
-          diam_arr = np.array(diameters_all, dtype=np.float32)
-  
-          # Optional post-filter like MATLAB (example 8–13 nm). Leave off by default, enable with a toggle.
-          with st.expander("Optional post-filter (reject mis-identified)"):
-              enable_post = st.checkbox("Enable post-filter range", value=False)
-              min_nm, max_nm = st.slider("Diameter range (nm)", 0.0, max(20.0, float(np.percentile(diam_arr, 99)*1.5)), (8.0, 13.0))
-              if enable_post:
-                  diam_arr = diam_arr[(diam_arr >= min_nm) & (diam_arr <= max_nm)]
-  
-          nbins_size = st.slider("Diameter histogram bins", 10, 150, 50, step=5)
-          fig_sizes = fig_histogram(diam_arr, nbins=nbins_size)
-          st.plotly_chart(fig_sizes, use_container_width=True)
-  
-          # Download PNG
-          try:
-              png_bytes = save_hist_as_png(fig_sizes, filename_prefix="diameter_hist")
-              today = dt.datetime.now().strftime("%Y%m%d")
-              st.download_button(
-                  label="Download histogram as PNG",
-                  data=png_bytes,
-                  file_name=f"diameter_hist_{today}.png",
-                  mime="image/png"
-              )
-          except Exception as e:
-              st.error(
-                  "To export PNGs, install `kaleido` (pip install -U kaleido). "
-                  f"Export failed with: {e}"
-              )
-  
-          # Also allow CSV export of the raw diameters
-          csv = "diameter_nm\n" + "\n".join(f"{x:.6f}" for x in diam_arr)
-          st.download_button(
-              label="Download diameters as CSV",
-              data=csv.encode("utf-8"),
-              file_name=f"diameters_nm_{dt.datetime.now().strftime('%Y%m%d')}.csv",
-              mime="text/csv"
-          )
-      else:
-          st.info("No diameters to plot yet.")
-  else:
-      st.info("Upload one or more `.dm3` files to begin.")
+st.title("PsyFit • TEM Particle Sizing from .dm3")
 
+st.caption(
+    "Upload one or more `.dm3` images, pick a thresholding method (Manual, K-means, or GMM), "
+    "then view and export the particle diameter histogram."
+)
 
+col_left, col_right = st.columns([1, 1])
+
+with col_left:
+    files = st.file_uploader(
+        "Upload .dm3 file(s)",
+        accept_multiple_files=True,
+        type=["dm3"]
+    )
+
+with col_right:
+    method = st.selectbox(
+        "Threshold method",
+        ["GMM", "K-means", "Manual"],
+        index=0,
+        help="GMM: 2-component Gaussian mixture on intensity. K-means: 2 clusters of intensity. Manual: click the intensity histogram."
+    )
+    nbins_int = st.slider("Intensity histogram bins (for Manual/GMM valley search)", 20, 200, 60, step=5)
+
+    # If pixel size isn't found in metadata, we ask here once and apply to all such files
+    default_nm_per_px = st.number_input(
+        "Fallback pixel size (nm per px) if absent in metadata",
+        min_value=0.0001,
+        max_value=1000.0,
+        value=1.0,
+        step=0.1,
+        help="Used only when a file has no pixel size in its metadata."
+    )
+
+# For manual clicks
+if "manual_threshold" not in st.session_state:
+    st.session_state.manual_threshold = None
+
+diameters_all: List[float] = []
+
+if files:
+    with st.spinner("Processing…"):
+        for i, f in enumerate(files, start=1):
+            dm3 = try_read_dm3(f.read())
+            data = dm3.data
+            nm_per_px = dm3.nm_per_px if np.isfinite(dm3.nm_per_px) else default_nm_per_px
+
+            st.subheader(f"Image {i}")
+            st.write(f"Shape: `{data.shape}` • nm/px: **{nm_per_px:.4g}**")
+
+            # Manual: show intensity histogram and collect clicks
+            chosen_threshold = None
+            if method == "Manual":
+                fig_h = fig_intensity_histogram(data, nbins_int, st.session_state.manual_threshold)
+                clicked = plotly_events(fig_h, click_event=True, hover_event=False, select_event=False, key=f"click_{i}")
+                if clicked:
+                    # Take the last click's x as threshold
+                    st.session_state.manual_threshold = float(clicked[-1]["x"])
+                # Also offer a numeric override/finetune
+                st.session_state.manual_threshold = st.number_input(
+                    "Manual threshold (intensity)",
+                    value=float(st.session_state.manual_threshold) if st.session_state.manual_threshold is not None else float(np.median(data)),
+                    format="%.6f",
+                    key=f"manual_thr_{i}"
+                )
+                chosen_threshold = float(st.session_state.manual_threshold)
+
+            elif method == "K-means":
+                chosen_threshold = kmeans_threshold(data)
+                st.info(f"K-means threshold = **{chosen_threshold:.4f}**")
+                st.plotly_chart(fig_intensity_histogram(data, nbins_int, chosen_threshold), use_container_width=True)
+
+            else:  # GMM
+                chosen_threshold = gmm_threshold(data, nbins_int)
+                st.info(f"GMM threshold = **{chosen_threshold:.4f}**")
+                st.plotly_chart(fig_intensity_histogram(data, nbins_int, chosen_threshold), use_container_width=True)
+
+            # Segment + measure
+            diam_nm = segment_and_measure(
+                data=data,
+                threshold=chosen_threshold,
+                nm_per_px=nm_per_px,
+                min_area_px=5,               # tune if needed
+                circ_lo=0.05, circ_hi=3.0    # MATLAB-style circularity filter
+            )
+
+            if diam_nm.size == 0:
+                st.warning("No particles detected after filtering.")
+            else:
+                diameters_all.extend(diam_nm.tolist())
+                st.success(f"Detected {len(diam_nm)} particles (≥ 2 nm).")
+
+    # After all files: show diameter histogram & download
+    st.markdown("---")
+    st.subheader("Combined diameter histogram")
+    if len(diameters_all):
+        diam_arr = np.array(diameters_all, dtype=np.float32)
+
+        # Optional post-filter like MATLAB (example 8–13 nm). Leave off by default, enable with a toggle.
+        with st.expander("Optional post-filter (reject mis-identified)"):
+            enable_post = st.checkbox("Enable post-filter range", value=False)
+            min_nm, max_nm = st.slider("Diameter range (nm)", 0.0, max(20.0, float(np.percentile(diam_arr, 99)*1.5)), (8.0, 13.0))
+            if enable_post:
+                diam_arr = diam_arr[(diam_arr >= min_nm) & (diam_arr <= max_nm)]
+
+        nbins_size = st.slider("Diameter histogram bins", 10, 150, 50, step=5)
+        fig_sizes = fig_histogram(diam_arr, nbins=nbins_size)
+        st.plotly_chart(fig_sizes, use_container_width=True)
+
+        # Download PNG
+        try:
+            png_bytes = save_hist_as_png(fig_sizes, filename_prefix="diameter_hist")
+            today = dt.datetime.now().strftime("%Y%m%d")
+            st.download_button(
+                label="Download histogram as PNG",
+                data=png_bytes,
+                file_name=f"diameter_hist_{today}.png",
+                mime="image/png"
+            )
+        except Exception as e:
+            st.error(
+                "To export PNGs, install `kaleido` (pip install -U kaleido). "
+                f"Export failed with: {e}"
+            )
+
+        # Also allow CSV export of the raw diameters
+        csv = "diameter_nm\n" + "\n".join(f"{x:.6f}" for x in diam_arr)
+        st.download_button(
+            label="Download diameters as CSV",
+            data=csv.encode("utf-8"),
+            file_name=f"diameters_nm_{dt.datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No diameters to plot yet.")
+else:
+    st.info("Upload one or more `.dm3` files to begin.")
