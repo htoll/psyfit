@@ -6,7 +6,7 @@ import io
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from tools import analyze_single_sif, batch_convert, colocalization, monomers, delaunayJFS, plot_csv, spherical_tem
+from tools import analyze_single_sif, batch_convert, colocalization, monomers, delaunayJFS, plot_csv
 import tools.spherical_tem as spherical_tem
 
 import sif_parser
