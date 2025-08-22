@@ -6,7 +6,7 @@ import io
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from tools import analyze_single_sif, batch_convert, colocalization, monomers, delaunayJFS, plot_csv
+from tools import analyze_single_sif, batch_convert, colocalization, monomers, delaunayJFS, plot_csv, spherical_tem
 import sif_parser
 
 from skimage.feature import peak_local_max
@@ -46,7 +46,8 @@ tool = st.sidebar.radio("Analyze:", [
     "Delaunay Colocalization",
     "Dye Colocalization",
     "Monomer + Conc Estimation",
-    "Plot CSVs"
+    "Plot CSVs",
+    "Spherical NP TEM"
     
 ])
 col1, col2 = st.columns([1, 2])
@@ -72,5 +73,7 @@ elif tool == 'Delaunay Colocalization':
 elif tool == "Plot CSVs":
     plot_csv.run()
 
+elif tool =="Spherical NP TEM":
+    spherical_tem.run()
 
 
