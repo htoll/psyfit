@@ -7,9 +7,7 @@ def run():
   
   # --- Page config ---
   st.set_page_config(
-      page_title="Shelling Injection Table",
-      layout="wide",
-  )
+      page_title="Shelling Injection Table")
   
   
   with st.form("inputs"):
