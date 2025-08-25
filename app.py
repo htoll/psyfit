@@ -6,7 +6,7 @@ import io
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from tools import analyze_single_sif, batch_convert, colocalization, monomers, delaunayJFS, plot_csv
+from tools import analyze_single_sif, batch_convert, colocalization, monomers, delaunayJFS, plot_csv, shelling_table
 import tools.spherical_tem as spherical_tem
 
 import sif_parser
@@ -47,6 +47,7 @@ tool = st.sidebar.radio("Analyze:", [
     "Brightness",
     "Delaunay Colocalization",
     "Dye Colocalization",
+    'Shelling Injection Table',
     "Monomer + Conc Estimation",
     "Plot CSVs",
     "Spherical NP TEM"
@@ -65,6 +66,9 @@ elif tool == "Dye Colocalization":
 # Tool: Batch Convert SIFs
 elif tool == "Batch Convert":
     batch_convert.run()
+
+elif tool == 'Shelling Injection Table':
+    shelling_table.run()
 
 elif tool == 'Monomer + Conc Estimation':
     monomers.run()
