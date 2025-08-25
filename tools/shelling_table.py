@@ -3,6 +3,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+def highlight_cells(val, row_name):
+    if row_name == "% Volume Injected" and float(val) > 10:
+        return "background-color: lightcoral"
+    return ""
+
 def run():
   
   # --- Page config ---
@@ -126,35 +131,39 @@ def run():
       df_t.columns = [f"Injection {int(c)}" for c in df_t.columns]  # prettier column headers
       return df_t, warnings
   
-  
   if submitted:
-      try:
-          df_t, warnings = compute_injection_plan(
-              delta=delta,
-              initial_radius=initial_radius,
-              final_radius=final_radius,
-              nm_per_mL=nm_per_mL,
-              injection_time=injection_time,
-              initial_rxn_vol=initial_rxn_vol,
-          )
-  
-          st.subheader("Injection Table")
-          st.dataframe(
-              df_t,
-              use_container_width=True,
-          )
-  
-          csv = df_t.to_csv().encode("utf-8")
-          st.download_button(
-              label="Download CSV",
-              data=csv,
-              file_name="shelling_injection_table.csv",
-              mime="text/csv",
-          )
-  
-          if warnings:
-              st.warning("\n".join(warnings))
-  
-      except Exception as e:
-          st.error(str(e))
+    try:
+        df_t, warnings = compute_injection_plan(
+            delta=delta,
+            initial_radius=initial_radius,
+            final_radius=final_radius,
+            nm_per_mL=nm_per_mL,
+            injection_time=injection_time,
+            initial_rxn_vol=initial_rxn_vol,
+        )
+
+        st.subheader("Injection Table (Transposed)")
+
+        # Apply highlighting
+        styled = df_t.style.apply(
+            lambda col: [highlight_cells(v, col.name) for v in col],
+            axis=0
+        )
+
+        st.dataframe(styled, use_container_width=True)
+
+        csv = df_t.to_csv().encode("utf-8")
+        st.download_button(
+            label="Download CSV",
+            data=csv,
+            file_name="shelling_injection_table.csv",
+            mime="text/csv",
+        )
+
+        if warnings:
+            st.warning("\n".join(warnings))
+
+    except Exception as e:
+        st.error(str(e))
+
   
