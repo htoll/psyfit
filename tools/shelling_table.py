@@ -138,8 +138,7 @@ def run():
               initial_rxn_vol=initial_rxn_vol,
           )
   
-          st.subheader("Injection Table
-          )")
+          st.subheader("Injection Table")
           st.dataframe(
               df_t,
               use_container_width=True,
