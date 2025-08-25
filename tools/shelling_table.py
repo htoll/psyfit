@@ -141,14 +141,33 @@ def run():
             injection_time=injection_time,
             initial_rxn_vol=initial_rxn_vol,
         )
-
-        st.subheader("Injection Table (Transposed)")
-
-        # Apply highlighting
-        styled = df_t.style.apply(
-            lambda col: [highlight_cells(v, col.name) for v in col],
-            axis=0
+        numeric_rows = [
+            "Estimated radius (nm)",
+            "NaTFA (mL)",
+            "YAc (mL)",
+            "Total Rxn Volume (mL)",
+            "% Volume Injected",
+        ]
+        df_t.loc[numeric_rows] = (
+            df_t.loc[numeric_rows]
+              .apply(pd.to_numeric, errors="coerce")
+              .round(2)
         )
+        df_t.loc["Time (min)"] = (
+            pd.to_numeric(df_t.loc["Time (min)"], errors="coerce")
+              .round(0).astype("Int64")   # keeps blanks as <NA> if any
+        )
+        
+        # ---- Styling: color the % row cells >10 ----
+        styled = (
+            df_t.style
+                .applymap(
+                    lambda v: "background-color: lightcoral" if pd.notna(v) and float(v) > 10 else "",
+                    subset=pd.IndexSlice["% Volume Injected", :]
+                )
+        )
+
+        st.subheader("Injection Table")
 
         st.dataframe(styled, use_container_width=True)
 
