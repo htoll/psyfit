@@ -158,17 +158,6 @@ def run():
           if warnings:
               st.warning("\n".join(warnings))
   
-          with st.expander("Details & assumptions"):
-              st.markdown(
-                  """
-                  - Number of injections = ceil((final − initial)/Δ).
-                  - Radii increase by Δ per step starting at the initial radius.
-                  - **YAc (mL)** is computed from the incremental shell volume divided by `nm³ per mL YAc`.
-                  - **NaTFA (mL)** for injection *i* is 0 for the first and half of the previous YAc thereafter.
-                  - **% Volume Injected** compares the per-step addition to the running reaction volume.
-                  """
-              )
-  
       except Exception as e:
           st.error(str(e))
   
