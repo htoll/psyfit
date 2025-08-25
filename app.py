@@ -47,7 +47,7 @@ tool = st.sidebar.radio("Analyze:", [
     "Brightness",
     "Delaunay Colocalization",
     "Dye Colocalization",
-    'Shelling Injection Table',
+    "Shelling Injection Table",
     "Monomer + Conc Estimation",
     "Plot CSVs",
     "Spherical NP TEM"
