@@ -43,7 +43,7 @@ def run():
           )
       with col2:
           nm_per_mL = st.number_input(
-              "nm³ of shell per mL YAc",
+              "nm³ of shell per mL LnOA",
               min_value=1,
               value=200,
               step=1,
