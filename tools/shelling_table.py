@@ -7,12 +7,10 @@ def run():
   
   # --- Page config ---
   st.set_page_config(
-      page_title="UCNP Shelling Injection Planner",
-      page_icon="🧪",
+      page_title="Shelling Injection Table",
       layout="centered",
   )
   
-  st.title("🧪 UCNP Shelling Injection Planner")
   st.caption("Simple estimation of the number of injections and volumes for shelling UCNPs.")
   
   with st.form("inputs"):
@@ -127,6 +125,8 @@ def run():
   
       # Transpose so each injection is a column
       df_t = df.set_index("Injection").T
+      df_t.index.name = None  # hide row index label
+      df_t.columns = [f"Injection {int(c)}" for c in df_t.columns]  # prettier column headers
       return df_t, warnings
   
   
