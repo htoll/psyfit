@@ -141,7 +141,8 @@ def run():
               initial_rxn_vol=initial_rxn_vol,
           )
   
-          st.subheader("Injection Table (Transposed)")
+          st.subheader("Injection Table
+          )")
           st.dataframe(
               df_t,
               use_container_width=True,
@@ -151,7 +152,7 @@ def run():
           st.download_button(
               label="Download CSV",
               data=csv,
-              file_name="ucnp_injection_plan_transposed.csv",
+              file_name="shelling_injection_table.csv",
               mime="text/csv",
           )
   
