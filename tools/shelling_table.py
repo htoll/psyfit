@@ -8,10 +8,9 @@ def run():
   # --- Page config ---
   st.set_page_config(
       page_title="Shelling Injection Table",
-      layout="centered",
+      layout="wide",
   )
   
-  st.caption("Simple estimation of the number of injections and volumes for shelling UCNPs.")
   
   with st.form("inputs"):
       col1, col2 = st.columns(2)
