@@ -111,7 +111,7 @@ def run():
           pct_injected[q] = round(pct, 2)
           if pct > 10.0:
               warnings.append(
-                  f"Warning (Injection {q+1}): >10% volume added in a single step risks temperature fluctuation"
+                  f"Warning (Injection {q+1}): risks temperature fluctuation \n"
               )
           prev_vol = total_vol[q]
   
