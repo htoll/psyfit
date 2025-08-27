@@ -213,7 +213,7 @@ def fig_intensity_histogram(data: np.ndarray, nbins: Optional[int] = None, thres
 
 # ---------- Streamlit entrypoint ----------
 def run():
-    st.title("PsyFit • TEM Particle Sizing from .dm3")
+    st.title("TEM Spherical Particle Characterization (.dm3)")
 
     if ncem_dm is None:
         st.error("`ncempy` is not installed. Please run: `pip install ncempy`")
@@ -256,7 +256,7 @@ def run():
                 nm_per_px = dm3.nm_per_px if np.isfinite(dm3.nm_per_px) else default_nm_per_px
 
                 st.subheader(f"Image {i}")
-                st.write(f"Shape: `{data.shape}` • nm/px: **{nm_per_px:.4g}**")
+                st.write(f"Shape: `{data.shape}`, nm/px: **{nm_per_px:.4g}**")
 
                 # Threshold selection
                 if method == "Manual":
