@@ -3,6 +3,8 @@ import math
 import datetime as dt
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
+import os
+import tempfile
 
 import numpy as np
 import streamlit as st
@@ -35,33 +37,47 @@ def try_read_dm3(file_bytes: bytes) -> DM3Image:
     if ncem_dm is None:
         raise RuntimeError("ncempy is not installed. Please install it (pip install ncempy).")
 
-    rdr = ncem_dm.dmReader(file_bytes)
-    arr = rdr.getDataset(0)  # first dataset
-    data = np.array(arr, dtype=np.float32)
+    # Write the uploaded bytes to a temp .dm3 file, then let ncempy open it.
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".dm3")
+    try:
+        tmp.write(file_bytes)
+        tmp.flush()
+        tmp.close()
 
-    nm_per_px = np.nan
-    md = rdr.allTags
-    candidates = [
-        ("ImageList.1.ImageData.Calibrations.Dimension.0.Scale", 1e9),
-        ("ImageList.1.ImageData.Calibrations.Dimension.1.Scale", 1e9),
-        ("pixelSize.x", 1e9),
-        ("pixelSize", 1e9),
-        ("xscale", 1e9),
-        ("ImageList.2.ImageData.Calibrations.Dimension.0.Scale", 1e9),
-        ("ImageList.2.ImageData.Calibrations.Dimension.1.Scale", 1e9),
-    ]
-    for key, factor in candidates:
+        # Use fileDM as a context manager to avoid the __del__/fid errors
+        with ncem_dm.fileDM(tmp.name, verbose=False) as rdr:
+            im = rdr.getDataset(0)           # dict with keys like 'data'
+            data = np.array(im["data"], dtype=np.float32)
+
+            nm_per_px = np.nan
+            md = rdr.allTags
+            candidates = [
+                ("ImageList.1.ImageData.Calibrations.Dimension.0.Scale", 1e9),
+                ("ImageList.1.ImageData.Calibrations.Dimension.1.Scale", 1e9),
+                ("pixelSize.x", 1e9),
+                ("pixelSize", 1e9),
+                ("xscale", 1e9),
+                ("ImageList.2.ImageData.Calibrations.Dimension.0.Scale", 1e9),
+                ("ImageList.2.ImageData.Calibrations.Dimension.1.Scale", 1e9),
+            ]
+            for key, factor in candidates:
+                try:
+                    val = md
+                    for k in key.split("."):
+                        val = val[k]
+                    if isinstance(val, (int, float)):
+                        nm_per_px = float(val) * factor
+                        break
+                except Exception:
+                    continue
+
+        return DM3Image(data=data, nm_per_px=nm_per_px)
+    finally:
         try:
-            val = md
-            for k in key.split("."):
-                val = val[k]
-            if isinstance(val, (int, float)):
-                nm_per_px = float(val) * factor
-                break
+            os.unlink(tmp.name)
         except Exception:
-            continue
+            pass
 
-    return DM3Image(data=data, nm_per_px=nm_per_px)
 
 
 def robust_percentile_cut(data: np.ndarray, p=99.5) -> np.ndarray:
