@@ -168,6 +168,14 @@ def segment_and_measure(
 def fig_histogram(values_nm: np.ndarray, nbins: int = 50, title: str = "Particle size distribution (nm)"):
     counts, edges = np.histogram(values_nm, bins=nbins)
     centers = edges[:-1] + np.diff(edges) / 2
+    fig.update_layout(
+    title=title,
+    xaxis_title="Diameter (nm)",
+    yaxis_title="Count",
+    bargap=0.05,
+    modebar_add=["toImage"]  # ensures the “Download as PNG” button shows
+)
+
     return go.Figure(
         data=[go.Bar(x=centers, y=counts, name="Diameters (nm)")],
         layout=go.Layout(title=title, xaxis_title="Diameter (nm)", yaxis_title="Count", bargap=0.05),
@@ -185,6 +193,14 @@ def fig_intensity_histogram(data: np.ndarray, nbins: Optional[int] = None, thres
             bargap=0.03,
         ),
     )
+    fig.update_layout(
+    title=title,
+    xaxis_title="Diameter (nm)",
+    yaxis_title="Count",
+    bargap=0.05,
+    modebar_add=["toImage"]  # ensures the “Download as PNG” button shows
+)
+
     if threshold is not None:
         fig.add_shape(
             type="line",
@@ -193,8 +209,6 @@ def fig_intensity_histogram(data: np.ndarray, nbins: Optional[int] = None, thres
     return fig
 
 
-def save_hist_as_png(fig: go.Figure) -> bytes:
-    return fig.to_image(format="png")  # requires kaleido
 
 
 # ---------- Streamlit entrypoint ----------
@@ -303,7 +317,6 @@ def run():
             st.plotly_chart(fig_sizes, use_container_width=True)
 
             try:
-                png_bytes = save_hist_as_png(fig_sizes)
                 today = dt.datetime.now().strftime("%Y%m%d")
                 st.download_button(
                     label="Download histogram as PNG",
