@@ -150,7 +150,7 @@ def run():
 
             # Parameters (kept to preserve existing UI)
             threshold = st.number_input(
-                                        "Threshold", min_value=0.1, value=1,
+                                        "Threshold", min_value=1, value=1,
                                         help=("Stringency of fit, higher value is more selective:\n"
                                               "- UCNP signal sets absolute peak cut off\n"
                                               "- Dye signal sets sensitivity of blob detection")
