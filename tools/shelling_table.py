@@ -161,6 +161,7 @@ def run():
         # ---- Styling: color the % row cells >10 ----
         styled = (
             df_t.style
+                .format(precision=2, na_rep="")  # <-- forces 2-decimal display for floats
                 .applymap(
                     lambda v: "background-color: lightcoral" if pd.notna(v) and float(v) > 10 else "",
                     subset=pd.IndexSlice["% Volume Injected", :]
