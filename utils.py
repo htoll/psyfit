@@ -43,6 +43,9 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
     image_data = image_data[0]  # (H, W)
 
     gainDAC = metadata['GainDAC']
+    if gainDAC == 0:
+        gainDAC =1
+        st.warning(f"Gain of 0 in {sif}")
     exposure_time = metadata['ExposureTime']
     accumulate_cycles = metadata['AccumulatedCycles']
 
