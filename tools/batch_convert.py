@@ -4,6 +4,7 @@ import io
 from utils import integrate_sif, plot_brightness, plot_histogram, plot_all_sifs
 from tools.process_files import process_files
 from matplotlib.colors import LogNorm
+import matplotlib
 import numpy as np
 
 def run():
@@ -33,6 +34,8 @@ def run():
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help= '''Changes detection method:  
                                                                 - UCNP for high SNR (sklearn peakfinder)  
                                                                 - dye for low SNR (sklearn blob detection)''')
+        nice_cmaps = ["viridis", "plasma", "inferno", "magma", "cividis", "gray"]
+        cmap = st.selectbox("Colormap", options=nice_cmaps, index=0)
 
     with col2:
         show_fits = st.checkbox("Show fits")
@@ -55,7 +58,8 @@ def run():
                             show_fits=show_fits, 
                             save_format=export_format, 
                             normalization=norm,
-                             univ_minmax = univ_minmax)
+                             univ_minmax = univ_minmax,
+                             cmap = cmap)
             except Exception as e:
                 st.error(f"An error occurred: {e}")
 
