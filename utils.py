@@ -438,7 +438,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
     all_matched_pairs = []
 
-
+    n_files = len(sif_files)
     n_cols = min(4, max(1, n_files))   # between 1 and 4, never more than files
     n_rows = int(np.ceil(n_files / n_cols))
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
