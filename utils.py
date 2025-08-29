@@ -434,7 +434,7 @@ def gaussian2d(xy, amp, x0, sigma_x, y0, sigma_y, offset):
                  np.exp(-((y - y0)**2)/(2*sigma_y**2)) + offset).ravel()
 
 
-def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, normalization=None, save_format = 'SVG', univ_minmax=False):
+def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, normalization=None, save_format = 'SVG', univ_minmax=False, cmap = 'grey'):
     required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
     all_matched_pairs = []
 
@@ -458,7 +458,6 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
             stacked = np.stack(all_vals)
             global_min = stacked.min()
             global_max = stacked.max()
-            # This is the crucial line: it creates a Normalize instance.
             normalization = Normalize(vmin=global_min, vmax=global_max)
     for i, sif_file in enumerate(sif_files):
         ax = axes[i]
@@ -490,7 +489,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
                         'distance': distances[closest_idx]
                     })
 
-        im = ax.imshow(img + 1, cmap='magma', origin='lower', norm=normalization)
+        im = ax.imshow(img + 1, cmap=cmap, origin='lower', norm=normalization)
         # Only show colorbar on the last subplot in the first row (column n_cols-1)
         if not univ_minmax:
             plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
