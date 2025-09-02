@@ -48,8 +48,8 @@ tool = st.sidebar.radio("Analyze:", [
     "Delaunay Colocalization",
     "Dye Colocalization",
     "Shelling Injection Table",
-    "Monomer + Conc Estimation",
-    "Plot CSVs",
+    "Monomer Estimation",
+   # "Plot CSVs",
     "Spherical NP TEM"
     
 ])
@@ -70,7 +70,7 @@ elif tool == "Batch Convert":
 elif tool == 'Shelling Injection Table':
     shelling_table.run()
 
-elif tool == 'Monomer + Conc Estimation':
+elif tool == 'Monomer Estimation':
     monomers.run()
 
 elif tool == 'Delaunay Colocalization':
