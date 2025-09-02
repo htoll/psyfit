@@ -119,20 +119,6 @@ def run():
             if st.session_state.selected_file_name not in current_names:
                 st.session_state.selected_file_name = None
 
-        # Optional convenience: a quick "Clear all" button
-        if st.button("Clear all uploaded files"):
-            # delete temps
-            for v in list(st.session_state.saved_files.values()):
-                name, path = (v if isinstance(v, (tuple, list)) and len(v) == 2 else (os.path.basename(v), v))
-                try:
-                    if os.path.exists(path):
-                        os.remove(path)
-                except Exception:
-                    pass
-            st.session_state.saved_files = {}
-            st.session_state.processed = None
-            st.session_state.selected_file_name = None
-            st.rerun()
 
         # --- UI to select file & params (based on synced saved_files) ---
         current_values = list(st.session_state.saved_files.values())
@@ -174,7 +160,7 @@ def run():
             cmap = st.selectbox("Colormap", options=["magma", "viridis", "plasma", "hot", "gray", "hsv"])
             st.session_state["monomers_cmap"] = cmap
 
-            # PROCESS (explicit)
+            # PROCESS
             if st.button("Process uploaded files"):
                 with st.spinner("Processing…"):
                     saved_records = tuple(normalized_records)
