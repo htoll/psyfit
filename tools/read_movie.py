@@ -178,7 +178,7 @@ def _overlay_labels(frame_rgb_or_gray: np.ndarray, text: str) -> np.ndarray:
     pil = Image.fromarray(base)
     draw = ImageDraw.Draw(pil)
     try:
-        font = ImageFont.load_default()
+        font = _get_font(14)
     except Exception:
         font = None
     margin = 4
@@ -192,6 +192,48 @@ def _overlay_labels(frame_rgb_or_gray: np.ndarray, text: str) -> np.ndarray:
     draw.text((margin + 3, margin + 3), text, fill=(255, 255, 255), font=font)
     return np.array(pil)
 
+def _make_colorbar_strip(height: int, cmap_name: str, vmin_val: float, vmax_val: float) -> np.ndarray:
+    """Vertical colorbar (right strip) with min/max labels."""
+    H = int(height)
+    strip_w = 32
+    gradient = np.linspace(1, 0, H, dtype=np.float32)[:, None]  # top=max -> bottom=min
+    if cmap_name.lower() in ("gray", "grey"):
+        gray = (gradient * 255.0).astype(np.uint8)
+        strip = np.repeat(gray, strip_w, axis=1)
+        strip_rgb = np.stack([strip, strip, strip], axis=-1)
+    else:
+        cmap = mpl_cm.get_cmap(cmap_name)
+        rgba = cmap(gradient)
+        rgb = (rgba[..., :3] * 255.0).astype(np.uint8)
+        strip_rgb = np.repeat(rgb, strip_w, axis=1)
+    if Image is not None:
+        pil = Image.fromarray(strip_rgb)
+        draw = ImageDraw.Draw(pil)
+        font = _get_font(12)
+        top = f"{vmax_val:.2g}"
+        bot = f"{vmin_val:.2g}"
+        draw.text((2, 2), top, fill=(255, 255, 255), font=font)
+        draw.text((2, H - 16), bot, fill=(255, 255, 255), font=font)
+        strip_rgb = np.array(pil)
+    return strip_rgb
+
+
+def _concat_right(img: np.ndarray, right: Optional[np.ndarray]) -> np.ndarray:
+    if right is None:
+        return img
+    H = img.shape[0]
+    if right.shape[0] != H:
+        if Image is not None:
+            pil = Image.fromarray(right)
+            pil = pil.resize((right.shape[1], H), resample=Image.NEAREST)
+            right = np.array(pil)
+        else:
+            right = np.resize(right, (H, right.shape[1], right.shape[-1]))
+    if img.ndim == 2:
+        img = np.stack([img]*3, axis=-1)
+    if right.ndim == 2:
+        right = np.stack([right]*3, axis=-1)
+    return np.concatenate([img, right], axis=1)
 
 def _concat_bottom(img: np.ndarray, bottom: Optional[np.ndarray]) -> np.ndarray:
     if bottom is None:
@@ -263,6 +305,24 @@ def _encode_tiff_stack(frames_u8: List[np.ndarray]) -> bytes:
             pass
 
 
+def _get_font(size: int):
+    if ImageFont is None:
+        return None
+    for name in [
+        "Arial.ttf", "arial.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]:
+        try:
+            return ImageFont.truetype(name, size)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
 def run():
     st.title("SIF Movie Exporter")
     st.caption("Preview as a video/GIF, then download as MP4/MOV/TIFF. Region, labels, bottom colorbar, X-flip, and compact preview.")
@@ -276,7 +336,6 @@ def run():
         flip_x = st.checkbox("Flip horizontally (X axis)", value=True)
         show_colorbar = st.checkbox("Show colorbar", value=True)
         show_labels = st.checkbox("Show frame # / exposure / gain", value=True)
-        preview_width = st.slider("Preview width (px)", 320, 1024, 480)
         fps = st.slider("FPS (preview & video)", 1, 60, 15)
         export_fmt = st.selectbox("Download format", ["MP4", "MOV", "TIFF"], index=0)
 
@@ -312,7 +371,7 @@ def run():
             rgb_or_gray = _apply_colormap(u8, colormap)
 
             # Bottom colorbar: global if norm set, else per-frame
-            bar = None
+            strip = None
             if show_colorbar:
                 if norm is not None:
                     vmin_val = float(getattr(norm, 'vmin', np.nan))
@@ -320,9 +379,11 @@ def run():
                 else:
                     vmin_val = float(np.nanmin(cps))
                     vmax_val = float(np.nanmax(cps))
-                bar = _make_colorbar_bar(width=rgb_or_gray.shape[1], cmap_name=colormap,
-                                         vmin_val=vmin_val, vmax_val=vmax_val)
-            framed = _concat_bottom(rgb_or_gray, bar)
+                strip = _make_colorbar_strip(height=rgb_or_gray.shape[0],
+                                             cmap_name=colormap,
+                                             vmin_val=vmin_val, vmax_val=vmax_val)
+            framed = _concat_right(rgb_or_gray, strip)
+
 
             if show_labels:
                 if (md.exposure_ms is not None) and (md.gain is not None):
@@ -339,9 +400,6 @@ def run():
             if Image is not None:
                 pil = Image.fromarray(f if f.ndim == 3 else np.stack([f]*3, axis=-1))
                 w, h = pil.size
-                if w != preview_width:
-                    new_h = max(1, int(round(h * (preview_width / w))))
-                    pil = pil.resize((preview_width, new_h), resample=Image.NEAREST)
                 frames_preview.append(np.array(pil))
             else:
                 frames_preview.append(f)
@@ -351,6 +409,14 @@ def run():
             try:
                 preview_bytes = _encode_video(frames_preview, fps=fps, format_ext="mp4")
                 st.subheader("Preview")
+                st.markdown(
+                    """
+                    <style>
+                    div[data-testid="stVideo"] video { max-width: 420px; width: 420px; height: auto; }
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
                 st.video(preview_bytes)
             except Exception as e:
                 st.warning(f"MP4 preview unavailable: {e}")
