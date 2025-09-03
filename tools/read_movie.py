@@ -369,6 +369,9 @@ def run():
         export_fmt = st.selectbox("Download format", ["MP4", "MOV", "TIFF"], index=0)
 
     uploaded = st.file_uploader("Upload a .sif movie", type=["sif"], accept_multiple_files=False)
+    uploaded_name = uploaded.name  # e.g. "experiment1.sif"
+    base = os.path.splitext(os.path.basename(uploaded_name))[0]
+    today = date.today().strftime("%Y%m%d")
     if not uploaded:
         st.info("Upload a .sif file to begin.")
         return
@@ -474,7 +477,7 @@ def run():
                     st.download_button(
                         label="Download TIFF",
                         data=dl_bytes,
-                        file_name=f"sif_movie_{today}.tiff",
+                        file_name=f"{base}_{today}.tiff",
                         mime="image/tiff",
                     )
                 else:
@@ -485,7 +488,7 @@ def run():
                     st.download_button(
                         label=f"Download {export_fmt}",
                         data=dl_bytes,
-                        file_name=f"sif_movie_{today}.{ext}",
+                        file_name=f"{base}_{today}.{ext}",
                         mime=mime,
                     )
             else:
@@ -494,7 +497,7 @@ def run():
                 st.download_button(
                     label="Download TIFF",
                     data=dl_bytes,
-                    file_name=f"sif_movie_{today}.tiff",
+                    file_name=f"{base}_{today}.tiff",
                     mime="image/tiff",
                 )
         except Exception as e:
