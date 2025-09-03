@@ -358,7 +358,7 @@ def run():
         univ_min_max = st.checkbox("Universal min/max across frames", value=False)
         log_scale = st.checkbox("Log intensity scaling", value=False)
         region = st.selectbox("Region", options=["all", "1", "2", "3", "4", "custom"], index=0)
-        flip_x = st.checkbox("Flip horizontally (X axis)", value=True)
+        #flip_x = st.checkbox("Flip horizontally (X axis)", value=True)
         show_colorbar = st.checkbox("Show colorbar", value=True)
         show_labels = st.checkbox("Show frame # / exposure / gain", value=True)
         fps = st.slider("FPS (preview & video)", 1, 60, 15)
@@ -390,8 +390,8 @@ def run():
         for i in idxs:
             cps, md = _to_cps(raw_frames[i], meta_raw)
             cps = _crop_region(cps, region)
-            if flip_x:
-                cps = np.flip(cps, axis=1)
+
+            cps = np.flip(cps, axis=1) #flip x axis
             u8 = _cps_to_uint8(cps, norm)
             rgb_or_gray = _apply_colormap(u8, colormap)
 
