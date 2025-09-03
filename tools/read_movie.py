@@ -1,280 +1,287 @@
+from __future__ import annotations
+
+import io
+import os
+import re
+import math
+import textwrap
+import tempfile
+from dataclasses import dataclass
+from datetime import date
+from typing import Callable, Dict, List, Optional, Tuple
+
+
 import numpy as np
 import pandas as pd
-import os 
-import seaborn as sns
-import matplotlib as plt
+import streamlit as st
+import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize, LogNorm
+
+try:
+    # Example: your project exposes integrate_sif and a helper to get frame count
+    from utils import integrate_sif  # type: ignore
+
+# Optional: if available, use a SIF reader to detect frame count
+try:
+    from sif_parser import SifFile  # type: ignore
+except Exception:
+    SifFile = None
 
 
-def plot_movie(sif_file, df_dict, show_fits=False, normalization=None, save_format = 'TIFF', univ_minmax=False, cmap = 'grey', title = None):
-    required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
-    all_matched_pairs = []
+# =============== Utilities ===============
+@dataclass
+class FrameResult:
+    index: int
+    image: np.ndarray
+    exposure_ms: Optional[float] = None
+    gain: Optional[float] = None
 
-    n_files = len(sif_files)
-    n_cols = min(4, max(1, n_files))   # between 1 and 4, never more than files
-    n_rows = int(np.ceil(n_files / n_cols))
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
+
+def _read_frame_count_with_fallback(path: str) -> int:
+    """Try to get frame count using sif_parser; fallback to 1 if unknown."""
+    if SifFile is not None:
+        try:
+            with SifFile(path) as f:
+                # Many SIF movies store frames as a time axis
+                n_frames = getattr(f, "num_frames", None)
+                if n_frames is None:
+                    # Some versions expose .frames (list-like)
+                    frames = getattr(f, "frames", None)
+                    if frames is not None:
+                        return len(frames)
+                else:
+                    return int(n_frames)
+        except Exception:
+            pass
+    # If we can't detect, process as a single frame
+    return 1
+
+
+def _integrate_frame_with_fallback(path: str, frame_index: int) -> Tuple[np.ndarray, Dict]:
+    """Adapter to call your project's integrate_sif; fallback to sif_parser mean."""
+    # 1) Preferred: your project's `integrate_sif`
+    if integrate_sif is not None:
+        try:
+            out = integrate_sif(path, frame_index=frame_index)  # adjust if needed
+            # Expected: (image, meta) or just image
+            if isinstance(out, tuple) and len(out) == 2:
+                return out  # (img, meta)
+            else:
+                return out, {}
+        except TypeError:
+            # Perhaps the function uses a different signature (e.g., frame=...)
+            try:
+                out = integrate_sif(path, frame=frame_index)
+                if isinstance(out, tuple) and len(out) == 2:
+                    return out
+                return out, {}
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # 2) Fallback: use sif_parser to read a single frame and return it
+    if SifFile is not None:
+        try:
+            with SifFile(path) as f:
+                # Extract 2D array for the requested frame
+                data = np.array(f.get_frame(frame_index))  # type: ignore[attr-defined]
+                md = {
+                    "exposure_ms": getattr(f, "exposure_time", None),
+                    "gain": getattr(f, "gain", None),
+                }
+                return data, md
+        except Exception:
+            pass
+
+    # 3) Last resort: raise a helpful error
+    raise RuntimeError(
+        "Could not integrate frame: neither `integrate_sif` nor `sif_parser` succeeded. "
+        "Please wire `_integrate_frame_with_fallback` to your project's helpers."
+    )
+
+
+def _compute_normalization(frames: List[np.ndarray], use_log: bool, univ_min_max: bool) -> Optional[Normalize]:
+    if not univ_min_max:
+        return LogNorm() if use_log else None
+    # Compute global min/max across all frames to lock scale
+    stacked = np.stack(frames)
+    vmin = float(np.nanmin(stacked))
+    vmax = float(np.nanmax(stacked))
+    # Avoid degenerate ranges
+    if vmax <= vmin:
+        vmax = vmin + 1e-9
+    base = Normalize(vmin=vmin, vmax=vmax)
+    return LogNorm(vmin=vmin, vmax=vmax) if use_log else base
+
+
+def _format_title(base_title: Optional[str], i: int, show_frame_count: bool, show_exp_gain: bool,
+                  exposure_ms: Optional[float], gain: Optional[float]) -> str:
+    lines = []
+    if base_title:
+        lines.append(textwrap.fill(str(base_title), width=28))
+    parts = []
+    if show_frame_count:
+        parts.append(f"Frame {i+1}")
+    if show_exp_gain:
+        eg_bits = []
+        if exposure_ms is not None:
+            eg_bits.append(f"Exp {exposure_ms:g} ms")
+        if gain is not None:
+            eg_bits.append(f"Gain {gain}")
+        if eg_bits:
+            parts.append(" | ".join(eg_bits))
+    if parts:
+        lines.append(" · ".join(parts))
+    return "\n".join(lines) if lines else ""
+
+
+# =============== Streamlit App ===============
+
+def run():
+    st.title("Movie SIF Processor")
+    st.caption("Apply `integrate_sif` to each frame, visualize, and export.")
+
+    with st.sidebar:
+        st.header("Controls")
+        save_format = st.selectbox("Save format", ["TIFF", "PNG", "SVG", "JPEG"], index=0)
+        univ_min_max = st.checkbox("Universal min/max across frames", value=False,
+                                   help="If enabled, computes global intensity range over all frames.")
+        show_colorbar = st.checkbox("Show colorbar", value=True)
+        colormap = st.selectbox("Colormap", [
+            "gray", "magma", "viridis", "plasma", "hot", "hsv", "cividis", "inferno"
+        ], index=0)
+        base_title = st.text_input("Title (optional)", value="")
+        show_frame_count = st.checkbox("Show frame count", value=True,
+                                       help="Displays 1-based frame numbers in subplot titles.")
+        show_exp_gain = st.checkbox("Show exposure / gain", value=True)
+        use_log_scale = st.checkbox("Log intensity scaling", value=False)
+        max_cols = st.slider("Grid columns", min_value=1, max_value=6, value=4)
+
+    uploaded = st.file_uploader("Upload a .sif movie", type=["sif"], accept_multiple_files=False)
+
+    if not uploaded:
+        st.info("Upload a .sif file to begin.")
+        return
+
+    # Persist the upload to a temp file so external libs can open it
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".sif") as tmp:
+        tmp.write(uploaded.getbuffer())
+        tmp_path = tmp.name
+
+    try:
+        frame_count = _read_frame_count_with_fallback(tmp_path)
+    except Exception as e:
+        st.error(f"Could not read frame count: {e}")
+        return
+
+    # Process every frame
+    frames: List[FrameResult] = []
+    errors: List[Tuple[int, str]] = []
+
+    progress = st.progress(0.0, text="Integrating frames…")
+    for i in range(frame_count):
+        try:
+            img, meta = _integrate_frame_with_fallback(tmp_path, i)
+            exp = meta.get("exposure_ms") if isinstance(meta, dict) else None
+            gain = meta.get("gain") if isinstance(meta, dict) else None
+            frames.append(FrameResult(index=i, image=np.asarray(img), exposure_ms=exp, gain=gain))
+        except Exception as e:
+            errors.append((i, str(e)))
+        if frame_count > 0:
+            progress.progress((i + 1) / frame_count, text=f"Processed frame {i+1}/{frame_count}")
+    progress.empty()
+
+    if not frames:
+        st.error("No frames could be processed.")
+        if errors:
+            with st.expander("Errors"):
+                for i, msg in errors:
+                    st.code(f"Frame {i}: {msg}")
+        return
+
+    # Build normalization (possibly global)
+    norm = _compute_normalization([f.image for f in frames], use_log=use_log_scale, univ_min_max=univ_min_max)
+
+    # Draw grid
+    n = len(frames)
+    n_cols = min(max_cols, max(1, n))
+    n_rows = math.ceil(n / n_cols)
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows))
     if isinstance(axes, np.ndarray):
         axes = axes.flatten()
     else:
-        axes = [axes]    
-    all_vals = []
-    if univ_minmax and normalization is None:
-        all_vals = []a
-        for frame in sif_file:
-            sif_name = sif_file.name
-            if sif_name in df_dict:
-                all_vals.append(df_dict[sif_name]["image"])
-        if all_vals:
-            stacked = np.stack(all_vals)
-            global_min = stacked.min()
-            global_max = stacked.max()
-            normalization = Normalize(vmin=global_min, vmax=global_max)
-    for i, sif_file in enumerate(sif_files):
+        axes = [axes]
+
+    for ax in axes[n:]:
+        ax.axis("off")
+
+    ims = []
+    for i, fr in enumerate(frames):
         ax = axes[i]
-        sif_name = sif_file.name  
-        if sif_name not in df_dict:
-            st.warning(f"Warning: Data for {sif_name} not found in df_dict. Skipping.")
-            continue
+        im = ax.imshow(fr.image, cmap=colormap, origin="lower", norm=norm)
+        ims.append(im)
+        title = _format_title(base_title if base_title else None, fr.index, show_frame_count, show_exp_gain,
+                              fr.exposure_ms, fr.gain)
+        if title:
+            ax.set_title(title, fontsize=10)
+        ax.set_xticks([])
+        ax.set_yticks([])
 
-        df = df_dict[sif_name]["df"]
-        img = df_dict[sif_name]["image"]
-        has_fit = all(col in df.columns for col in required_cols)
-
-        colocalized = np.zeros(len(df), dtype=bool) if has_fit else None
-
-        # Colocalization
-        if show_fits and has_fit:
-            for idx, row in df.iterrows():
-                x, y = row['x_pix'], row['y_pix']
-                distances = np.sqrt((df['x_pix'] - x) ** 2 + (df['y_pix'] - y) ** 2)
-                distances[idx] = np.inf
-                if np.any(distances <= colocalization_radius):
-                    colocalized[idx] = True
-                    closest_idx = distances.idxmin()
-                    all_matched_pairs.append({
-                        'x': x, 'y': y, 'brightness': row['brightness_fit'],
-                        'closest_x': df.at[closest_idx, 'x_pix'],
-                        'closest_y': df.at[closest_idx, 'y_pix'],
-                        'closest_brightness': df.at[closest_idx, 'brightness_fit'],
-                        'distance': distances[closest_idx]
-                    })
-
-        im = ax.imshow(img + 1, cmap=cmap, origin='lower', norm=normalization)
-        # Only show colorbar on the last subplot in the first row (column n_cols-1)
-        if not univ_minmax:
-            plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
-
-
-        basename = os.path.basename(sif_name)
-        match = re.search(r'(\d+)\.sif$', basename)
-        file_number = match.group(1) if match else '?'
-
-        # Overlay fits
-        if show_fits and has_fit:
-            for is_coloc, (_, row) in zip(colocalized, df.iterrows()):
-                color = 'lime' if is_coloc else 'white'
-                radius_px = 4 * max(row['sigx_fit'], row['sigy_fit']) / 0.1
-                circle = Circle((row['x_pix'], row['y_pix']), radius_px, color=color, fill=False, linewidth=1, alpha=0.7)
-                ax.add_patch(circle)
-                ax.text(row['x_pix'] + 7.5, row['y_pix'] + 7.5,
-                        f"{row['brightness_fit']/1000:.1f} kpps",
-                        color=color, fontsize=7, ha='center', va='center')
-
-        wrapped_basename = "\n".join(textwrap.wrap(basename, width=25))
-        ax.set_title(f"Sif {file_number}\n{wrapped_basename}", fontsize = 10)
-        ax.axis('off')
-
-    # Turn off unused axes
-    for ax in axes[n_files:]:
-        ax.axis('off')
-    if univ_minmax:
-        colorbar_ax = axes[min(n_cols - 1, n_files - 1)]
-        im = colorbar_ax.images[0]  # Get the image from that subplot
-        plt.colorbar(im, ax=colorbar_ax, label='pps', fraction=0.046, pad=0.04)
+    if show_colorbar and ims:
+        # Put colorbar on the last used axis
+        plt.colorbar(ims[-1], ax=axes[:n], fraction=0.046, pad=0.04, label="Intensity (a.u.)")
 
     plt.tight_layout()
-
-    # Show the figure
     st.pyplot(fig)
 
-    
-
-    # Download button
+    # Downloads: figure and CSV
     buf = io.BytesIO()
-    
-    # Save the figure to the binary buffer
-    # Use bbox_inches='tight' for better layouts
-    fig.savefig(buf, format=save_format, bbox_inches='tight')
-    
-    # Get the value from the binary buffer
-    plot_data = buf.getvalue()
+    # Map save format to matplotlib format + MIME
+    fmt = save_format.lower()
+    mime = {
+        "tiff": "image/tiff",
+        "png": "image/png",
+        "svg": "image/svg+xml",
+        "jpeg": "image/jpeg",
+        "jpg": "image/jpeg",
+    }.get(fmt, "application/octet-stream")
+
+    # Ensure format string is acceptable to `savefig`
+    savefmt = "jpg" if fmt == "jpeg" else fmt
+    fig.savefig(buf, format=savefmt, bbox_inches="tight", dpi=300)
+    data = buf.getvalue()
     buf.close()
 
-    # Define the mime type based on the format
-    if save_format.lower() == 'svg':
-        mime_type = "image/svg+xml"
-    elif save_format.lower() == 'tiff':
-        mime_type = "image/tiff"
-    elif save_format.lower() == 'png':
-        mime_type = "image/png"
-    elif save_format.lower() == 'jpeg' or save_format.lower() == 'jpg':
-        mime_type = "image/jpeg"
-    else:
-        mime_type = "application/octet-stream" # Default for unknown formats
-
-    today = date.today().strftime('%Y%m%d')
-    download_name = f"sif_grid_{today}.{save_format}"
-    
+    today = date.today().strftime("%Y%m%d")
+    dl_name = f"movie_sif_grid_{today}.{savefmt}"
     st.download_button(
-        label=f"Download all plots as {save_format.upper()}",
-        data=plot_data,
-        file_name=download_name,
-        mime=mime_type
+        f"Download figure as {save_format.upper()}", data=data, file_name=dl_name, mime=mime
     )
 
-    # Return colocalization results
-    if all_matched_pairs:
-        return pd.DataFrame(all_matched_pairs)
-    return None
+    # Build a per-frame stats CSV
+    stats_rows = []
+    for fr in frames:
+        arr = np.asarray(fr.image)
+        stats_rows.append({
+            "frame_index": fr.index,
+            "min": float(np.nanmin(arr)),
+            "max": float(np.nanmax(arr)),
+            "mean": float(np.nanmean(arr)),
+            "exposure_ms": fr.exposure_ms,
+            "gain": fr.gain,
+        })
+    df_stats = pd.DataFrame(stats_rows)
+    csv_bytes = df_stats.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download per-frame stats (CSV)", data=csv_bytes,
+        file_name=f"movie_sif_stats_{today}.csv", mime="text/csv"
+    )
 
+    # Show errors if any
+    if errors:
+        with st.expander("Frame errors (if any)"):
+            for i, msg in errors:
+                st.code(f"Frame {i}: {msg}")
 
-
-def run():
-    col1, col2 = st.columns([1, 2])
-    @st.cache_data
-    def df_to_csv_bytes(df):
-        return df.to_csv(index=False).encode("utf-8")
-
-    with col1:
-        st.header("Analyze SIF Movie")
-        uploaded_files = st.file_uploader("Upload .sif", type=["sif"], accept_multiple_files=False)
-        threshold = st.number_input("Threshold", min_value=0, value=1, help = '''
-        Stringency of fit, higher value is more selective:  
-        -UCNP signal sets absolute peak cut off  
-        -Dye signal sets sensitivity of blob detection
-        ''')        
-        diagram = """ Splits sif into quadrants (256x256 px):  
-        ┌─┬─┐  
-        │ 1 │ 2 │  
-        ├─┼─┤  
-        │ 3 │ 4 │  
-        └─┴─┘
-        """
-        region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help = diagram)
-
-        signal = st.selectbox("Signal", options=["UCNP", "dye"], help= '''Changes detection method:  
-                                                                - UCNP for high SNR (sklearn peakfinder)  
-                                                                - dye for low SNR (sklearn blob detection)''')
-        cmap = st.selectbox("Colormap", options = ["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
-
-
-    with col2:
-        if "analyze_clicked" not in st.session_state:
-            st.session_state.analyze_clicked = False
-    
-        plot_col1, plot_col2 = st.columns(2)
-    
-        with plot_col1:
-            show_fits = st.checkbox("Show fits")
-            plot_brightness_histogram = True
-            normalization = st.checkbox("Log Image Scaling")
-    
-            if st.button("Analyze"):
-                st.session_state.analyze_clicked = True
-    
-        if st.session_state.analyze_clicked and uploaded_files:
-            try:
-                processed_data, combined_df = process_files(uploaded_files, region, threshold = threshold, signal=signal)
-    
-                if len(uploaded_files) > 1:
-                    file_options = [f.name for f in uploaded_files]
-                    selected_file_name = st.selectbox("Select sif to display:", options=file_options)
-                else:
-                    selected_file_name = uploaded_files[0].name
-    
-                if selected_file_name in processed_data:
-                    data_to_plot = processed_data[selected_file_name]
-                    df_selected = data_to_plot["df"]
-                    image_data_cps = data_to_plot["image"]
-    
-                    normalization_to_use = LogNorm() if normalization else None
-                    fig_image = plot_brightness(
-                        image_data_cps,
-                        df_selected,
-                        show_fits=show_fits,
-                        normalization=normalization_to_use,
-                        pix_size_um=0.1,
-                        cmap=cmap
-                    )
-    
-                    with plot_col1:
-                        st.pyplot(fig_image)
-                        svg_buffer = io.StringIO()
-                        fig_image.savefig(svg_buffer, format='svg')
-                        svg_data = svg_buffer.getvalue()
-                        svg_buffer.close()
-                        st.download_button(
-                            label="Download PSFs",
-                            data=svg_data,
-                            file_name=f"{selected_file_name}.svg",
-                            mime="image/svg+xml"
-                        )
-                        if combined_df is not None and not combined_df.empty:
-                            csv_bytes = df_to_csv_bytes(combined_df)
-                            st.download_button(
-                                label="Download as CSV",
-                                data=csv_bytes,
-                                file_name=f"{os.path.splitext(selected_file_name)[0]}_compiled.csv",
-                                mime="text/csv"
-                            )
-                        else:
-                            st.info("No compiled data available to download yet.")
-    
-                    with plot_col2:
-                        if plot_brightness_histogram and not combined_df.empty:
-                            brightness_vals = combined_df['brightness_fit'].values
-                            default_min_val = float(np.min(brightness_vals))
-                            default_max_val = float(np.max(brightness_vals))
-    
-                            user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
-                            user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
-    
-                            try:
-                                user_min = float(user_min_val_str)
-                                user_max = float(user_max_val_str)
-                            except ValueError:
-                                st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
-                                return
-    
-                            num_bins = st.number_input("# Bins:", value=50)
-    
-                            if user_min < user_max:
-                                fig_hist, _, _ = plot_histogram(
-                                    combined_df,
-                                    min_val=user_min,
-                                    max_val=user_max,
-                                    num_bins=num_bins
-                                )
-                                st.pyplot(fig_hist)
-    
-                                svg_buffer_hist = io.StringIO()
-                                fig_hist.savefig(svg_buffer_hist, format='svg')
-                                svg_data_hist = svg_buffer_hist.getvalue()
-                                svg_buffer_hist.close()
-    
-                                st.download_button(
-                                    label="Download histogram",
-                                    data=svg_data_hist,
-                                    file_name="combined_histogram.svg",
-                                    mime="image/svg+xml"
-                                )
-                            else:
-                                st.warning("Min greater than max.")
-                else:
-                    st.error(f"Data for file '{selected_file_name}' not found.")
-    
-            except Exception as e:
-                st.error(f"Error processing files: {e}")
-                st.session_state.analyze_clicked = False
-
-   
