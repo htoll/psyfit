@@ -458,15 +458,7 @@ def run():
                     st.image(gif_buf.getvalue(), caption="GIF preview (FFmpeg not available)", output_format="GIF")
                 else:
                     st.info("Install `imageio` for GIF preview.")
-        else:
-            if imageio is not None:
-                from io import BytesIO
-                gif_buf = BytesIO()
-                imageio.mimsave(gif_buf, frames_preview, format="GIF", duration=1.0 / max(1, fps))
-                st.subheader("Preview")
-                st.image(gif_buf.getvalue(), caption="GIF preview (FFmpeg not available)", output_format="GIF")
-            else:
-                st.info("Install `imageio` for GIF preview.")
+
 
         # Downloads
         try:
