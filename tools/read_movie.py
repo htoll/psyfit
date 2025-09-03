@@ -1,50 +1,44 @@
-# Streamlit: Movie SIF Processing Tool (no fitting, crash‑resistant)
-# ------------------------------------------------------------------
-# This page **does not** call `integrate_sif` or perform any PSF fitting.
-# It renders a SIF movie quickly by converting each raw frame to cps using
-# metadata from `sif_parser.np_open`. This avoids the heavy fitting step
-# that was crashing Streamlit.
-#
-# Controls (requested + stability extras):
-# - save_format (default: TIFF)
-# - univ_min_max (default: False) → global scaling across frames
-# - colorbar (default: True)
-# - colormap (default: "gray")
-# - title (default: None)
-# - frame count (default: True; starts at 1)
-# - show exposure/gain (default: True)
-# - log scale (optional)
-# - grid columns (layout)
-# - **Render stride** (safety): render every Nth frame (default 1)
-# - **Downsample factor** (safety): integer shrink factor for preview (default 1)
-#
-# Implementation notes for stability:
-# - Avoids loading/keeping large Python lists of images when possible.
-# - Uses two‑pass global min/max only when univ_min_max=True (first pass scans
-#   frames to compute vmin/vmax without storing full images; second pass renders).
-# - Allows stride/downsample to reduce memory/compute pressure on huge movies.
-# - Closes Matplotlib figures promptly and forces GC after download.
+# Streamlit: SIF Movie Exporter (MP4/MOV/TIFF stack)
+# --------------------------------------------------
+# Fast, no‑fitting pipeline. Converts each SIF frame to cps and encodes to a
+# video (MP4/MOV) or multipage TIFF. Shows a playable preview (MP4) and a
+# download button. Avoids heavyweight Matplotlib grid rendering.
 
 from __future__ import annotations
 
 import io
-import math
+import os
 import gc
-import textwrap
+import math
 import tempfile
 from dataclasses import dataclass
 from datetime import date
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
+
+# Lightweight colormap support
+import matplotlib
+from matplotlib import cm as mpl_cm
 from matplotlib.colors import Normalize, LogNorm
 
-# Rely only on sif_parser.np_open
+# I/O backends for video/TIFF
 try:
-    import sif_parser  # must provide .np_open(sif, ignore_corrupt=True) -> (frames[T,H,W], meta)
+    import imageio
+except Exception as e:
+    imageio = None
+    _imageio_err = e
+
+try:
+    import tifffile
+except Exception as e:
+    tifffile = None
+    _tif_err = e
+
+# SIF reader
+try:
+    import sif_parser  # must provide np_open(path, ignore_corrupt=True) -> (frames[T,H,W], meta)
 except Exception as e:
     sif_parser = None
     _sif_import_error = e
@@ -56,7 +50,7 @@ class Meta:
     gain: Optional[float]
 
 
-def _np_open_all(path: str):
+def _np_open_all(path: str) -> Tuple[np.ndarray, Dict]:
     if sif_parser is None:
         raise RuntimeError(f"`sif_parser` not importable: {_sif_import_error}")
     frames, meta = sif_parser.np_open(path, ignore_corrupt=True)
@@ -66,29 +60,25 @@ def _np_open_all(path: str):
     return frames, meta
 
 
-def _frame_to_cps(frame2d: np.ndarray, meta: Dict) -> tuple[np.ndarray, Meta]:
+def _to_cps(frame2d: np.ndarray, meta: Dict) -> Tuple[np.ndarray, Meta]:
     gain_dac = meta.get("GainDAC", 1) or 1
     exposure_time = meta.get("ExposureTime", 1.0) or 1.0  # seconds
-    accumulate_cycles = meta.get("AccumulatedCycles", 1) or 1
-    cps = frame2d * (5.0 / gain_dac) / exposure_time / accumulate_cycles
+    acc = meta.get("AccumulatedCycles", 1) or 1
+    cps = frame2d * (5.0 / gain_dac) / exposure_time / acc
     return cps, Meta(exposure_ms=float(exposure_time) * 1000.0, gain=float(gain_dac))
 
 
-def _maybe_downsample(arr: np.ndarray, factor: int) -> np.ndarray:
+def _downsample(arr: np.ndarray, factor: int) -> np.ndarray:
     if factor <= 1:
         return arr
-    # Simple stride downsample to minimize compute/memory
     return arr[::factor, ::factor]
 
 
-def _compute_global_minmax(frames: np.ndarray, meta: Dict, stride: int, downsample: int, log_scale: bool) -> Normalize | None:
-    # One fast pass to compute min/max of converted cps frames
+def _compute_norm(selected_idxs: List[int], frames: np.ndarray, meta: Dict, log_scale: bool) -> Tuple[Optional[Normalize], float, float]:
     vmin = np.inf
     vmax = -np.inf
-    T = frames.shape[0]
-    for i in range(0, T, max(1, stride)):
-        cps, _ = _frame_to_cps(frames[i], meta)
-        cps = _maybe_downsample(cps, downsample)
+    for i in selected_idxs:
+        cps, _ = _to_cps(frames[i], meta)
         fi_min = float(np.nanmin(cps))
         fi_max = float(np.nanmax(cps))
         if fi_min < vmin:
@@ -96,173 +86,192 @@ def _compute_global_minmax(frames: np.ndarray, meta: Dict, stride: int, downsamp
         if fi_max > vmax:
             vmax = fi_max
     if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
-        return LogNorm() if log_scale else None
-    return LogNorm(vmin=vmin, vmax=vmax) if log_scale else Normalize(vmin=vmin, vmax=vmax)
+        return (LogNorm() if log_scale else None, np.nan, np.nan)
+    norm = LogNorm(vmin=vmin, vmax=vmax) if log_scale else Normalize(vmin=vmin, vmax=vmax)
+    return norm, vmin, vmax
 
 
-def _title(base_title: Optional[str], i: int, show_frame_count: bool, show_exp_gain: bool, meta: Meta) -> str:
-    lines = []
-    if base_title:
-        lines.append(textwrap.fill(str(base_title), width=28))
-    parts = []
-    if show_frame_count:
-        parts.append(f"Frame {i+1}")
-    if show_exp_gain:
-        eg = []
-        if meta.exposure_ms is not None:
-            eg.append(f"Exp {meta.exposure_ms:g} ms")
-        if meta.gain is not None:
-            eg.append(f"Gain {meta.gain:g}")
-        if eg:
-            parts.append(" | ".join(eg))
-    if parts:
-        lines.append(" · ".join(parts))
-    return "
-".join(lines)
+def _apply_norm_to_uint8(frame_cps: np.ndarray, norm: Optional[Normalize], log_scale: bool) -> np.ndarray:
+    # Map CPS -> [0, 255]
+    if norm is None:
+        # Per-frame scale
+        mn = float(np.nanmin(frame_cps))
+        mx = float(np.nanmax(frame_cps))
+        if not np.isfinite(mn) or not np.isfinite(mx) or mx <= mn:
+            return np.zeros_like(frame_cps, dtype=np.uint8)
+        scaled = (frame_cps - mn) / (mx - mn)
+    else:
+        scaled = norm(frame_cps)
+        scaled = np.nan_to_num(scaled, nan=0.0, posinf=1.0, neginf=0.0)
+    scaled = np.clip(scaled, 0, 1)
+    return (scaled * 255.0).astype(np.uint8)
+
+
+def _apply_colormap(gray_u8: np.ndarray, cmap_name: str) -> np.ndarray:
+    if cmap_name.lower() in ("gray", "grey"):
+        return gray_u8  # single-channel grayscale
+    cmap = mpl_cm.get_cmap(cmap_name)
+    rgba = cmap(gray_u8.astype(np.float32) / 255.0)  # (H,W,4) float
+    rgb = (rgba[..., :3] * 255.0).astype(np.uint8)   # (H,W,3)
+    return rgb
+
+
+def _encode_video(frames_u8: List[np.ndarray], fps: int, format_ext: str) -> bytes:
+    if imageio is None:
+        raise RuntimeError(f"imageio not available: {_imageio_err}")
+    # Ensure 3-channel for common codecs
+    safe_frames = []
+    for f in frames_u8:
+        if f.ndim == 2:
+            f = np.stack([f, f, f], axis=-1)
+        safe_frames.append(f)
+
+    codec = None
+    pixelformat = None
+    if format_ext.lower() == "mp4":
+        codec = "libx264"
+        pixelformat = "yuv420p"
+    elif format_ext.lower() == "mov":
+        codec = "libx264"
+        pixelformat = "yuv420p"
+    else:
+        raise ValueError("Unsupported video format for encoder")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{format_ext}") as tmp:
+        tmp_path = tmp.name
+    try:
+        writer = imageio.get_writer(tmp_path, fps=fps, codec=codec, pixelformat=pixelformat, quality=8)
+        for f in safe_frames:
+            writer.append_data(f)
+        writer.close()
+        with open(tmp_path, "rb") as fh:
+            return fh.read()
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+def _encode_tiff_stack(frames_u8: List[np.ndarray]) -> bytes:
+    # Use tifffile if available; fall back to imageio
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".tiff") as tmp:
+        tmp_path = tmp.name
+    try:
+        if tifffile is not None:
+            # Write as grayscale or RGB depending on dimensionality
+            arr = np.stack(frames_u8, axis=0)
+            tifffile.imwrite(tmp_path, arr)
+        else:
+            if imageio is None:
+                raise RuntimeError(f"Neither tifffile nor imageio available (tifffile error: {_tif_err}, imageio error: {_imageio_err})")
+            imageio.mimwrite(tmp_path, frames_u8, format="TIFF")
+        with open(tmp_path, "rb") as fh:
+            return fh.read()
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
 
 
 def run():
-    st.title("Movie SIF Processor (fast, no fitting)")
-    st.caption("Converts each frame to cps using metadata, with crash‑resistant rendering options.")
+    st.title("Export Movies")
 
     with st.sidebar:
         st.header("Controls")
-        save_format = st.selectbox("Save format", ["TIFF", "PNG", "SVG", "JPEG"], index=0)
-        univ_min_max = st.checkbox("Universal min/max across frames", value=False)
-        show_colorbar = st.checkbox("Show colorbar", value=True)
+        # Visual/normalization
         colormap = st.selectbox("Colormap", ["gray", "magma", "viridis", "plasma", "hot", "hsv", "cividis", "inferno"], index=0)
-        base_title = st.text_input("Title (optional)")
-        show_frame_count = st.checkbox("Show frame count", value=True)
-        show_exp_gain = st.checkbox("Show exposure / gain", value=True)
+        univ_min_max = st.checkbox("Universal min/max across frames", value=False)
         log_scale = st.checkbox("Log intensity scaling", value=False)
-        max_cols = st.slider("Grid columns", 1, 6, 4)
-        stride = st.number_input("Render every Nth frame", min_value=1, value=1, help="Increase to reduce memory/compute (e.g., 2 = 1,3,5,…) ")
-        downsample = st.number_input("Downsample factor", min_value=1, value=1, help="Preview shrink factor; larger is faster and safer.")
+        # Temporal/size
+        fps = st.slider("FPS (preview & video)", 1, 60, 15)
+        stride = st.number_input("Use every Nth frame", min_value=1, value=1)
+        downsample = st.number_input("Downsample factor", min_value=1, value=1)
+        # Export format
+        export_fmt = st.selectbox("Download format", ["MP4", "MOV", "TIFF"], index=0)
 
     uploaded = st.file_uploader("Upload a .sif movie", type=["sif"], accept_multiple_files=False)
     if not uploaded:
         st.info("Upload a .sif file to begin.")
         return
 
-    # Persist to a temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".sif") as tmp:
         tmp.write(uploaded.getbuffer())
         sif_path = tmp.name
 
-    # Load frames (np_open returns all frames; we manage memory after)
     try:
-        frames, meta_raw = _np_open_all(sif_path)
+        raw_frames, meta_raw = _np_open_all(sif_path)
     except Exception as e:
-        st.error(f"Could not load frames with sif_parser.np_open: {e}")
+        st.error(f"Failed to read SIF: {e}")
         return
 
-    T = int(frames.shape[0])
+    T = int(raw_frames.shape[0])
     if T == 0:
         st.error("No frames found in SIF file.")
         return
 
-    # Build normalization
+    # Select frames by stride
+    idxs = list(range(0, T, int(stride)))
+    # Compute normalization (if requested)
     norm = None
     if univ_min_max:
-        norm = _compute_global_minmax(frames, meta_raw, stride=int(stride), downsample=int(downsample), log_scale=bool(log_scale))
+        norm, vmin, vmax = _compute_norm(idxs, raw_frames, meta_raw, log_scale)
+    frames_u8: List[np.ndarray] = []
+
+    progress = st.progress(0.0, text="Preparing frames…")
+    for j, i in enumerate(idxs):
+        cps, _meta = _to_cps(raw_frames[i], meta_raw)
+        cps = _downsample(cps, int(downsample))
+        u8 = _apply_norm_to_uint8(cps, norm, log_scale)
+        rgb_or_gray = _apply_colormap(u8, colormap)
+        frames_u8.append(rgb_or_gray)
+        progress.progress((j + 1) / len(idxs), text=f"Processed frame {i+1} ({j+1}/{len(idxs)})")
+    progress.empty()
+
+    # Always build an MP4 preview for st.video (widely supported)
+    preview_bytes = None
+    preview_error = None
+    try:
+        preview_bytes = _encode_video(frames_u8, fps=fps, format_ext="mp4")
+    except Exception as e:
+        preview_error = str(e)
+
+    if preview_bytes is not None:
+        st.subheader("Preview")
+        st.video(preview_bytes)
     else:
-        norm = LogNorm() if log_scale else None
+        st.warning(f"Preview unavailable: {preview_error}")
 
-    # Precompute grid and figure
-    # Determine how many frames will be rendered with stride
-    ids = list(range(0, T, int(stride)))
-    n = len(ids)
-    n_cols = min(int(max_cols), max(1, n))
-    n_rows = int(math.ceil(n / n_cols))
+    # Build the requested download
+    try:
+        if export_fmt == "MP4":
+            dl_bytes = _encode_video(frames_u8, fps=fps, format_ext="mp4")
+            mime = "video/mp4"
+            ext = "mp4"
+        elif export_fmt == "MOV":
+            dl_bytes = _encode_video(frames_u8, fps=fps, format_ext="mov")
+            mime = "video/quicktime"
+            ext = "mov"
+        else:  # TIFF
+            dl_bytes = _encode_tiff_stack(frames_u8)
+            mime = "image/tiff"
+            ext = "tiff"
 
-    # Safety: cap huge grids
-    MAX_SUBPLOTS = 600  # adjustable safety guard
-    if n > MAX_SUBPLOTS:
-        st.warning(f"Rendering is capped to {MAX_SUBPLOTS} subplots for stability. Increase stride or downsample to view all frames.")
-        ids = ids[:MAX_SUBPLOTS]
-        n = len(ids)
-        n_rows = int(math.ceil(n / n_cols))
+        today = date.today().strftime("%Y%m%d")
+        st.download_button(
+            label=f"Download {export_fmt}",
+            data=dl_bytes,
+            file_name=f"sif_movie_{today}.{ext}",
+            mime=mime,
+        )
+    except Exception as e:
+        st.error(f"Export failed: {e}")
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.5 * n_cols, 3.5 * n_rows))
-    if isinstance(axes, np.ndarray):
-        axes = axes.flatten()
-    else:
-        axes = [axes]
-
-    last_im = None
-    stats_rows = []
-
-    progress = st.progress(0.0, text="Rendering frames…")
-    for j, i in enumerate(ids):
-        frame = frames[i]
-        cps, meta = _frame_to_cps(frame, meta_raw)
-        cps = _maybe_downsample(cps, int(downsample))
-
-        ax = axes[j]
-        im = ax.imshow(cps, cmap=colormap, origin="lower", norm=norm)
-        last_im = im
-        ttl = _title(base_title if base_title else None, i, show_frame_count, show_exp_gain, meta)
-        if ttl:
-            ax.set_title(ttl, fontsize=9)
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-        # Stats without retaining full image
-        stats_rows.append({
-            "frame": i + 1,
-            "min": float(np.nanmin(cps)),
-            "max": float(np.nanmax(cps)),
-            "mean": float(np.nanmean(cps)),
-            "exposure_ms": meta.exposure_ms,
-            "gain": meta.gain,
-        })
-
-        progress.progress((j + 1) / n, text=f"Rendered frame {i+1} ({j+1}/{n})")
-
-    # Turn off unused axes
-    for ax in axes[n:]:
-        ax.axis("off")
-
-    if show_colorbar and last_im is not None:
-        plt.colorbar(last_im, ax=axes[:n], fraction=0.046, pad=0.04, label="Intensity (cps)")
-
-    plt.tight_layout()
-    st.pyplot(fig)
-
-    # Downloads
-    buf = io.BytesIO()
-    fmt = save_format.lower()
-    mime = {
-        "tiff": "image/tiff",
-        "png": "image/png",
-        "svg": "image/svg+xml",
-        "jpeg": "image/jpeg",
-        "jpg": "image/jpeg",
-    }.get(fmt, "application/octet-stream")
-    savefmt = "jpg" if fmt == "jpeg" else fmt
-
-    fig.savefig(buf, format=savefmt, bbox_inches="tight", dpi=200)  # moderate DPI for stability
-    data = buf.getvalue()
-    buf.close()
-
-    today = date.today().strftime("%Y%m%d")
-    st.download_button(
-        f"Download figure as {save_format.upper()}", data=data, file_name=f"movie_sif_grid_{today}.{savefmt}", mime=mime
-    )
-
-    # Per‑frame stats CSV
-    df_stats = pd.DataFrame(stats_rows)
-    st.dataframe(df_stats, use_container_width=True)
-    st.download_button(
-        "Download per-frame stats (CSV)", data=df_stats.to_csv(index=False).encode("utf-8"),
-        file_name=f"movie_sif_stats_{today}.csv", mime="text/csv"
-    )
-
-    # Free memory aggressively
-    plt.close(fig)
-    del frames
+    # Cleanup aggressively
+    del raw_frames, frames_u8
     gc.collect()
 
 
 if __name__ == "__main__":
-    movie_sif_tool()
+    movie_sif_exporter()
