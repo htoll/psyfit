@@ -309,7 +309,7 @@ def run():
             return
 
         idxs = list(range(0, T, 1))  # no stride per user request
-        norm = _compute_norm(idxs, raw_frames, meta_raw, log_scale, region) if univ_min_max else None
+        norm = (_compute_norm(idxs, raw_frames, meta_raw, log_scale, region) if univ_min_max else None)
 
         for i in idxs:
             cps, md = _to_cps(raw_frames[i], meta_raw)
