@@ -395,7 +395,7 @@ def run():
             cps, md = _to_cps(raw_frames[i], meta_raw)
             cps = _crop_region(cps, region)
 
-            cps = np.flip(cps, axis=1) #flip x axis
+            cps = np.flip(cps, axis=0) #flip x axis
             u8 = _cps_to_uint8(cps, norm)
             rgb_or_gray = _apply_colormap(u8, colormap)
 
