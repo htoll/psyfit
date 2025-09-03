@@ -1,4 +1,22 @@
-
+# Streamlit: Movie SIF Processing Tool (fast bypass when Show Fits is off)
+# ----------------------------------------------------------------------
+# Applies your **unchanged** `integrate_sif` to every frame of an Andor .sif
+# *movie* by temporarily monkey‑patching `sif_parser.np_open` so that
+# `integrate_sif` (which always uses frame 0) receives the requested frame.
+#
+# NEW: If **Show fits** is unchecked, we skip fitting entirely and simply
+# convert each frame to cps using metadata (very fast).
+#
+# Controls (defaults):
+# - save_format (TIFF)
+# - univ_min_max (False)
+# - colorbar (True)
+# - colormap ("gray")
+# - title (None)
+# - frame count (True; starts at 1)
+# - show exposure/gain (True)
+# - show_fits (True)  <-- NEW toggle
+# - plus: Log scale & grid columns
 
 from __future__ import annotations
 
@@ -93,9 +111,26 @@ def _run_integrate_for_frame(path: str, frame_idx: int) -> Tuple[np.ndarray, Dic
         frames, meta = real_np_open(path, ignore_corrupt=True)
         exposure = meta.get("ExposureTime") if isinstance(meta, dict) else None
         gain_dac = meta.get("GainDAC") if isinstance(meta, dict) else None
-        return image_cps, {"exposure_ms": exposure * 1000 if exposure is not None and exposure < 10 else exposure, "gain": gain_dac}
+        # Convert seconds to ms if it looks like seconds
+        exposure_ms = None
+        if isinstance(exposure, (int, float)):
+            exposure_ms = exposure * 1000.0
+        return image_cps, {"exposure_ms": exposure_ms, "gain": gain_dac}
     finally:
         sif_parser.np_open = real_np_open
+
+
+def _fast_cps(frame2d: np.ndarray, meta: Dict) -> Tuple[np.ndarray, Dict]:
+    """Bypass fitting: convert a raw frame to cps using metadata (very fast)."""
+    gain_dac = meta.get("GainDAC", 1) or 1
+    exposure_time = meta.get("ExposureTime", 1.0) or 1.0  # seconds
+    accumulate_cycles = meta.get("AccumulatedCycles", 1) or 1
+    cps = frame2d * (5.0 / gain_dac) / exposure_time / accumulate_cycles
+    md = {
+        "exposure_ms": (exposure_time * 1000.0),
+        "gain": gain_dac,
+    }
+    return cps, md
 
 
 def _compute_norm(images: List[np.ndarray], log_scale: bool, univ_min_max: bool) -> Optional[Normalize]:
@@ -127,14 +162,15 @@ def _title_lines(base_title: Optional[str], frame_idx: int, show_frame_count: bo
             parts.append(" | ".join(eg))
     if parts:
         lines.append(" · ".join(parts))
-    return "".join(lines)
+    return "
+".join(lines)
 
 
 # =============== Streamlit UI ===============
 
-def run():
+def movie_sif_tool():
     st.title("Movie SIF Processor")
-    st.caption("Apply your existing `integrate_sif` to every frame, visualize, and export.")
+    st.caption("Apply your existing `integrate_sif` to every frame, or bypass fitting for speed.")
 
     with st.sidebar:
         st.header("Controls")
@@ -146,6 +182,7 @@ def run():
         show_frame_count = st.checkbox("Show frame count", value=True)
         show_exp_gain = st.checkbox("Show exposure / gain", value=True)
         log_scale = st.checkbox("Log intensity scaling", value=False)
+        show_fits = st.checkbox("Show fits (slower)", value=True, help="If off, bypasses fitting and only converts frames to cps for speed.")
         max_cols = st.slider("Grid columns", 1, 6, 4)
 
     uploaded = st.file_uploader("Upload a .sif movie", type=["sif"], accept_multiple_files=False)
@@ -167,16 +204,21 @@ def run():
 
     T = int(all_frames.shape[0])
 
-    # 2) Process each frame via integrate_sif using the monkey‑patch trick
+    # 2) Process each frame
     images: List[np.ndarray] = []
     expos: List[Optional[float]] = []
     gains: List[Optional[float]] = []
 
-    progress = st.progress(0.0, text="Integrating frames…")
+    progress = st.progress(0.0, text="Processing frames…")
     errors: List[Tuple[int, str]] = []
     for i in range(T):
         try:
-            img_cps, md = _run_integrate_for_frame(sif_path, i)
+            if show_fits:
+                # Use the (slower) integrate_sif path with monkey‑patch
+                img_cps, md = _run_integrate_for_frame(sif_path, i)
+            else:
+                # Fast path: no fitting, just convert to cps using metadata
+                img_cps, md = _fast_cps(all_frames[i], meta)
             images.append(np.asarray(img_cps))
             expos.append(md.get("exposure_ms"))
             gains.append(md.get("gain"))
