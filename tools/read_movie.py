@@ -325,14 +325,17 @@ def run():
     finally:
         # Cleanup aggressively but safely
         try:
-            if raw_frames is not None:
-                del raw_frames
+            raw_frames  # noqa: F823
+            del raw_frames
         except Exception:
             pass
+    
         try:
+            frames_u8  # noqa: F823
             del frames_u8
         except Exception:
             pass
+    
         gc.collect()
 
 
