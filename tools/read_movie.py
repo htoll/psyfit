@@ -30,6 +30,13 @@ except Exception as e:
     imageio = None
     _imageio_err = e
 
+# Prefer imageio-ffmpeg for MP4/MOV
+try:
+    import imageio_ffmpeg  # noqa: F401
+    _has_ffmpeg = True
+except Exception:
+    _has_ffmpeg = False
+
 try:
     import tifffile
 except Exception as e:
@@ -119,6 +126,9 @@ def _apply_colormap(gray_u8: np.ndarray, cmap_name: str) -> np.ndarray:
 def _encode_video(frames_u8: List[np.ndarray], fps: int, format_ext: str) -> bytes:
     if imageio is None:
         raise RuntimeError(f"imageio not available: {_imageio_err}")
+    if not _has_ffmpeg:
+        raise RuntimeError("FFmpeg backend not available. Install `imageio-ffmpeg` to enable MP4/MOV export.")
+
     # Ensure 3-channel for common codecs
     safe_frames = []
     for f in frames_u8:
@@ -126,21 +136,17 @@ def _encode_video(frames_u8: List[np.ndarray], fps: int, format_ext: str) -> byt
             f = np.stack([f, f, f], axis=-1)
         safe_frames.append(f)
 
-    codec = None
-    pixelformat = None
     if format_ext.lower() == "mp4":
-        codec = "libx264"
-        pixelformat = "yuv420p"
+        codec = "libx264"; pixelformat = "yuv420p"
     elif format_ext.lower() == "mov":
-        codec = "libx264"
-        pixelformat = "yuv420p"
+        codec = "libx264"; pixelformat = "yuv420p"
     else:
         raise ValueError("Unsupported video format for encoder")
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{format_ext}") as tmp:
         tmp_path = tmp.name
     try:
-        writer = imageio.get_writer(tmp_path, fps=fps, codec=codec, pixelformat=pixelformat, quality=8)
+        writer = imageio.get_writer(tmp_path, fps=fps, codec=codec, pixelformat=pixelformat, quality=8, format="FFMPEG")
         for f in safe_frames:
             writer.append_data(f)
         writer.close()
@@ -175,8 +181,9 @@ def _encode_tiff_stack(frames_u8: List[np.ndarray]) -> bytes:
             pass
 
 
-def run():
-    st.title("Export Movies")
+def movie_sif_exporter():
+    st.title("SIF Movie Exporter")
+    st.caption("Preview as a video/GIF, then download as MP4/MOV/TIFF stack. No fitting.")
 
     with st.sidebar:
         st.header("Controls")
@@ -229,21 +236,71 @@ def run():
         progress.progress((j + 1) / len(idxs), text=f"Processed frame {i+1} ({j+1}/{len(idxs)})")
     progress.empty()
 
-    # Always build an MP4 preview for st.video (widely supported)
-    preview_bytes = None
-    preview_error = None
-    try:
-        preview_bytes = _encode_video(frames_u8, fps=fps, format_ext="mp4")
-    except Exception as e:
-        preview_error = str(e)
-
-    if preview_bytes is not None:
-        st.subheader("Preview")
-        st.video(preview_bytes)
+    # Preview: prefer MP4 if FFmpeg available; otherwise make a small GIF
+    if _has_ffmpeg:
+        try:
+            preview_bytes = _encode_video(frames_u8, fps=fps, format_ext="mp4")
+            st.subheader("Preview")
+            st.video(preview_bytes)
+        except Exception as e:
+            st.warning(f"MP4 preview unavailable: {e}")
+            _has_gif = imageio is not None
+            if _has_gif:
+                try:
+                    gif = imageio.v3.imwrite("_.gif", frames_u8, duration=1.0 / max(1, fps))  # returns bytes in v3
+                except Exception:
+                    # fallback to temp file method
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".gif") as tmpg:
+                        imageio.mimsave(tmpg.name, frames_u8, format="GIF", duration=1.0 / max(1, fps))
+                        with open(tmpg.name, "rb") as fh:
+                            gif = fh.read()
+                        os.remove(tmpg.name)
+                st.image(gif, caption="GIF preview (encoding fallback)")
+            else:
+                st.info("Install `imageio` for GIF preview.")
     else:
-        st.warning(f"Preview unavailable: {preview_error}")
+        # No ffmpeg: use GIF preview path
+        if imageio is not None:
+            try:
+                gif = imageio.v3.imwrite("_.gif", frames_u8, duration=1.0 / max(1, fps))
+            except Exception:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".gif") as tmpg:
+                    imageio.mimsave(tmpg.name, frames_u8, format="GIF", duration=1.0 / max(1, fps))
+                    with open(tmpg.name, "rb") as fh:
+                        gif = fh.read()
+                    os.remove(tmpg.name)
+            st.subheader("Preview")
+            st.image(gif, caption="GIF preview (FFmpeg not available)")
+        else:
+            st.info("Install `imageio` for GIF preview.")
 
     # Build the requested download
+    try:
+        if export_fmt in ("MP4", "MOV"):
+            if not _has_ffmpeg:
+                raise RuntimeError("FFmpeg backend not available. Install `imageio-ffmpeg` to enable MP4/MOV export.")
+            ext = export_fmt.lower()
+            dl_bytes = _encode_video(frames_u8, fps=fps, format_ext=ext)
+            mime = "video/mp4" if ext == "mp4" else "video/quicktime"
+        else:  # TIFF
+            dl_bytes = _encode_tiff_stack(frames_u8)
+            mime = "image/tiff"
+            ext = "tiff"
+
+        today = date.today().strftime("%Y%m%d")
+        st.download_button(
+            label=f"Download {export_fmt}",
+            data=dl_bytes,
+            file_name=f"sif_movie_{today}.{ext}",
+            mime=mime,
+        )
+    except Exception as e:
+        st.error(f"Export failed: {e}")
+
+    # Cleanup aggressively
+    del raw_frames, frames_u8
+    gc.collect()
+
     try:
         if export_fmt == "MP4":
             dl_bytes = _encode_video(frames_u8, fps=fps, format_ext="mp4")
