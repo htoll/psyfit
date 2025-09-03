@@ -17,16 +17,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize, LogNorm
 
-try:
-    # Example: your project exposes integrate_sif and a helper to get frame count
-    from utils import integrate_sif  # type: ignore
-
-# Optional: if available, use a SIF reader to detect frame count
-try:
-    from sif_parser import SifFile  # type: ignore
-except Exception:
-    SifFile = None
-
+from utils import integrate_sif, plot_brightness, plot_histogram
 
 # =============== Utilities ===============
 @dataclass
