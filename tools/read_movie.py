@@ -435,29 +435,29 @@ def run():
 
         # Preview
         col_preview, col_empty = st.columns([1, 3])  # 1/(1+3) = 1/4
-            with col_preview:
-                st.subheader("Preview")
-                if _has_ffmpeg:
-                    try:
-                        preview_bytes = _encode_video(frames_u8, fps=fps, format_ext="mp4")
-                        st.video(preview_bytes)
-                    except Exception as e:
-                        st.warning(f"MP4 preview unavailable: {e}")
-                        if imageio is not None:
-                            from io import BytesIO
-                            gif_buf = BytesIO()
-                            imageio.mimsave(gif_buf, frames_u8, format="GIF", duration=1.0 / max(1, fps))
-                            st.image(gif_buf.getvalue(), caption="GIF preview (encoding fallback)", output_format="GIF")
-                        else:
-                            st.info("Install `imageio` for GIF preview.")
-                else:
+        with col_preview:
+            st.subheader("Preview")
+            if _has_ffmpeg:
+                try:
+                    preview_bytes = _encode_video(frames_u8, fps=fps, format_ext="mp4")
+                    st.video(preview_bytes)
+                except Exception as e:
+                    st.warning(f"MP4 preview unavailable: {e}")
                     if imageio is not None:
                         from io import BytesIO
                         gif_buf = BytesIO()
                         imageio.mimsave(gif_buf, frames_u8, format="GIF", duration=1.0 / max(1, fps))
-                        st.image(gif_buf.getvalue(), caption="GIF preview (FFmpeg not available)", output_format="GIF")
+                        st.image(gif_buf.getvalue(), caption="GIF preview (encoding fallback)", output_format="GIF")
                     else:
                         st.info("Install `imageio` for GIF preview.")
+            else:
+                if imageio is not None:
+                    from io import BytesIO
+                    gif_buf = BytesIO()
+                    imageio.mimsave(gif_buf, frames_u8, format="GIF", duration=1.0 / max(1, fps))
+                    st.image(gif_buf.getvalue(), caption="GIF preview (FFmpeg not available)", output_format="GIF")
+                else:
+                    st.info("Install `imageio` for GIF preview.")
         else:
             if imageio is not None:
                 from io import BytesIO
