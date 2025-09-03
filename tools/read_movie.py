@@ -1,33 +1,40 @@
-# Streamlit: Movie SIF Processing Tool (fast bypass when Show Fits is off)
-# ----------------------------------------------------------------------
-# Applies your **unchanged** `integrate_sif` to every frame of an Andor .sif
-# *movie* by temporarily monkey‑patching `sif_parser.np_open` so that
-# `integrate_sif` (which always uses frame 0) receives the requested frame.
+# Streamlit: Movie SIF Processing Tool (no fitting, crash‑resistant)
+# ------------------------------------------------------------------
+# This page **does not** call `integrate_sif` or perform any PSF fitting.
+# It renders a SIF movie quickly by converting each raw frame to cps using
+# metadata from `sif_parser.np_open`. This avoids the heavy fitting step
+# that was crashing Streamlit.
 #
-# NEW: If **Show fits** is unchecked, we skip fitting entirely and simply
-# convert each frame to cps using metadata (very fast).
+# Controls (requested + stability extras):
+# - save_format (default: TIFF)
+# - univ_min_max (default: False) → global scaling across frames
+# - colorbar (default: True)
+# - colormap (default: "gray")
+# - title (default: None)
+# - frame count (default: True; starts at 1)
+# - show exposure/gain (default: True)
+# - log scale (optional)
+# - grid columns (layout)
+# - **Render stride** (safety): render every Nth frame (default 1)
+# - **Downsample factor** (safety): integer shrink factor for preview (default 1)
 #
-# Controls (defaults):
-# - save_format (TIFF)
-# - univ_min_max (False)
-# - colorbar (True)
-# - colormap ("gray")
-# - title (None)
-# - frame count (True; starts at 1)
-# - show exposure/gain (True)
-# - show_fits (True)  <-- NEW toggle
-# - plus: Log scale & grid columns
+# Implementation notes for stability:
+# - Avoids loading/keeping large Python lists of images when possible.
+# - Uses two‑pass global min/max only when univ_min_max=True (first pass scans
+#   frames to compute vmin/vmax without storing full images; second pass renders).
+# - Allows stride/downsample to reduce memory/compute pressure on huge movies.
+# - Closes Matplotlib figures promptly and forces GC after download.
 
 from __future__ import annotations
 
 import io
-import os
 import math
+import gc
 import textwrap
 import tempfile
 from dataclasses import dataclass
 from datetime import date
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -35,14 +42,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize, LogNorm
 
-# --- Your project imports ---
-try:
-    from utils import integrate_sif  # do not modify this function per requirements
-except Exception as e:
-    integrate_sif = None
-    _import_error = e
-
-# We'll rely only on `sif_parser.np_open` — no SifFile class
+# Rely only on sif_parser.np_open
 try:
     import sif_parser  # must provide .np_open(sif, ignore_corrupt=True) -> (frames[T,H,W], meta)
 except Exception as e:
@@ -50,125 +50,80 @@ except Exception as e:
     _sif_import_error = e
 
 
-# =============== Helpers ===============
 @dataclass
-class FrameOut:
-    index: int
-    image_cps: np.ndarray  # image returned by integrate_sif (counts per second)
+class Meta:
     exposure_ms: Optional[float]
     gain: Optional[float]
 
 
-def _load_all_frames_meta(path: str) -> Tuple[np.ndarray, Dict]:
-    """Load all frames with sif_parser.np_open. Returns (frames[T,H,W], metadata)."""
+def _np_open_all(path: str):
     if sif_parser is None:
-        raise RuntimeError(
-            "Could not import `sif_parser`. Install/ensure it is available."
-        )
+        raise RuntimeError(f"`sif_parser` not importable: {_sif_import_error}")
     frames, meta = sif_parser.np_open(path, ignore_corrupt=True)
     frames = np.asarray(frames)
     if frames.ndim == 2:
-        # single frame shaped (H,W) → convert to (1,H,W)
         frames = frames[None, ...]
     return frames, meta
 
 
-def _run_integrate_for_frame(path: str, frame_idx: int) -> Tuple[np.ndarray, Dict]:
-    """Run your unchanged integrate_sif on *one* frame by patching np_open.
-
-    integrate_sif(sif_path) internally does:
-        frames, meta = sif_parser.np_open(sif)
-        image = frames[0]
-    We temporarily replace `sif_parser.np_open` so that `frames[0]` is the
-    requested frame, while leaving metadata intact.
-    """
-    if integrate_sif is None:
-        raise RuntimeError(
-            f"`integrate_sif` not importable from utils: {_import_error}"
-        )
-    if sif_parser is None:
-        raise RuntimeError(
-            f"`sif_parser` not importable: {_sif_import_error}"
-        )
-
-    real_np_open = sif_parser.np_open
-
-    def patched_np_open(sif, ignore_corrupt=True):  # signature compatible with your call
-        frames, meta = real_np_open(sif, ignore_corrupt=ignore_corrupt)
-        frames = np.asarray(frames)
-        if frames.ndim == 2:
-            # Single frame file; nothing to patch — ensure 3D for consistent indexing
-            frames = frames[None, ...]
-        # Slice the requested frame and make it appear at index 0
-        chosen = frames[frame_idx]
-        return np.asarray([chosen]), meta
-
-    # Monkey‑patch, call, then restore
-    sif_parser.np_open = patched_np_open
-    try:
-        df, image_cps = integrate_sif(path)  # use defaults; df is ignored for movie view
-        # Extract exposure/gain from metadata by calling the real np_open once
-        frames, meta = real_np_open(path, ignore_corrupt=True)
-        exposure = meta.get("ExposureTime") if isinstance(meta, dict) else None
-        gain_dac = meta.get("GainDAC") if isinstance(meta, dict) else None
-        # Convert seconds to ms if it looks like seconds
-        exposure_ms = None
-        if isinstance(exposure, (int, float)):
-            exposure_ms = exposure * 1000.0
-        return image_cps, {"exposure_ms": exposure_ms, "gain": gain_dac}
-    finally:
-        sif_parser.np_open = real_np_open
-
-
-def _fast_cps(frame2d: np.ndarray, meta: Dict) -> Tuple[np.ndarray, Dict]:
-    """Bypass fitting: convert a raw frame to cps using metadata (very fast)."""
+def _frame_to_cps(frame2d: np.ndarray, meta: Dict) -> tuple[np.ndarray, Meta]:
     gain_dac = meta.get("GainDAC", 1) or 1
     exposure_time = meta.get("ExposureTime", 1.0) or 1.0  # seconds
     accumulate_cycles = meta.get("AccumulatedCycles", 1) or 1
     cps = frame2d * (5.0 / gain_dac) / exposure_time / accumulate_cycles
-    md = {
-        "exposure_ms": (exposure_time * 1000.0),
-        "gain": gain_dac,
-    }
-    return cps, md
+    return cps, Meta(exposure_ms=float(exposure_time) * 1000.0, gain=float(gain_dac))
 
 
-def _compute_norm(images: List[np.ndarray], log_scale: bool, univ_min_max: bool) -> Optional[Normalize]:
-    if not univ_min_max:
-        return LogNorm() if log_scale else None
-    stack = np.stack(images)
-    vmin = float(np.nanmin(stack))
-    vmax = float(np.nanmax(stack))
+def _maybe_downsample(arr: np.ndarray, factor: int) -> np.ndarray:
+    if factor <= 1:
+        return arr
+    # Simple stride downsample to minimize compute/memory
+    return arr[::factor, ::factor]
+
+
+def _compute_global_minmax(frames: np.ndarray, meta: Dict, stride: int, downsample: int, log_scale: bool) -> Normalize | None:
+    # One fast pass to compute min/max of converted cps frames
+    vmin = np.inf
+    vmax = -np.inf
+    T = frames.shape[0]
+    for i in range(0, T, max(1, stride)):
+        cps, _ = _frame_to_cps(frames[i], meta)
+        cps = _maybe_downsample(cps, downsample)
+        fi_min = float(np.nanmin(cps))
+        fi_max = float(np.nanmax(cps))
+        if fi_min < vmin:
+            vmin = fi_min
+        if fi_max > vmax:
+            vmax = fi_max
     if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
         return LogNorm() if log_scale else None
     return LogNorm(vmin=vmin, vmax=vmax) if log_scale else Normalize(vmin=vmin, vmax=vmax)
 
 
-def _title_lines(base_title: Optional[str], frame_idx: int, show_frame_count: bool,
-                 show_exp_gain: bool, exposure_ms: Optional[float], gain: Optional[float]) -> str:
+def _title(base_title: Optional[str], i: int, show_frame_count: bool, show_exp_gain: bool, meta: Meta) -> str:
     lines = []
     if base_title:
         lines.append(textwrap.fill(str(base_title), width=28))
     parts = []
     if show_frame_count:
-        parts.append(f"Frame {frame_idx + 1}")
+        parts.append(f"Frame {i+1}")
     if show_exp_gain:
         eg = []
-        if exposure_ms is not None:
-            eg.append(f"Exp {exposure_ms:g} ms")
-        if gain is not None:
-            eg.append(f"Gain {gain}")
+        if meta.exposure_ms is not None:
+            eg.append(f"Exp {meta.exposure_ms:g} ms")
+        if meta.gain is not None:
+            eg.append(f"Gain {meta.gain:g}")
         if eg:
             parts.append(" | ".join(eg))
     if parts:
         lines.append(" · ".join(parts))
-    return "".join(lines)
+    return "
+".join(lines)
 
-
-# =============== Streamlit UI ===============
 
 def run():
-    st.title("Movie SIF Processor")
+    st.title("Movie SIF Processor (fast, no fitting)")
+    st.caption("Converts each frame to cps using metadata, with crash‑resistant rendering options.")
 
     with st.sidebar:
         st.header("Controls")
@@ -180,89 +135,101 @@ def run():
         show_frame_count = st.checkbox("Show frame count", value=True)
         show_exp_gain = st.checkbox("Show exposure / gain", value=True)
         log_scale = st.checkbox("Log intensity scaling", value=False)
-        show_fits = st.checkbox("Show fits (slower)", value=True, help="If off, bypasses fitting and only converts frames to cps for speed.")
         max_cols = st.slider("Grid columns", 1, 6, 4)
+        stride = st.number_input("Render every Nth frame", min_value=1, value=1, help="Increase to reduce memory/compute (e.g., 2 = 1,3,5,…) ")
+        downsample = st.number_input("Downsample factor", min_value=1, value=1, help="Preview shrink factor; larger is faster and safer.")
 
     uploaded = st.file_uploader("Upload a .sif movie", type=["sif"], accept_multiple_files=False)
     if not uploaded:
         st.info("Upload a .sif file to begin.")
         return
 
-    # Save uploaded to a temp file for libraries that require a real path
+    # Persist to a temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".sif") as tmp:
         tmp.write(uploaded.getbuffer())
         sif_path = tmp.name
 
-    # 1) Load all frames once to know T and to compute optional global scale
+    # Load frames (np_open returns all frames; we manage memory after)
     try:
-        all_frames, meta = _load_all_frames_meta(sif_path)
+        frames, meta_raw = _np_open_all(sif_path)
     except Exception as e:
         st.error(f"Could not load frames with sif_parser.np_open: {e}")
         return
 
-    T = int(all_frames.shape[0])
+    T = int(frames.shape[0])
+    if T == 0:
+        st.error("No frames found in SIF file.")
+        return
 
-    # 2) Process each frame
-    images: List[np.ndarray] = []
-    expos: List[Optional[float]] = []
-    gains: List[Optional[float]] = []
+    # Build normalization
+    norm = None
+    if univ_min_max:
+        norm = _compute_global_minmax(frames, meta_raw, stride=int(stride), downsample=int(downsample), log_scale=bool(log_scale))
+    else:
+        norm = LogNorm() if log_scale else None
 
-    progress = st.progress(0.0, text="Processing frames…")
-    errors: List[Tuple[int, str]] = []
-    for i in range(T):
-        try:
-            if show_fits:
-                # Use the (slower) integrate_sif path with monkey‑patch
-                img_cps, md = _run_integrate_for_frame(sif_path, i)
-            else:
-                # Fast path: no fitting, just convert to cps using metadata
-                img_cps, md = _fast_cps(all_frames[i], meta)
-            images.append(np.asarray(img_cps))
-            expos.append(md.get("exposure_ms"))
-            gains.append(md.get("gain"))
-        except Exception as e:
-            errors.append((i, str(e)))
-            images.append(np.zeros_like(all_frames[0], dtype=float))
-            expos.append(None)
-            gains.append(None)
-        progress.progress((i + 1) / T, text=f"Processed frame {i+1}/{T}")
-    progress.empty()
+    # Precompute grid and figure
+    # Determine how many frames will be rendered with stride
+    ids = list(range(0, T, int(stride)))
+    n = len(ids)
+    n_cols = min(int(max_cols), max(1, n))
+    n_rows = int(math.ceil(n / n_cols))
 
-    # 3) Plot grid
-    norm = _compute_norm(images, log_scale, univ_min_max)
+    # Safety: cap huge grids
+    MAX_SUBPLOTS = 600  # adjustable safety guard
+    if n > MAX_SUBPLOTS:
+        st.warning(f"Rendering is capped to {MAX_SUBPLOTS} subplots for stability. Increase stride or downsample to view all frames.")
+        ids = ids[:MAX_SUBPLOTS]
+        n = len(ids)
+        n_rows = int(math.ceil(n / n_cols))
 
-    n = T
-    n_cols = min(max_cols, max(1, n))
-    n_rows = math.ceil(n / n_cols)
-
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.5 * n_cols, 3.5 * n_rows))
     if isinstance(axes, np.ndarray):
         axes = axes.flatten()
     else:
         axes = [axes]
 
-    ims = []
-    for i in range(n):
-        ax = axes[i]
-        im = ax.imshow(images[i], cmap=colormap, origin="lower", norm=norm)
-        ims.append(im)
-        ttl = _title_lines(base_title if base_title else None, i, show_frame_count, show_exp_gain, expos[i], gains[i])
+    last_im = None
+    stats_rows = []
+
+    progress = st.progress(0.0, text="Rendering frames…")
+    for j, i in enumerate(ids):
+        frame = frames[i]
+        cps, meta = _frame_to_cps(frame, meta_raw)
+        cps = _maybe_downsample(cps, int(downsample))
+
+        ax = axes[j]
+        im = ax.imshow(cps, cmap=colormap, origin="lower", norm=norm)
+        last_im = im
+        ttl = _title(base_title if base_title else None, i, show_frame_count, show_exp_gain, meta)
         if ttl:
-            ax.set_title(ttl, fontsize=10)
+            ax.set_title(ttl, fontsize=9)
         ax.set_xticks([])
         ax.set_yticks([])
 
-    # Turn off any extra axes
+        # Stats without retaining full image
+        stats_rows.append({
+            "frame": i + 1,
+            "min": float(np.nanmin(cps)),
+            "max": float(np.nanmax(cps)),
+            "mean": float(np.nanmean(cps)),
+            "exposure_ms": meta.exposure_ms,
+            "gain": meta.gain,
+        })
+
+        progress.progress((j + 1) / n, text=f"Rendered frame {i+1} ({j+1}/{n})")
+
+    # Turn off unused axes
     for ax in axes[n:]:
         ax.axis("off")
 
-    if show_colorbar and ims:
-        plt.colorbar(ims[-1], ax=axes[:n], fraction=0.046, pad=0.04, label="Intensity (cps)")
+    if show_colorbar and last_im is not None:
+        plt.colorbar(last_im, ax=axes[:n], fraction=0.046, pad=0.04, label="Intensity (cps)")
 
     plt.tight_layout()
     st.pyplot(fig)
 
-    # 4) Downloads
+    # Downloads
     buf = io.BytesIO()
     fmt = save_format.lower()
     mime = {
@@ -272,42 +239,29 @@ def run():
         "jpeg": "image/jpeg",
         "jpg": "image/jpeg",
     }.get(fmt, "application/octet-stream")
-
     savefmt = "jpg" if fmt == "jpeg" else fmt
-    fig.savefig(buf, format=savefmt, bbox_inches="tight", dpi=300)
+
+    fig.savefig(buf, format=savefmt, bbox_inches="tight", dpi=200)  # moderate DPI for stability
     data = buf.getvalue()
     buf.close()
 
     today = date.today().strftime("%Y%m%d")
-    dl_name = f"movie_sif_grid_{today}.{savefmt}"
-
     st.download_button(
-        f"Download figure as {save_format.upper()}", data=data, file_name=dl_name, mime=mime
+        f"Download figure as {save_format.upper()}", data=data, file_name=f"movie_sif_grid_{today}.{savefmt}", mime=mime
     )
 
-    # Optional: stats CSV
-    rows = []
-    for i, img in enumerate(images):
-        arr = np.asarray(img)
-        rows.append({
-            "frame": i + 1,
-            "min": float(np.nanmin(arr)),
-            "max": float(np.nanmax(arr)),
-            "mean": float(np.nanmean(arr)),
-            "exposure_ms": expos[i],
-            "gain": gains[i],
-        })
-    df_stats = pd.DataFrame(rows)
+    # Per‑frame stats CSV
+    df_stats = pd.DataFrame(stats_rows)
     st.dataframe(df_stats, use_container_width=True)
     st.download_button(
         "Download per-frame stats (CSV)", data=df_stats.to_csv(index=False).encode("utf-8"),
         file_name=f"movie_sif_stats_{today}.csv", mime="text/csv"
     )
 
-    if errors:
-        with st.expander("Frame errors (if any)"):
-            for i, msg in errors:
-                st.code(f"Frame {i+1}: {msg}")
+    # Free memory aggressively
+    plt.close(fig)
+    del frames
+    gc.collect()
 
 
 if __name__ == "__main__":
