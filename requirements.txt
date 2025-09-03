@@ -20,4 +20,5 @@ scikit-learn
 plotly>=5.19
 kaleido>=0.2.1
 streamlit-plotly-events>=0.0.6
+imageio-ffmpeg
 
