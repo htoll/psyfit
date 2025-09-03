@@ -161,14 +161,19 @@ def _overlay_labels(frame_rgb_or_gray: np.ndarray, text: str) -> np.ndarray:
     return np.array(pil)
 
 
-def _make_colorbar_with_ticks(height: int, cmap_name: str, vmin_val: float, vmax_val: float, log_scale: bool) -> np.ndarray:
+def _make_colorbar_with_ticks(
+    height: int, cmap_name: str, vmin_val: float, vmax_val: float, log_scale: bool
+) -> np.ndarray:
     """
-    Vertical colorbar (left) + label panel (right).
-    Returns RGB image of shape (H, strip_w + panel_w, 3) with ticks & numeric labels outside the bar.
+    Vertical colorbar (left strip) + label panel (right).
+    - 5 ticks (linear or logarithmic).
+    - Black ticks & labels in a white panel (readable).
+    - Units "cps" placed with margin to avoid overlapping labels.
+    Returns RGB image of shape (H, strip_w + panel_w, 3).
     """
     H = int(height)
-    strip_w = 28        # color strip width
-    panel_w = 72        # label panel width (white background for readability)
+    strip_w = 28
+    panel_w = 84  # a bit wider so 1e+XX fits comfortably
 
     # Build vertical color strip (top=max -> bottom=min)
     grad = np.linspace(1, 0, H, dtype=np.float32)[:, None]
@@ -178,14 +183,12 @@ def _make_colorbar_with_ticks(height: int, cmap_name: str, vmin_val: float, vmax
         strip_rgb = np.stack([strip, strip, strip], axis=-1)
     else:
         cmap = mpl_cm.get_cmap(cmap_name)
-        rgba = cmap(grad)  # (H,1,4)
+        rgba = cmap(grad)
         rgb = (rgba[..., :3] * 255.0).astype(np.uint8)
-        strip_rgb = np.repeat(rgb, strip_w, axis=1)  # (H, strip_w, 3)
+        strip_rgb = np.repeat(rgb, strip_w, axis=1)
 
-    # Build label panel (white)
+    # Label panel (white)
     panel_rgb = np.full((H, panel_w, 3), 255, dtype=np.uint8)
-
-    # Compose side by side
     cbar = np.concatenate([strip_rgb, panel_rgb], axis=1)
 
     if Image is None:
@@ -195,51 +198,60 @@ def _make_colorbar_with_ticks(height: int, cmap_name: str, vmin_val: float, vmax
     draw = ImageDraw.Draw(pil)
     font = _get_font(12)
 
-    # Choose tick positions/values
+    # --- Tick values (5 ticks) ---
     if log_scale and (vmin_val > 0) and np.isfinite(vmin_val) and np.isfinite(vmax_val) and (vmax_val > vmin_val):
-        # Log ticks: min, geometric mean, max
-        ticks_vals = [vmin_val, np.sqrt(vmin_val * vmax_val), vmax_val]
+        ticks_vals = np.geomspace(vmin_val, vmax_val, 5)
+        def norm_fn(v):
+            return (np.log(v) - np.log(vmin_val)) / (np.log(vmax_val) - np.log(vmin_val))
     else:
-        # Linear ticks: min, mid, max
-        ticks_vals = [vmin_val, 0.5 * (vmin_val + vmax_val), vmax_val]
+        ticks_vals = np.linspace(vmin_val, vmax_val, 5)
+        def norm_fn(v):
+            return (v - vmin_val) / (vmax_val - vmin_val) if vmax_val != vmin_val else 0.0
 
-    # Map value -> y coordinate (0 at top)
+    # Map value -> y coordinate (0 = top). Our gradient is top=max, so invert t.
     def val_to_y(v):
-        if log_scale and vmin_val > 0 and vmax_val > vmin_val:
-            t = (np.log(v) - np.log(vmin_val)) / (np.log(vmax_val) - np.log(vmin_val))
-        else:
-            t = (v - vmin_val) / (vmax_val - vmin_val) if vmax_val != vmin_val else 0.0
-        t = np.clip(t, 0, 1)
-        # invert because top is max in our gradient
+        t = float(np.clip(norm_fn(v), 0, 1))
         return int(round((1 - t) * (H - 1)))
 
-    # Draw ticks and labels
+    # --- Draw ticks and labels ---
     tick_len = 6
+    label_pad_x = 4
+    label_positions = []
     for v in ticks_vals:
         y = val_to_y(v)
-        # tick on the boundary between strip and panel
+        # Tick at strip right edge
         x0 = strip_w - 1
         draw.line([(x0 - tick_len, y), (x0, y)], fill=(0, 0, 0), width=1)
-        # label in panel
+        # Label in panel
         label = f"{v:.2e}"
         try:
             bbox = draw.textbbox((0, 0), label, font=font)
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         except Exception:
             tw, th = (60, 12)
-        draw.text((strip_w + 4, max(0, y - th // 2)), label, fill=(0, 0, 0), font=font)
+        draw.text((strip_w + label_pad_x, max(0, y - th // 2)), label, fill=(0, 0, 0), font=font)
+        label_positions.append((y, th))
 
-    # Units centered in panel
+    # --- Units ("cps") without overlap ---
     units = "cps"
     try:
-        bbox = draw.textbbox((0, 0), units, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        bbox_u = draw.textbbox((0, 0), units, font=font)
+        uw, uh = bbox_u[2] - bbox_u[0], bbox_u[3] - bbox_u[1]
     except Exception:
-        tw, th = (24, 12)
-    draw.text((strip_w + panel_w - tw - 4, H // 2 - th // 2), units, fill=(0, 0, 0), font=font)
+        uw, uh = (28, 12)
+
+    # Place units near top-right, but ensure clearance from the top tick label
+    top_label_y, top_label_h = label_positions[0]
+    unit_x = strip_w + panel_w - uw - 4
+    # If top label is too close to top, push units a bit downward; otherwise put at 4 px margin
+    min_units_y = 4
+    min_gap = 4
+    units_y = max(min_units_y, top_label_y - top_label_h - min_gap)
+    # Also ensure units don't run off the bottom
+    units_y = min(units_y, H - uh - 4)
+    draw.text((unit_x, units_y), units, fill=(0, 0, 0), font=font)
 
     return np.array(pil)
-
 
 
 
@@ -350,15 +362,13 @@ def _get_font(size: int):
 
 def run():
     st.title("SIF Movie Exporter")
-    st.caption("Preview as a video/GIF, then download as MP4/MOV/TIFF. Region, labels, bottom colorbar, X-flip, and compact preview.")
 
     with st.sidebar:
         st.header("Controls")
         colormap = st.selectbox("Colormap", ["gray", "magma", "viridis", "plasma", "hot", "hsv", "cividis", "inferno"], index=0)
         univ_min_max = st.checkbox("Universal min/max across frames", value=False)
         log_scale = st.checkbox("Log intensity scaling", value=False)
-        region = st.selectbox("Region", options=["all", "1", "2", "3", "4", "custom"], index=0)
-        #flip_x = st.checkbox("Flip horizontally (X axis)", value=True)
+        region = st.selectbox("Region", options=["all", "1", "2", "3", "4"], index=0)
         show_colorbar = st.checkbox("Show colorbar", value=True)
         show_labels = st.checkbox("Show frame # / exposure / gain", value=True)
         fps = st.slider("FPS (preview & video)", 1, 60, 15)
@@ -395,7 +405,6 @@ def run():
             u8 = _cps_to_uint8(cps, norm)
             rgb_or_gray = _apply_colormap(u8, colormap)
 
-            # Bottom colorbar: global if norm set, else per-frame
             strip = None
             if show_colorbar:
                 if norm is not None:
@@ -434,7 +443,7 @@ def run():
                 frames_preview.append(f)
 
         # Preview
-        col_preview, col_empty = st.columns([1, 3])  # 1/(1+3) = 1/4
+        col_preview, col_empty = st.columns([1, 2])
         with col_preview:
             st.subheader("Preview")
             if _has_ffmpeg:
