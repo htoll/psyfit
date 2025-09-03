@@ -162,8 +162,7 @@ def _title_lines(base_title: Optional[str], frame_idx: int, show_frame_count: bo
             parts.append(" | ".join(eg))
     if parts:
         lines.append(" · ".join(parts))
-    return "
-".join(lines)
+    return "".join(lines)
 
 
 # =============== Streamlit UI ===============
