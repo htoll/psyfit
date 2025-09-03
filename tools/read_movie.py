@@ -181,7 +181,7 @@ def _encode_tiff_stack(frames_u8: List[np.ndarray]) -> bytes:
             pass
 
 
-def movie_sif_exporter():
+def run():
     st.title("SIF Movie Exporter")
     st.caption("Preview as a video/GIF, then download as MP4/MOV/TIFF stack. No fitting.")
 
