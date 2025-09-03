@@ -167,15 +167,14 @@ def _make_colorbar_with_ticks(
     """
     Vertical colorbar (left strip) + label panel (right).
     - 5 ticks (linear or logarithmic).
-    - Black ticks & labels in a white panel (readable).
-    - Units "cps" placed with margin to avoid overlapping labels.
-    Returns RGB image of shape (H, strip_w + panel_w, 3).
+    - White tick labels on a black background panel.
+    - Units "cps" placed at top-right, never overlapping labels.
     """
     H = int(height)
     strip_w = 28
-    panel_w = 84  # a bit wider so 1e+XX fits comfortably
+    panel_w = 84  # wider panel for labels
 
-    # Build vertical color strip (top=max -> bottom=min)
+    # --- Build vertical color strip (top=max -> bottom=min) ---
     grad = np.linspace(1, 0, H, dtype=np.float32)[:, None]
     if cmap_name.lower() in ("gray", "grey"):
         gray = (grad * 255.0).astype(np.uint8)
@@ -187,8 +186,10 @@ def _make_colorbar_with_ticks(
         rgb = (rgba[..., :3] * 255.0).astype(np.uint8)
         strip_rgb = np.repeat(rgb, strip_w, axis=1)
 
-    # Label panel (white)
-    panel_rgb = np.full((H, panel_w, 3), 255, dtype=np.uint8)
+    # --- Black label panel ---
+    panel_rgb = np.zeros((H, panel_w, 3), dtype=np.uint8)
+
+    # --- Compose strip + panel ---
     cbar = np.concatenate([strip_rgb, panel_rgb], axis=1)
 
     if Image is None:
@@ -208,10 +209,9 @@ def _make_colorbar_with_ticks(
         def norm_fn(v):
             return (v - vmin_val) / (vmax_val - vmin_val) if vmax_val != vmin_val else 0.0
 
-    # Map value -> y coordinate (0 = top). Our gradient is top=max, so invert t.
     def val_to_y(v):
         t = float(np.clip(norm_fn(v), 0, 1))
-        return int(round((1 - t) * (H - 1)))
+        return int(round((1 - t) * (H - 1)))  # invert (top=max)
 
     # --- Draw ticks and labels ---
     tick_len = 6
@@ -219,20 +219,21 @@ def _make_colorbar_with_ticks(
     label_positions = []
     for v in ticks_vals:
         y = val_to_y(v)
-        # Tick at strip right edge
+        # Tick at strip right edge (white line)
         x0 = strip_w - 1
-        draw.line([(x0 - tick_len, y), (x0, y)], fill=(0, 0, 0), width=1)
-        # Label in panel
+        draw.line([(x0 - tick_len, y), (x0, y)], fill=(255, 255, 255), width=1)
+        # Label in panel (white text)
         label = f"{v:.2e}"
         try:
             bbox = draw.textbbox((0, 0), label, font=font)
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         except Exception:
             tw, th = (60, 12)
-        draw.text((strip_w + label_pad_x, max(0, y - th // 2)), label, fill=(0, 0, 0), font=font)
+        draw.text((strip_w + label_pad_x, max(0, y - th // 2)),
+                  label, fill=(255, 255, 255), font=font)
         label_positions.append((y, th))
 
-    # --- Units ("cps") without overlap ---
+    # --- Units ("cps") in white at top-right ---
     units = "cps"
     try:
         bbox_u = draw.textbbox((0, 0), units, font=font)
@@ -240,18 +241,14 @@ def _make_colorbar_with_ticks(
     except Exception:
         uw, uh = (28, 12)
 
-    # Place units near top-right, but ensure clearance from the top tick label
     top_label_y, top_label_h = label_positions[0]
     unit_x = strip_w + panel_w - uw - 4
-    # If top label is too close to top, push units a bit downward; otherwise put at 4 px margin
-    min_units_y = 4
-    min_gap = 4
-    units_y = max(min_units_y, top_label_y - top_label_h - min_gap)
-    # Also ensure units don't run off the bottom
+    units_y = max(4, top_label_y - top_label_h - 4)
     units_y = min(units_y, H - uh - 4)
-    draw.text((unit_x, units_y), units, fill=(0, 0, 0), font=font)
+    draw.text((unit_x, units_y), units, fill=(255, 255, 255), font=font)
 
     return np.array(pil)
+
 
 
 
