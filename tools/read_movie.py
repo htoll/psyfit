@@ -134,38 +134,6 @@ def _apply_colormap(gray_u8: np.ndarray, cmap_name: str) -> np.ndarray:
     return rgb
 
 
-def _make_colorbar_bar(width: int, cmap_name: str, vmin_val: float, vmax_val: float) -> np.ndarray:
-    """Horizontal colorbar (bottom bar) with min/max labels."""
-    W = int(width)
-    bar_h = 28
-    gradient = np.linspace(0, 1, W, dtype=np.float32)[None, :]  # left=min -> right=max
-    if cmap_name.lower() in ("gray", "grey"):
-        gray = (gradient * 255.0).astype(np.uint8)
-        bar = np.repeat(gray, bar_h, axis=0)
-        bar_rgb = np.stack([bar, bar, bar], axis=-1)
-    else:
-        cmap = mpl_cm.get_cmap(cmap_name)
-        rgba = cmap(gradient)
-        rgb = (rgba[..., :3] * 255.0).astype(np.uint8)
-        bar_rgb = np.repeat(rgb, bar_h, axis=0)
-    if Image is not None:
-        pil = Image.fromarray(bar_rgb)
-        draw = ImageDraw.Draw(pil)
-        try:
-            font = ImageFont.load_default()
-        except Exception:
-            font = None
-        left = f"{vmin_val:.2g}"
-        right = f"{vmax_val:.2g}"
-        draw.text((2, 2), left, fill=(255, 255, 255), font=font)
-        # crude right align
-        try:
-            tw = draw.textlength(right, font=font)
-        except Exception:
-            tw = 0
-        draw.text((max(2, W - int(tw) - 2), 2), right, fill=(255, 255, 255), font=font)
-        bar_rgb = np.array(pil)
-    return bar_rgb
 
 
 def _overlay_labels(frame_rgb_or_gray: np.ndarray, text: str) -> np.ndarray:
@@ -195,8 +163,9 @@ def _overlay_labels(frame_rgb_or_gray: np.ndarray, text: str) -> np.ndarray:
 def _make_colorbar_strip(height: int, cmap_name: str, vmin_val: float, vmax_val: float) -> np.ndarray:
     """Vertical colorbar (right strip) with numeric labels in cps (photons/sec)."""
     H = int(height)
-    strip_w = 48  # a bit wider for labels
+    strip_w = 64  # a bit wider for labels
     gradient = np.linspace(1, 0, H, dtype=np.float32)[:, None]  # top=max -> bottom=min
+
     if cmap_name.lower() in ("gray", "grey"):
         gray = (gradient * 255.0).astype(np.uint8)
         strip = np.repeat(gray, strip_w, axis=1)
@@ -212,7 +181,7 @@ def _make_colorbar_strip(height: int, cmap_name: str, vmin_val: float, vmax_val:
         draw = ImageDraw.Draw(pil)
         font = _get_font(12)
 
-        # Label top (vmax), middle, bottom (vmin)
+        # Label top, mid, bottom
         top_val = f"{vmax_val:.2e}"
         mid_val = f"{(0.5*(vmax_val+vmin_val)):.2e}"
         bot_val = f"{vmin_val:.2e}"
@@ -221,14 +190,19 @@ def _make_colorbar_strip(height: int, cmap_name: str, vmin_val: float, vmax_val:
         draw.text((2, H//2 - 6), mid_val, fill=(255, 255, 255), font=font)
         draw.text((2, H - 16), bot_val, fill=(255, 255, 255), font=font)
 
-        # Units label along the side
+        # Units label ("cps"), measured with textbbox for Pillow>=10
         units = "cps"
-        tw, th = draw.textsize(units, font=font)
-        draw.text((strip_w - tw - 2, H//2 - th//2), units, fill=(255,255,255), font=font)
+        try:
+            bbox = draw.textbbox((0, 0), units, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw, th = font.getsize(units) if font is not None else (20, 10)
+        draw.text((strip_w - tw - 2, H//2 - th//2), units, fill=(255, 255, 255), font=font)
 
         strip_rgb = np.array(pil)
 
     return strip_rgb
+
 
 
 
