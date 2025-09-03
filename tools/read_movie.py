@@ -193,9 +193,9 @@ def _overlay_labels(frame_rgb_or_gray: np.ndarray, text: str) -> np.ndarray:
     return np.array(pil)
 
 def _make_colorbar_strip(height: int, cmap_name: str, vmin_val: float, vmax_val: float) -> np.ndarray:
-    """Vertical colorbar (right strip) with min/max labels."""
+    """Vertical colorbar (right strip) with numeric labels in cps (photons/sec)."""
     H = int(height)
-    strip_w = 32
+    strip_w = 48  # a bit wider for labels
     gradient = np.linspace(1, 0, H, dtype=np.float32)[:, None]  # top=max -> bottom=min
     if cmap_name.lower() in ("gray", "grey"):
         gray = (gradient * 255.0).astype(np.uint8)
@@ -206,16 +206,30 @@ def _make_colorbar_strip(height: int, cmap_name: str, vmin_val: float, vmax_val:
         rgba = cmap(gradient)
         rgb = (rgba[..., :3] * 255.0).astype(np.uint8)
         strip_rgb = np.repeat(rgb, strip_w, axis=1)
+
     if Image is not None:
         pil = Image.fromarray(strip_rgb)
         draw = ImageDraw.Draw(pil)
         font = _get_font(12)
-        top = f"{vmax_val:.2g}"
-        bot = f"{vmin_val:.2g}"
-        draw.text((2, 2), top, fill=(255, 255, 255), font=font)
-        draw.text((2, H - 16), bot, fill=(255, 255, 255), font=font)
+
+        # Label top (vmax), middle, bottom (vmin)
+        top_val = f"{vmax_val:.2e}"
+        mid_val = f"{(0.5*(vmax_val+vmin_val)):.2e}"
+        bot_val = f"{vmin_val:.2e}"
+
+        draw.text((2, 2), top_val, fill=(255, 255, 255), font=font)
+        draw.text((2, H//2 - 6), mid_val, fill=(255, 255, 255), font=font)
+        draw.text((2, H - 16), bot_val, fill=(255, 255, 255), font=font)
+
+        # Units label along the side
+        units = "cps"
+        tw, th = draw.textsize(units, font=font)
+        draw.text((strip_w - tw - 2, H//2 - th//2), units, fill=(255,255,255), font=font)
+
         strip_rgb = np.array(pil)
+
     return strip_rgb
+
 
 
 def _concat_right(img: np.ndarray, right: Optional[np.ndarray]) -> np.ndarray:
