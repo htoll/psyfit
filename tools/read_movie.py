@@ -160,48 +160,85 @@ def _overlay_labels(frame_rgb_or_gray: np.ndarray, text: str) -> np.ndarray:
     draw.text((margin + 3, margin + 3), text, fill=(255, 255, 255), font=font)
     return np.array(pil)
 
-def _make_colorbar_strip(height: int, cmap_name: str, vmin_val: float, vmax_val: float) -> np.ndarray:
-    """Vertical colorbar (right strip) with numeric labels in cps (photons/sec)."""
-    H = int(height)
-    strip_w = 64  # a bit wider for labels
-    gradient = np.linspace(1, 0, H, dtype=np.float32)[:, None]  # top=max -> bottom=min
 
+def _make_colorbar_with_ticks(height: int, cmap_name: str, vmin_val: float, vmax_val: float, log_scale: bool) -> np.ndarray:
+    """
+    Vertical colorbar (left) + label panel (right).
+    Returns RGB image of shape (H, strip_w + panel_w, 3) with ticks & numeric labels outside the bar.
+    """
+    H = int(height)
+    strip_w = 28        # color strip width
+    panel_w = 72        # label panel width (white background for readability)
+
+    # Build vertical color strip (top=max -> bottom=min)
+    grad = np.linspace(1, 0, H, dtype=np.float32)[:, None]
     if cmap_name.lower() in ("gray", "grey"):
-        gray = (gradient * 255.0).astype(np.uint8)
+        gray = (grad * 255.0).astype(np.uint8)
         strip = np.repeat(gray, strip_w, axis=1)
         strip_rgb = np.stack([strip, strip, strip], axis=-1)
     else:
         cmap = mpl_cm.get_cmap(cmap_name)
-        rgba = cmap(gradient)
+        rgba = cmap(grad)  # (H,1,4)
         rgb = (rgba[..., :3] * 255.0).astype(np.uint8)
-        strip_rgb = np.repeat(rgb, strip_w, axis=1)
+        strip_rgb = np.repeat(rgb, strip_w, axis=1)  # (H, strip_w, 3)
 
-    if Image is not None:
-        pil = Image.fromarray(strip_rgb)
-        draw = ImageDraw.Draw(pil)
-        font = _get_font(12)
+    # Build label panel (white)
+    panel_rgb = np.full((H, panel_w, 3), 255, dtype=np.uint8)
 
-        # Label top, mid, bottom
-        top_val = f"{vmax_val:.2e}"
-        mid_val = f"{(0.5*(vmax_val+vmin_val)):.2e}"
-        bot_val = f"{vmin_val:.2e}"
+    # Compose side by side
+    cbar = np.concatenate([strip_rgb, panel_rgb], axis=1)
 
-        draw.text((2, 2), top_val, fill=(255, 255, 255), font=font)
-        draw.text((2, H//2 - 6), mid_val, fill=(255, 255, 255), font=font)
-        draw.text((2, H - 16), bot_val, fill=(255, 255, 255), font=font)
+    if Image is None:
+        return cbar
 
-        # Units label ("cps"), measured with textbbox for Pillow>=10
-        units = "cps"
+    pil = Image.fromarray(cbar)
+    draw = ImageDraw.Draw(pil)
+    font = _get_font(12)
+
+    # Choose tick positions/values
+    if log_scale and (vmin_val > 0) and np.isfinite(vmin_val) and np.isfinite(vmax_val) and (vmax_val > vmin_val):
+        # Log ticks: min, geometric mean, max
+        ticks_vals = [vmin_val, np.sqrt(vmin_val * vmax_val), vmax_val]
+    else:
+        # Linear ticks: min, mid, max
+        ticks_vals = [vmin_val, 0.5 * (vmin_val + vmax_val), vmax_val]
+
+    # Map value -> y coordinate (0 at top)
+    def val_to_y(v):
+        if log_scale and vmin_val > 0 and vmax_val > vmin_val:
+            t = (np.log(v) - np.log(vmin_val)) / (np.log(vmax_val) - np.log(vmin_val))
+        else:
+            t = (v - vmin_val) / (vmax_val - vmin_val) if vmax_val != vmin_val else 0.0
+        t = np.clip(t, 0, 1)
+        # invert because top is max in our gradient
+        return int(round((1 - t) * (H - 1)))
+
+    # Draw ticks and labels
+    tick_len = 6
+    for v in ticks_vals:
+        y = val_to_y(v)
+        # tick on the boundary between strip and panel
+        x0 = strip_w - 1
+        draw.line([(x0 - tick_len, y), (x0, y)], fill=(0, 0, 0), width=1)
+        # label in panel
+        label = f"{v:.2e}"
         try:
-            bbox = draw.textbbox((0, 0), units, font=font)
+            bbox = draw.textbbox((0, 0), label, font=font)
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         except Exception:
-            tw, th = font.getsize(units) if font is not None else (20, 10)
-        draw.text((strip_w - tw - 2, H//2 - th//2), units, fill=(255, 255, 255), font=font)
+            tw, th = (60, 12)
+        draw.text((strip_w + 4, max(0, y - th // 2)), label, fill=(0, 0, 0), font=font)
 
-        strip_rgb = np.array(pil)
+    # Units centered in panel
+    units = "cps"
+    try:
+        bbox = draw.textbbox((0, 0), units, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    except Exception:
+        tw, th = (24, 12)
+    draw.text((strip_w + panel_w - tw - 4, H // 2 - th // 2), units, fill=(0, 0, 0), font=font)
 
-    return strip_rgb
+    return np.array(pil)
 
 
 
@@ -367,9 +404,13 @@ def run():
                 else:
                     vmin_val = float(np.nanmin(cps))
                     vmax_val = float(np.nanmax(cps))
-                strip = _make_colorbar_strip(height=rgb_or_gray.shape[0],
-                                             cmap_name=colormap,
-                                             vmin_val=vmin_val, vmax_val=vmax_val)
+                strip = _make_colorbar_with_ticks(
+                    height=rgb_or_gray.shape[0],
+                    cmap_name=colormap,
+                    vmin_val=vmin_val,
+                    vmax_val=vmax_val,
+                    log_scale=log_scale,
+                )
             framed = _concat_right(rgb_or_gray, strip)
 
 
@@ -393,28 +434,30 @@ def run():
                 frames_preview.append(f)
 
         # Preview
-        if _has_ffmpeg:
-            try:
-                preview_bytes = _encode_video(frames_preview, fps=fps, format_ext="mp4")
+        col_preview, col_empty = st.columns([1, 3])  # 1/(1+3) = 1/4
+            with col_preview:
                 st.subheader("Preview")
-                st.markdown(
-                    """
-                    <style>
-                    div[data-testid="stVideo"] video { max-width: 420px; width: 420px; height: auto; }
-                    </style>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                st.video(preview_bytes)
-            except Exception as e:
-                st.warning(f"MP4 preview unavailable: {e}")
-                if imageio is not None:
-                    from io import BytesIO
-                    gif_buf = BytesIO()
-                    imageio.mimsave(gif_buf, frames_preview, format="GIF", duration=1.0 / max(1, fps))
-                    st.image(gif_buf.getvalue(), caption="GIF preview (encoding fallback)", output_format="GIF")
+                if _has_ffmpeg:
+                    try:
+                        preview_bytes = _encode_video(frames_u8, fps=fps, format_ext="mp4")
+                        st.video(preview_bytes)
+                    except Exception as e:
+                        st.warning(f"MP4 preview unavailable: {e}")
+                        if imageio is not None:
+                            from io import BytesIO
+                            gif_buf = BytesIO()
+                            imageio.mimsave(gif_buf, frames_u8, format="GIF", duration=1.0 / max(1, fps))
+                            st.image(gif_buf.getvalue(), caption="GIF preview (encoding fallback)", output_format="GIF")
+                        else:
+                            st.info("Install `imageio` for GIF preview.")
                 else:
-                    st.info("Install `imageio` for GIF preview.")
+                    if imageio is not None:
+                        from io import BytesIO
+                        gif_buf = BytesIO()
+                        imageio.mimsave(gif_buf, frames_u8, format="GIF", duration=1.0 / max(1, fps))
+                        st.image(gif_buf.getvalue(), caption="GIF preview (FFmpeg not available)", output_format="GIF")
+                    else:
+                        st.info("Install `imageio` for GIF preview.")
         else:
             if imageio is not None:
                 from io import BytesIO
