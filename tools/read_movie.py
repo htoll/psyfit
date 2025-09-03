@@ -1,16 +1,10 @@
-# Streamlit: SIF Movie Exporter (MP4/MOV/TIFF) — Region, Labels, Colorbar
-# ------------------------------------------------------------------------
-# Fast, no‑fitting pipeline. Converts each SIF frame to cps and encodes to a
-# video (MP4/MOV via FFmpeg) or multipage TIFF. Shows a playable preview
-# (MP4 when FFmpeg available, else GIF). Adds region cropping, per‑frame
-# overlays (frame #, exposure, gain), and an embedded colorbar strip.
+# read_movie.py
+# SIF Movie Exporter (MP4/MOV/TIFF) — Region, Labels, Bottom Colorbar, Flip-X, Compact Preview
 
 from __future__ import annotations
 
-import io
 import os
 import gc
-import math
 import tempfile
 from dataclasses import dataclass
 from datetime import date
@@ -18,7 +12,6 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import streamlit as st
-
 from matplotlib import cm as mpl_cm
 from matplotlib.colors import Normalize, LogNorm
 
@@ -42,7 +35,7 @@ except Exception as e:
     tifffile = None
     _tif_err = e
 
-# PIL for text/legend overlays
+# PIL for text/legend overlays & resizing
 try:
     from PIL import Image, ImageDraw, ImageFont
 except Exception as e:
@@ -141,43 +134,42 @@ def _apply_colormap(gray_u8: np.ndarray, cmap_name: str) -> np.ndarray:
     return rgb
 
 
-def _make_colorbar_strip(norm: Optional[Normalize], cmap_name: str, height: int, vmin_val: Optional[float], vmax_val: Optional[float]) -> Optional[np.ndarray]:
-    if norm is None:
-        return None
-    # Vertical strip  (height x 24)
-    H = int(height)
-    W = 28
-    gradient = np.linspace(1, 0, H, dtype=np.float32)[:, None]  # 1 at top -> 0 at bottom
-    # Map to RGB via colormap
+def _make_colorbar_bar(width: int, cmap_name: str, vmin_val: float, vmax_val: float) -> np.ndarray:
+    """Horizontal colorbar (bottom bar) with min/max labels."""
+    W = int(width)
+    bar_h = 28
+    gradient = np.linspace(0, 1, W, dtype=np.float32)[None, :]  # left=min -> right=max
     if cmap_name.lower() in ("gray", "grey"):
         gray = (gradient * 255.0).astype(np.uint8)
-        strip = np.repeat(gray, W, axis=1)
-        strip_rgb = np.stack([strip, strip, strip], axis=-1)
+        bar = np.repeat(gray, bar_h, axis=0)
+        bar_rgb = np.stack([bar, bar, bar], axis=-1)
     else:
         cmap = mpl_cm.get_cmap(cmap_name)
         rgba = cmap(gradient)
         rgb = (rgba[..., :3] * 255.0).astype(np.uint8)
-        strip_rgb = np.repeat(rgb, W, axis=1)
-    # Add min/max labels using PIL if available
+        bar_rgb = np.repeat(rgb, bar_h, axis=0)
     if Image is not None:
-        pil = Image.fromarray(strip_rgb)
+        pil = Image.fromarray(bar_rgb)
         draw = ImageDraw.Draw(pil)
         try:
             font = ImageFont.load_default()
         except Exception:
             font = None
-        top = "max" if vmin_val is None else (f"{vmax_val:.2g}")
-        bot = "min" if vmax_val is None else (f"{vmin_val:.2g}")
-        # small padding
-        draw.text((2, 2), top, fill=(255, 255, 255), font=font)
-        draw.text((2, H - 12), bot, fill=(255, 255, 255), font=font)
-        strip_rgb = np.array(pil)
-    return strip_rgb
+        left = f"{vmin_val:.2g}"
+        right = f"{vmax_val:.2g}"
+        draw.text((2, 2), left, fill=(255, 255, 255), font=font)
+        # crude right align
+        try:
+            tw = draw.textlength(right, font=font)
+        except Exception:
+            tw = 0
+        draw.text((max(2, W - int(tw) - 2), 2), right, fill=(255, 255, 255), font=font)
+        bar_rgb = np.array(pil)
+    return bar_rgb
 
 
 def _overlay_labels(frame_rgb_or_gray: np.ndarray, text: str) -> np.ndarray:
     if Image is None:
-        # Minimal fallback: do nothing
         return frame_rgb_or_gray
     if frame_rgb_or_gray.ndim == 2:
         base = np.stack([frame_rgb_or_gray]*3, axis=-1)
@@ -189,35 +181,34 @@ def _overlay_labels(frame_rgb_or_gray: np.ndarray, text: str) -> np.ndarray:
         font = ImageFont.load_default()
     except Exception:
         font = None
-    # Draw a translucent box behind text for readability
     margin = 4
-    text_w, text_h = draw.textbbox((0, 0), text, font=font)[2:]
+    try:
+        x1, y1, x2, y2 = draw.textbbox((0, 0), text, font=font)
+        text_w, text_h = x2 - x1, y2 - y1
+    except Exception:
+        text_w, text_h = 80, 12
     box = [margin, margin, margin + text_w + 6, margin + text_h + 6]
-    draw.rectangle(box, fill=(0, 0, 0, 128))
+    draw.rectangle(box, fill=(0, 0, 0))
     draw.text((margin + 3, margin + 3), text, fill=(255, 255, 255), font=font)
     return np.array(pil)
 
 
-def _concat_right(img: np.ndarray, right: Optional[np.ndarray]) -> np.ndarray:
-    if right is None:
+def _concat_bottom(img: np.ndarray, bottom: Optional[np.ndarray]) -> np.ndarray:
+    if bottom is None:
         return img
-    H = img.shape[0]
-    if right.shape[0] != H:
-        # resize right to match height using simple nearest neighbor
-        scale = H / right.shape[0]
-        new_w = max(1, int(round(right.shape[1] * scale)))
-        if Image is not None:
-            pil = Image.fromarray(right)
-            pil = pil.resize((new_w, H), resample=Image.NEAREST)
-            right = np.array(pil)
-        else:
-            # crude fallback: tile or trim
-            right = np.resize(right, (H, new_w, right.shape[-1]))
     if img.ndim == 2:
         img = np.stack([img]*3, axis=-1)
-    if right.ndim == 2:
-        right = np.stack([right]*3, axis=-1)
-    return np.concatenate([img, right], axis=1)
+    if bottom.ndim == 2:
+        bottom = np.stack([bottom]*3, axis=-1)
+    H, W = img.shape[:2]
+    if bottom.shape[1] != W:
+        if Image is not None:
+            pil = Image.fromarray(bottom)
+            pil = pil.resize((W, bottom.shape[0]), resample=Image.NEAREST)
+            bottom = np.array(pil)
+        else:
+            bottom = np.resize(bottom, (bottom.shape[0], W, bottom.shape[-1]))
+    return np.concatenate([img, bottom], axis=0)
 
 
 def _encode_video(frames_u8: List[np.ndarray], fps: int, format_ext: str) -> bytes:
@@ -272,11 +263,9 @@ def _encode_tiff_stack(frames_u8: List[np.ndarray]) -> bytes:
             pass
 
 
-# ===================== PUBLIC ENTRYPOINT =====================
-
 def run():
     st.title("SIF Movie Exporter")
-    st.caption("Preview as a video/GIF, then download as MP4/MOV/TIFF stack. Region, labels & colorbar overlays.")
+    st.caption("Preview as a video/GIF, then download as MP4/MOV/TIFF. Region, labels, bottom colorbar, X-flip, and compact preview.")
 
     with st.sidebar:
         st.header("Controls")
@@ -284,8 +273,10 @@ def run():
         univ_min_max = st.checkbox("Universal min/max across frames", value=False)
         log_scale = st.checkbox("Log intensity scaling", value=False)
         region = st.selectbox("Region", options=["all", "1", "2", "3", "4", "custom"], index=0)
+        flip_x = st.checkbox("Flip horizontally (X axis)", value=True)
         show_colorbar = st.checkbox("Show colorbar", value=True)
         show_labels = st.checkbox("Show frame # / exposure / gain", value=True)
+        preview_width = st.slider("Preview width (px)", 320, 1024, 480)
         fps = st.slider("FPS (preview & video)", 1, 60, 15)
         export_fmt = st.selectbox("Download format", ["MP4", "MOV", "TIFF"], index=0)
 
@@ -308,34 +299,57 @@ def run():
             st.error("No frames found in SIF file.")
             return
 
-        idxs = list(range(0, T, 1))  # no stride per user request
-        norm = (_compute_norm(idxs, raw_frames, meta_raw, log_scale, region) if univ_min_max else None)
+        idxs = list(range(0, T, 1))  # show all frames
+        norm = _compute_norm(idxs, raw_frames, meta_raw, log_scale, region) if univ_min_max else None
 
+        # Build full-res frames (with flip, labels, bottom colorbar)
         for i in idxs:
             cps, md = _to_cps(raw_frames[i], meta_raw)
             cps = _crop_region(cps, region)
+            if flip_x:
+                cps = np.flip(cps, axis=1)
             u8 = _cps_to_uint8(cps, norm)
             rgb_or_gray = _apply_colormap(u8, colormap)
 
-            # Build colorbar strip if requested and global norm is enabled
-            strip = _make_colorbar_strip(norm, colormap, height=rgb_or_gray.shape[0],
-                                         vmin_val=float(getattr(norm, 'vmin', np.nan)) if norm else None,
-                                         vmax_val=float(getattr(norm, 'vmax', np.nan)) if norm else None) if show_colorbar else None
-            framed = _concat_right(rgb_or_gray, strip)
+            # Bottom colorbar: global if norm set, else per-frame
+            bar = None
+            if show_colorbar:
+                if norm is not None:
+                    vmin_val = float(getattr(norm, 'vmin', np.nan))
+                    vmax_val = float(getattr(norm, 'vmax', np.nan))
+                else:
+                    vmin_val = float(np.nanmin(cps))
+                    vmax_val = float(np.nanmax(cps))
+                bar = _make_colorbar_bar(width=rgb_or_gray.shape[1], cmap_name=colormap,
+                                         vmin_val=vmin_val, vmax_val=vmax_val)
+            framed = _concat_bottom(rgb_or_gray, bar)
 
-            # Overlay text (frame #, exposure, gain)
             if show_labels:
-                exp_ms = md.exposure_ms
-                gain = md.gain
-                label = f"Frame {i+1} | Exp {exp_ms:g} ms | Gain {gain:g}" if exp_ms is not None and gain is not None else f"Frame {i+1}"
+                if (md.exposure_ms is not None) and (md.gain is not None):
+                    label = f"Frame {i+1} | Exp {md.exposure_ms:g} ms | Gain {md.gain:g}"
+                else:
+                    label = f"Frame {i+1}"
                 framed = _overlay_labels(framed, label)
 
             frames_u8.append(framed)
 
-        # Preview: MP4 if FFmpeg else GIF
+        # Build smaller frames for preview
+        frames_preview = []
+        for f in frames_u8:
+            if Image is not None:
+                pil = Image.fromarray(f if f.ndim == 3 else np.stack([f]*3, axis=-1))
+                w, h = pil.size
+                if w != preview_width:
+                    new_h = max(1, int(round(h * (preview_width / w))))
+                    pil = pil.resize((preview_width, new_h), resample=Image.NEAREST)
+                frames_preview.append(np.array(pil))
+            else:
+                frames_preview.append(f)
+
+        # Preview
         if _has_ffmpeg:
             try:
-                preview_bytes = _encode_video(frames_u8, fps=fps, format_ext="mp4")
+                preview_bytes = _encode_video(frames_preview, fps=fps, format_ext="mp4")
                 st.subheader("Preview")
                 st.video(preview_bytes)
             except Exception as e:
@@ -343,7 +357,7 @@ def run():
                 if imageio is not None:
                     from io import BytesIO
                     gif_buf = BytesIO()
-                    imageio.mimsave(gif_buf, frames_u8, format="GIF", duration=1.0 / max(1, fps))
+                    imageio.mimsave(gif_buf, frames_preview, format="GIF", duration=1.0 / max(1, fps))
                     st.image(gif_buf.getvalue(), caption="GIF preview (encoding fallback)", output_format="GIF")
                 else:
                     st.info("Install `imageio` for GIF preview.")
@@ -351,7 +365,7 @@ def run():
             if imageio is not None:
                 from io import BytesIO
                 gif_buf = BytesIO()
-                imageio.mimsave(gif_buf, frames_u8, format="GIF", duration=1.0 / max(1, fps))
+                imageio.mimsave(gif_buf, frames_preview, format="GIF", duration=1.0 / max(1, fps))
                 st.subheader("Preview")
                 st.image(gif_buf.getvalue(), caption="GIF preview (FFmpeg not available)", output_format="GIF")
             else:
@@ -362,7 +376,7 @@ def run():
             if export_fmt in ("MP4", "MOV"):
                 if not _has_ffmpeg:
                     st.error("FFmpeg backend not available. Install `imageio-ffmpeg` to enable MP4/MOV export.")
-                    # Also offer TIFF immediately
+                    # also offer TIFF immediately
                     dl_bytes = _encode_tiff_stack(frames_u8)
                     today = date.today().strftime("%Y%m%d")
                     st.download_button(
@@ -395,18 +409,15 @@ def run():
             st.error(f"Export failed: {e}")
 
     finally:
-        # Cleanup safely
+        # Safe cleanup (no UnboundLocalError)
         try:
             if raw_frames is not None:
                 del raw_frames
         except Exception:
             pass
         try:
+            frames_u8  # ensure defined
             del frames_u8
         except Exception:
             pass
         gc.collect()
-
-
-if __name__ == "__main__":
-    run()
