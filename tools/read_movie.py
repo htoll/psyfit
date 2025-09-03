@@ -132,7 +132,7 @@ def _title_lines(base_title: Optional[str], frame_idx: int, show_frame_count: bo
 
 # =============== Streamlit UI ===============
 
-def movie_sif_tool():
+def run():
     st.title("Movie SIF Processor")
     st.caption("Apply your existing `integrate_sif` to every frame, visualize, and export.")
 
