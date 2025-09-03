@@ -181,7 +181,7 @@ def _encode_tiff_stack(frames_u8: List[np.ndarray]) -> bytes:
             pass
 
 
-def run():
+def movie_sif_exporter():
     st.title("SIF Movie Exporter")
     st.caption("Preview as a video/GIF, then download as MP4/MOV/TIFF stack. No fitting.")
 
@@ -244,33 +244,31 @@ def run():
             st.video(preview_bytes)
         except Exception as e:
             st.warning(f"MP4 preview unavailable: {e}")
-            _has_gif = imageio is not None
-            if _has_gif:
+            # GIF fallback
+            if imageio is not None:
                 try:
-                    gif = imageio.v3.imwrite("_.gif", frames_u8, duration=1.0 / max(1, fps))  # returns bytes in v3
-                except Exception:
-                    # fallback to temp file method
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".gif") as tmpg:
-                        imageio.mimsave(tmpg.name, frames_u8, format="GIF", duration=1.0 / max(1, fps))
-                        with open(tmpg.name, "rb") as fh:
-                            gif = fh.read()
-                        os.remove(tmpg.name)
-                st.image(gif, caption="GIF preview (encoding fallback)")
+                    import PIL
+                    from io import BytesIO
+                    gif_buf = BytesIO()
+                    imageio.mimsave(gif_buf, frames_u8, format="GIF", duration=1.0 / max(1, fps))
+                    gif_bytes = gif_buf.getvalue()
+                    st.image(gif_bytes, caption="GIF preview (encoding fallback)", output_format="GIF")
+                except Exception as ge:
+                    st.info(f"GIF preview also failed: {ge}")
             else:
                 st.info("Install `imageio` for GIF preview.")
     else:
         # No ffmpeg: use GIF preview path
         if imageio is not None:
             try:
-                gif = imageio.v3.imwrite("_.gif", frames_u8, duration=1.0 / max(1, fps))
-            except Exception:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".gif") as tmpg:
-                    imageio.mimsave(tmpg.name, frames_u8, format="GIF", duration=1.0 / max(1, fps))
-                    with open(tmpg.name, "rb") as fh:
-                        gif = fh.read()
-                    os.remove(tmpg.name)
-            st.subheader("Preview")
-            st.image(gif, caption="GIF preview (FFmpeg not available)")
+                from io import BytesIO
+                gif_buf = BytesIO()
+                imageio.mimsave(gif_buf, frames_u8, format="GIF", duration=1.0 / max(1, fps))
+                gif_bytes = gif_buf.getvalue()
+                st.subheader("Preview")
+                st.image(gif_bytes, caption="GIF preview (FFmpeg not available)", output_format="GIF")
+            except Exception as ge:
+                st.info(f"GIF preview failed: {ge}")
         else:
             st.info("Install `imageio` for GIF preview.")
 
