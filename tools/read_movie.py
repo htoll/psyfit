@@ -143,40 +143,33 @@ def _overlay_labels(frame_rgb_or_gray: np.ndarray, text: str) -> np.ndarray:
         base = np.stack([frame_rgb_or_gray]*3, axis=-1)
     else:
         base = frame_rgb_or_gray
+    H = base.shape[0]
+    font_px = max(16, int(0.04 * H))  # ~4% of height
+    font = _get_font(font_px)
+
     pil = Image.fromarray(base)
     draw = ImageDraw.Draw(pil)
-    try:
-        font = _get_font(14)
-    except Exception:
-        font = None
-    margin = 4
+    margin = max(4, font_px // 4)
     try:
         x1, y1, x2, y2 = draw.textbbox((0, 0), text, font=font)
         text_w, text_h = x2 - x1, y2 - y1
     except Exception:
-        text_w, text_h = 80, 12
-    box = [margin, margin, margin + text_w + 6, margin + text_h + 6]
+        text_w, text_h = font_px * 8, font_px
+    pad = max(4, font_px // 4)
+    box = [margin, margin, margin + text_w + 2*pad, margin + text_h + 2*pad]
     draw.rectangle(box, fill=(0, 0, 0))
-    draw.text((margin + 3, margin + 3), text, fill=(255, 255, 255), font=font)
+    draw.text((margin + pad, margin + pad), text, fill=(255, 255, 255), font=font)
     return np.array(pil)
 
 
-def _make_colorbar_with_ticks(
-    height: int, cmap_name: str, vmin_val: float, vmax_val: float, log_scale: bool
-) -> np.ndarray:
-    """
-    Vertical colorbar (right strip + label panel).
-    - Occupies 75% of the frame height, centered.
-    - 5 ticks (linear or log).
-    - White ticks & labels on black background.
-    """
+def _make_colorbar_with_ticks(height: int, cmap_name: str, vmin_val: float, vmax_val: float, log_scale: bool) -> np.ndarray:
     H = int(height)
     strip_w = 28
-    panel_w = 84
-    bar_h = int(round(0.75 * H))  # 75% of total height
+    panel_w = 110  # a bit wider for 5 labels in 1e+XX
+    bar_h = int(round(0.75 * H))
     top_pad = (H - bar_h) // 2
 
-    # Build vertical color gradient of height=bar_h
+    # Build the color strip at 1x height (bar only)
     grad = np.linspace(1, 0, bar_h, dtype=np.float32)[:, None]
     if cmap_name.lower() in ("gray", "grey"):
         gray = (grad * 255.0).astype(np.uint8)
@@ -188,14 +181,72 @@ def _make_colorbar_with_ticks(
         rgb = (rgba[..., :3] * 255.0).astype(np.uint8)
         strip_rgb = np.repeat(rgb, strip_w, axis=1)
 
-    # Full-height canvas (strip+panel), black
+    # Compose full canvas (H x (strip+panel)), black
     cbar = np.zeros((H, strip_w + panel_w, 3), dtype=np.uint8)
-    # Paste strip into center vertically
     cbar[top_pad:top_pad+bar_h, :strip_w, :] = strip_rgb
-    # Panel is already black (labels will be white)
 
+    # ---- draw ticks/labels on a supersampled panel for crisp text ----
     if Image is None:
         return cbar
+
+    # Create a supersampled panel
+    panel_hi = Image.new("RGB", (panel_w * OVERLAY_SCALE, H * OVERLAY_SCALE), (0, 0, 0))
+    draw = ImageDraw.Draw(panel_hi)
+    font_px = max(12, int(0.032 * H) ) * OVERLAY_SCALE
+    font = _get_font(font_px)
+
+    # 5 ticks (linear or log)
+    if log_scale and (vmin_val > 0) and np.isfinite(vmin_val) and np.isfinite(vmax_val) and (vmax_val > vmin_val):
+        ticks_vals = np.geomspace(vmin_val, vmax_val, 5)
+        def norm_fn(v): return (np.log(v) - np.log(vmin_val)) / (np.log(vmax_val) - np.log(vmin_val))
+    else:
+        ticks_vals = np.linspace(vmin_val, vmax_val, 5)
+        def norm_fn(v): return (v - vmin_val) / (vmax_val - vmin_val) if vmax_val != vmin_val else 0.0
+
+    def val_to_y_hi(v):
+        t = float(np.clip(norm_fn(v), 0, 1))
+        y_bar = int(round((1 - t) * (bar_h - 1)))  # 0..bar_h-1
+        return (top_pad + y_bar) * OVERLAY_SCALE
+
+    # Draw ticks on original strip (1x) and labels on hi-res panel
+    # First, draw white tick marks along strip edge on the cbar
+    pil_cbar = Image.fromarray(cbar)
+    draw_cbar = ImageDraw.Draw(pil_cbar)
+    tick_len = 6
+    for v in ticks_vals:
+        y = top_pad + int(round((1 - float(np.clip(norm_fn(v), 0, 1))) * (bar_h - 1)))
+        x0 = strip_w - 1
+        draw_cbar.line([(x0 - tick_len, y), (x0, y)], fill=(255, 255, 255), width=1)
+
+    # Now labels in hi-res panel
+    label_pad_x = 6 * OVERLAY_SCALE
+    for v in ticks_vals:
+        y_hi = val_to_y_hi(v)
+        label = f"{v:.2e}"
+        try:
+            bbox = draw.textbbox((0, 0), label, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw, th = (60 * OVERLAY_SCALE, 12 * OVERLAY_SCALE)
+        draw.text((label_pad_x, max(0, y_hi - th // 2)), label, fill=(255, 255, 255), font=font)
+
+    # Units, top-right, away from labels
+    units = "cps"
+    try:
+        bbox_u = draw.textbbox((0, 0), units, font=font)
+        uw, uh = bbox_u[2] - bbox_u[0], bbox_u[3] - bbox_u[1]
+    except Exception:
+        uw, uh = (28 * OVERLAY_SCALE, 12 * OVERLAY_SCALE)
+    unit_x = panel_w * OVERLAY_SCALE - uw - 6 * OVERLAY_SCALE
+    unit_y = max(6 * OVERLAY_SCALE, top_pad * OVERLAY_SCALE - uh - 6 * OVERLAY_SCALE)
+    draw.text((unit_x, unit_y), units, fill=(255, 255, 255), font=font)
+
+    # Downsample hi-res panel to 1x with LANCZOS and paste onto cbar
+    panel_lo = panel_hi.resize((panel_w, H), resample=Image.LANCZOS)
+    cbar[:, strip_w:strip_w+panel_w, :] = np.array(panel_lo)
+
+    return np.array(pil_cbar)
+
 
     pil = Image.fromarray(cbar)
     draw = ImageDraw.Draw(pil)
@@ -356,6 +407,8 @@ def _get_font(size: int):
 
 def run():
     st.title("SIF Movie Exporter")
+    OVERLAY_SCALE = 2  # 2x supersampling for higher res text
+
 
     with st.sidebar:
         st.header("Controls")
