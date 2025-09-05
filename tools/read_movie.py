@@ -407,7 +407,7 @@ def _get_font(size: int):
 
 def run():
     st.title("SIF Movie Exporter")
-    OVERLAY_SCALE = 2  # 2x supersampling for higher res text
+    OVERLAY_SCALE = 4  # supersampling for higher res text
 
 
     with st.sidebar:
