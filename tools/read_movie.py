@@ -51,6 +51,8 @@ except Exception as e:
     sif_parser = None
     _sif_import_error = e
 
+OVERLAY_SCALE = 4  # supersampling for higher res text
+
 
 @dataclass
 class Meta:
@@ -407,7 +409,6 @@ def _get_font(size: int):
 
 def run():
     st.title("SIF Movie Exporter")
-    OVERLAY_SCALE = 4  # supersampling for higher res text
 
 
     with st.sidebar:
