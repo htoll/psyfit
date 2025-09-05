@@ -51,7 +51,7 @@ except Exception as e:
     sif_parser = None
     _sif_import_error = e
 
-OVERLAY_SCALE = 4  # supersampling for higher res text
+OVERLAY_SCALE = 2  # supersampling for higher res text
 
 
 @dataclass
