@@ -303,10 +303,10 @@ def run():
                     image_data_cps,
                     df_selected,
                     show_fits=show_fits,
-                    normalization=normalization_to_use,
+                    normalization=normalization,
                     pix_size_um=0.1,
                     cmap=st.session_state.get("monomers_cmap", "magma"),
-                    single_ucnp_brightness = thresholds
+                    single_ucnp_brightness = st.session_state.get("single_ucnp_brightness")
                 )
                 st.pyplot(fig_image)
 
@@ -364,6 +364,7 @@ def run():
                             st.warning("Gaussian fit failed to converge. Cannot perform automatic thresholding.")
                     else:
                         single_ucnp_brightness = st.number_input("Single Particle Brightness", min_value=user_min_val, max_value=user_max_val, value=(user_max_val + user_min_val) / 2)
+                        st.session_state["single_ucnp_brightness"] = single_ucnp_brightness
 
                         t1 = 2 * single_ucnp_brightness #monomer cutoff
                         t2 = 3 * single_ucnp_brightness #dimer cutoff
