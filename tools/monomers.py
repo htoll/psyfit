@@ -143,7 +143,7 @@ def plot_monomer_brightness(
         Line2D([0], [0], color=color_map["Dimers"], lw=2, label="Dimers"),
         Line2D([0], [0], color=color_map["Multimers"], lw=2, label="Multimers"),
     ]
-        ax.legend(handles=legend_elements, loc="upper right", fontsize=8, frameon=False)
+        ax.legend(handles=legend_elements, loc="upper right", fontsize=8, frameon=False, labelcolor = 'white')
 
     plt.tight_layout()
     HWT_aesthetic()  # keep your aesthetic call consistent with the original
