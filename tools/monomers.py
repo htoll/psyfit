@@ -130,7 +130,7 @@ def plot_monomer_brightness(
             circle_color = color_map[cat]
             circle = Circle((x_px, y_px), radius_px,
                             color=circle_color, fill=False,
-                            linewidth=1 * scale, alpha=0.95)
+                            linewidth=1.25 * scale, alpha=0.95)
             ax.add_patch(circle)
 
             ax.text(x_px + 7.5, y_px + 7.5,
