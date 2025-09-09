@@ -363,9 +363,11 @@ def run():
                         else:
                             st.warning("Gaussian fit failed to converge. Cannot perform automatic thresholding.")
                     else:
-                        t1 = st.number_input("Threshold 1", min_value=user_min_val, max_value=user_max_val, value=(user_max_val + user_min_val) / 2)
-                        t2 = st.number_input("Threshold 2", min_value=user_min_val, max_value=user_max_val, value=user_max_val * 0.75)
-                        t3 = st.number_input("Threshold 3", min_value=user_min_val, max_value=user_max_val, value=user_max_val * 0.9)
+                        single_ucnp_brightness = st.number_input("Single Particle Brightness", min_value=user_min_val, max_value=user_max_val, value=(user_max_val + user_min_val) / 2)
+
+                        t1 = 2 * single_ucnp_brightness #monomer cutoff
+                        t2 = 3 * single_ucnp_brightness #dimer cutoff
+                        t3 = 4 * single_ucnp_brightness #multimer cutoff
                         thresholds = sorted([t1, t2, t3])
 
                     if thresholds:
