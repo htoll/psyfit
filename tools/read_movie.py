@@ -282,7 +282,7 @@ def _make_colorbar_with_ticks(height: int, cmap_name: str, vmin_val: float, vmax
     for v in ticks_vals:
         y = val_to_y(v)
         x0 = strip_w - 1
-        draw.line([(x0 - tick_len, y), (x0, y)], fill=(255, 255, 255), width=1, fill = TEXT_COLOR)
+        draw.line([(x0 - tick_len, y), (x0, y)], fill=(255, 255, 255), width=1)
         label = f"{v:.2e}"
         try:
             bbox = draw.textbbox((0, 0), label, font=font)
