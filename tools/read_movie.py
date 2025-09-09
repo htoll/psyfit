@@ -164,147 +164,126 @@ def _overlay_labels(frame_rgb_or_gray: np.ndarray, text: str) -> np.ndarray:
     return np.array(pil)
 
 
-def _make_colorbar_with_ticks(height: int, cmap_name: str, vmin_val: float, vmax_val: float, log_scale: bool) -> np.ndarray:
-    H = int(height)
+def _make_colorbar_with_ticks(
+    height: int,
+    cmap_name: str,
+    vmin_val: float,
+    vmax_val: float,
+    log_scale: bool,
+) -> np.ndarray:
+    """
+    Build a vertical color bar with 5 ticks, scientific-notation labels, and a 'cps' units label.
+    Returns an RGB np.ndarray of shape (H, strip_w + panel_w, 3).
+    """
+    H = int(max(1, height))
     strip_w = 28
-    panel_w = 110  # a bit wider for 5 labels in 1e+XX
+    panel_w = 110  # room for 5 labels like 1.23e+04
     bar_h = int(round(0.75 * H))
     top_pad = (H - bar_h) // 2
 
-    # Build the color strip at 1x height (bar only)
-    grad = np.linspace(1, 0, bar_h, dtype=np.float32)[:, None]
-    if cmap_name.lower() in ("gray", "grey"):
-        gray = (grad * 255.0).astype(np.uint8)
-        strip = np.repeat(gray, strip_w, axis=1)
-        strip_rgb = np.stack([strip, strip, strip], axis=-1)
-    else:
-        cmap = mpl_cm.get_cmap(cmap_name)
-        rgba = cmap(grad)
-        rgb = (rgba[..., :3] * 255.0).astype(np.uint8)
-        strip_rgb = np.repeat(rgb, strip_w, axis=1)
+    # ---- Build the color strip (bar_h x strip_w x 3) ----
+    grad = np.linspace(1.0, 0.0, bar_h, dtype=np.float32)[:, None]  # 1 at top -> 0 at bottom
 
-    # Compose full canvas (H x (strip+panel)), black
-    cbar = np.zeros((H, strip_w + panel_w, 3), dtype=np.uint8)
-    cbar[top_pad:top_pad+bar_h, :strip_w, :] = strip_rgb
+    def _strip_rgb():
+        name = (cmap_name or "").lower()
+        if name in ("gray", "grey"):
+            strip = (grad * 255.0).astype(np.uint8)                   # (bar_h, 1)
+            strip = np.repeat(strip, strip_w, axis=1)                 # (bar_h, strip_w)
+            return np.stack([strip, strip, strip], axis=-1)           # (bar_h, strip_w, 3)
+        else:
+            try:
+                cmap = mpl_cm.get_cmap(cmap_name)
+            except Exception:
+                cmap = mpl_cm.get_cmap("viridis")
+            rgba = cmap(grad)                                         # (bar_h, 1, 4)
+            rgb = (rgba[..., :3] * 255.0).astype(np.uint8)            # (bar_h, 1, 3)
+            return np.repeat(rgb, strip_w, axis=1)                    # (bar_h, strip_w, 3)
 
-    # ---- draw ticks/labels on a supersampled panel for crisp text ----
-    if Image is None:
-        return cbar
+    strip_rgb = _strip_rgb()
 
-    # Create a supersampled panel
-    panel_hi = Image.new("RGB", (panel_w * OVERLAY_SCALE, H * OVERLAY_SCALE), (0, 0, 0))
-    draw = ImageDraw.Draw(panel_hi)
-    font_px = max(12, int(0.032 * H) ) * OVERLAY_SCALE
-    font = _get_font(font_px)
+    # ---- Create final canvas (one place to draw/paste everything) ----
+    canvas = Image.new("RGB", (strip_w + panel_w, H), (0, 0, 0))
+    WHITE = (255, 255, 255)
 
-    # 5 ticks (linear or log)
-    if log_scale and (vmin_val > 0) and np.isfinite(vmin_val) and np.isfinite(vmax_val) and (vmax_val > vmin_val):
+    # Paste the strip centered vertically with top_pad
+    canvas.paste(Image.fromarray(strip_rgb), (0, top_pad))
+    draw_canvas = ImageDraw.Draw(canvas)
+
+    # ---- Tick values + normalization ----
+    finite = np.isfinite(vmin_val) and np.isfinite(vmax_val)
+    use_log = log_scale and finite and (vmin_val > 0) and (vmax_val > vmin_val)
+
+    if use_log:
         ticks_vals = np.geomspace(vmin_val, vmax_val, 5)
-        def norm_fn(v): return (np.log(v) - np.log(vmin_val)) / (np.log(vmax_val) - np.log(vmin_val))
+        den = (np.log(vmax_val) - np.log(vmin_val))
+        def norm_fn(v: float) -> float:
+            return (np.log(v) - np.log(vmin_val)) / den
     else:
+        if not finite or vmax_val == vmin_val:
+            # fall back to a simple 0..1 range to avoid division by zero/NaN
+            vmin_val, vmax_val = 0.0, 1.0
         ticks_vals = np.linspace(vmin_val, vmax_val, 5)
-        def norm_fn(v): return (v - vmin_val) / (vmax_val - vmin_val) if vmax_val != vmin_val else 0.0
+        den = (vmax_val - vmin_val)
+        def norm_fn(v: float) -> float:
+            return (v - vmin_val) / den
 
-    def val_to_y_hi(v):
-        t = float(np.clip(norm_fn(v), 0, 1))
-        y_bar = int(round((1 - t) * (bar_h - 1)))  # 0..bar_h-1
-        return (top_pad + y_bar) * OVERLAY_SCALE
+    def val_to_y(v: float) -> int:
+        """Map value v into canvas Y (0 at top)."""
+        t = float(np.clip(norm_fn(float(v)), 0.0, 1.0))
+        y_bar = int(round((1.0 - t) * (bar_h - 1)))   # 0..bar_h-1, 0 is top of bar
+        return top_pad + y_bar
 
-    # Draw ticks on original strip (1x) and labels on hi-res panel
-    # First, draw white tick marks along strip edge on the cbar
-    pil_cbar = Image.fromarray(cbar)
-    draw_cbar = ImageDraw.Draw(pil_cbar)
+    # ---- Draw tick marks on the strip edge (on the same canvas) ----
     tick_len = 6
-    for v in ticks_vals:
-        y = top_pad + int(round((1 - float(np.clip(norm_fn(v), 0, 1))) * (bar_h - 1)))
-        x0 = strip_w - 1
-        draw_cbar.line([(x0 - tick_len, y), (x0, y)], fill=(255, 255, 255), width=1)
-
-    # Now labels in hi-res panel
-    label_pad_x = 6 * OVERLAY_SCALE
-    for v in ticks_vals:
-        y_hi = val_to_y_hi(v)
-        label = f"{v:.2e}"
-        try:
-            bbox = draw.textbbox((0, 0), label, font=font)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        except Exception:
-            tw, th = (60 * OVERLAY_SCALE, 12 * OVERLAY_SCALE)
-        draw.text((label_pad_x, max(0, y_hi - th // 2)), label, fill=(255, 255, 255), font=font)
-
-    # Units, top-right, away from labels
-    units = "cps"
-    try:
-        bbox_u = draw.textbbox((0, 0), units, font=font)
-        uw, uh = bbox_u[2] - bbox_u[0], bbox_u[3] - bbox_u[1]
-    except Exception:
-        uw, uh = (28 * OVERLAY_SCALE, 12 * OVERLAY_SCALE)
-    unit_x = panel_w * OVERLAY_SCALE - uw - 6 * OVERLAY_SCALE
-    unit_y = max(6 * OVERLAY_SCALE, top_pad * OVERLAY_SCALE - uh - 6 * OVERLAY_SCALE)
-    draw.text((unit_x, unit_y), units, fill=(255, 255, 255), font=font)
-
-    # Downsample hi-res panel to 1x with LANCZOS and paste onto cbar
-    panel_lo = panel_hi.resize((panel_w, H), resample=Image.LANCZOS)
-    cbar[:, strip_w:strip_w+panel_w, :] = np.array(panel_lo)
-
-    return np.array(pil_cbar)
-
-
-    pil = Image.fromarray(cbar)
-    draw = ImageDraw.Draw(pil)
-    font = _get_font(12)
-
-    # Tick values (5)
-    if log_scale and (vmin_val > 0) and np.isfinite(vmin_val) and np.isfinite(vmax_val) and (vmax_val > vmin_val):
-        ticks_vals = np.geomspace(vmin_val, vmax_val, 5)
-        def norm_fn(v):
-            return (np.log(v) - np.log(vmin_val)) / (np.log(vmax_val) - np.log(vmin_val))
-    else:
-        ticks_vals = np.linspace(vmin_val, vmax_val, 5)
-        def norm_fn(v):
-            return (v - vmin_val) / (vmax_val - vmin_val) if vmax_val != vmin_val else 0.0
-
-    # Value → y coord within bar (0=top of bar, bar_h=bottom)
-    def val_to_y(v):
-        t = float(np.clip(norm_fn(v), 0, 1))
-        return top_pad + int(round((1 - t) * (bar_h - 1)))
-
-    TEXT_COLOR = {
-    "L": 255,                 # grayscale
-    "RGB": (255, 255, 255),
-    "RGBA": (255, 255, 255, 255)
-}.get(img.mode, (255, 255, 255))  # fallback
-    
-    # Draw ticks + labels
-    tick_len = 6
-    label_pad_x = 4
-    label_positions = []
+    x_edge = strip_w - 1
     for v in ticks_vals:
         y = val_to_y(v)
-        x0 = strip_w - 1
-        draw.line([(x0 - tick_len, y), (x0, y)], fill=(255, 255, 255), width=1)
+        draw_canvas.line([(x_edge - tick_len, y), (x_edge, y)], fill=WHITE, width=1)
+
+    # ---- Supersampled label panel ----
+    # Use configured OVERLAY_SCALE if present; otherwise default to 2x
+    scale = globals().get("OVERLAY_SCALE", 2)
+    panel_hi = Image.new("RGB", (panel_w * scale, H * scale), (0, 0, 0))
+    draw_panel = ImageDraw.Draw(panel_hi)
+
+    # Font
+    font_px = max(12, int(0.032 * H)) * scale
+    try:
+        font = _get_font(font_px)  # use your existing font loader
+    except Exception:
+        from PIL import ImageFont
+        font = ImageFont.load_default()
+
+    # Tick labels
+    label_pad_x = 6 * scale
+    for v in ticks_vals:
+        y_hi = val_to_y(v) * scale
         label = f"{v:.2e}"
         try:
-            bbox = draw.textbbox((0, 0), label, font=font)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            bbox = draw_panel.textbbox((0, 0), label, font=font)
+            _, _, tw, th = bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]
         except Exception:
-            tw, th = (60, 12)
-        draw.text((strip_w + label_pad_x, max(0, y - th // 2)),
-                  label, fill=(255, 255, 255), font=font)
-        label_positions.append((y, th))
+            tw, th = 60 * scale, 12 * scale
+        draw_panel.text((label_pad_x, max(0, y_hi - th // 2)), label, fill=WHITE, font=font)
 
-    # Units label "cps" in white, top-right of panel, safely away from ticks
+    # Units (top-right, away from ticks)
     units = "cps"
     try:
-        bbox_u = draw.textbbox((0, 0), units, font=font)
+        bbox_u = draw_panel.textbbox((0, 0), units, font=font)
         uw, uh = bbox_u[2] - bbox_u[0], bbox_u[3] - bbox_u[1]
     except Exception:
-        uw, uh = (28, 12)
-    unit_x = strip_w + panel_w - uw - 4
-    unit_y = max(4, top_pad - uh - 4)  # just above the bar
-    draw.text((unit_x, unit_y), units, fill=(255, 255, 255), font=font)
+        uw, uh = 28 * scale, 12 * scale
+    unit_x = panel_w * scale - uw - 6 * scale
+    unit_y = max(6 * scale, top_pad * scale - uh - 6 * scale)
+    draw_panel.text((unit_x, unit_y), units, fill=WHITE, font=font)
 
-    return np.array(pil)
+    # Downsample the label panel and paste onto the same final canvas
+    panel_lo = panel_hi.resize((panel_w, H), resample=Image.LANCZOS)
+    canvas.paste(panel_lo, (strip_w, 0))
+
+    # ---- Return the finished image ----
+    return np.array(canvas)
+
 
 
 
