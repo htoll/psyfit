@@ -66,6 +66,8 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
         image_data_cps = image_data_cps[256:512, 256:512]
     elif region == 'custom': #accounting for misaligned 638 beam on 250610
         image_data_cps = image_data_cps[312:512, 56:256]
+    elif region == "Mr Beam":
+        image_data_cps = image_data_cps[:280, :280]
 
     # else → 'all': use full image
 

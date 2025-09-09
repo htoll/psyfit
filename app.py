@@ -51,14 +51,14 @@ tool = st.sidebar.radio("Analyze:", [
     "Monomer Estimation",
     "Process Movie",
    # "Plot CSVs",
-    "Spherical NP TEM"
+    "Spherical NP TEM",
+    "Get spectra"
     
 ])
 col1, col2 = st.columns([1, 2])
 
 if tool == "Brightness":
     analyze_single_sif.run()
-
 
 # Tool: Analyze Colocalization Set
 elif tool == "Dye Colocalization":
@@ -85,5 +85,8 @@ elif tool == "Process Movie":
 
 elif tool =="Spherical NP TEM":
     spherical_tem.run()
+
+elif tool == "Get spectra":
+    get_spectra.run()
 
 
