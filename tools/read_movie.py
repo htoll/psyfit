@@ -302,7 +302,7 @@ def _make_colorbar_with_ticks(height: int, cmap_name: str, vmin_val: float, vmax
         uw, uh = (28, 12)
     unit_x = strip_w + panel_w - uw - 4
     unit_y = max(4, top_pad - uh - 4)  # just above the bar
-    draw.text((unit_x, unit_y), units, fill=(255, 255, 255), font=font
+    draw.text((unit_x, unit_y), units, fill=(255, 255, 255), font=font)
 
     return np.array(pil)
 
