@@ -269,6 +269,12 @@ def _make_colorbar_with_ticks(height: int, cmap_name: str, vmin_val: float, vmax
         t = float(np.clip(norm_fn(v), 0, 1))
         return top_pad + int(round((1 - t) * (bar_h - 1)))
 
+    TEXT_COLOR = {
+    "L": 255,                 # grayscale
+    "RGB": (255, 255, 255),
+    "RGBA": (255, 255, 255, 255)
+}.get(img.mode, (255, 255, 255))  # fallback
+    
     # Draw ticks + labels
     tick_len = 6
     label_pad_x = 4
@@ -276,7 +282,7 @@ def _make_colorbar_with_ticks(height: int, cmap_name: str, vmin_val: float, vmax
     for v in ticks_vals:
         y = val_to_y(v)
         x0 = strip_w - 1
-        draw.line([(x0 - tick_len, y), (x0, y)], fill=(255, 255, 255), width=1)
+        draw.line([(x0 - tick_len, y), (x0, y)], fill=(255, 255, 255), width=1, fill = TEXT_COLOR)
         label = f"{v:.2e}"
         try:
             bbox = draw.textbbox((0, 0), label, font=font)
@@ -284,7 +290,7 @@ def _make_colorbar_with_ticks(height: int, cmap_name: str, vmin_val: float, vmax
         except Exception:
             tw, th = (60, 12)
         draw.text((strip_w + label_pad_x, max(0, y - th // 2)),
-                  label, fill=(255, 255, 255), font=font)
+                  label, fill=(255, 255, 255), font=font, fill = TEXT_COLOR)
         label_positions.append((y, th))
 
     # Units label "cps" in white, top-right of panel, safely away from ticks
@@ -296,7 +302,7 @@ def _make_colorbar_with_ticks(height: int, cmap_name: str, vmin_val: float, vmax
         uw, uh = (28, 12)
     unit_x = strip_w + panel_w - uw - 4
     unit_y = max(4, top_pad - uh - 4)  # just above the bar
-    draw.text((unit_x, unit_y), units, fill=(255, 255, 255), font=font)
+    draw.text((unit_x, unit_y), units, fill=(255, 255, 255), font=font, fill = TEXT_COLOR)
 
     return np.array(pil)
 
