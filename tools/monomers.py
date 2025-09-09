@@ -117,7 +117,7 @@ def plot_monomer_brightness(
             brightness_pps = row['brightness_fit']
             brightness_kpps = brightness_pps / 1000.0
 
-            radius_px = 2 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
+            radius_px = 3 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
 
             # Categorize by brightness
             if brightness_pps < single_np_cutoff:
@@ -130,7 +130,7 @@ def plot_monomer_brightness(
             circle_color = color_map[cat]
             circle = Circle((x_px, y_px), radius_px,
                             color=circle_color, fill=False,
-                            linewidth=1 * scale, alpha=0.9)
+                            linewidth=1 * scale, alpha=0.95)
             ax.add_patch(circle)
 
             ax.text(x_px + 7.5, y_px + 7.5,
