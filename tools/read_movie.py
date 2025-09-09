@@ -267,7 +267,7 @@ def _make_colorbar_with_ticks(
         draw_panel.text((label_pad_x, max(0, y_hi - th // 2)), label, fill=WHITE, font=font)
 
     # Units (top-right, away from ticks)
-    units = "cps"
+    units = "pps"
     try:
         bbox_u = draw_panel.textbbox((0, 0), units, font=font)
         uw, uh = bbox_u[2] - bbox_u[0], bbox_u[3] - bbox_u[1]
