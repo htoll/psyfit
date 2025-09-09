@@ -36,6 +36,112 @@ def _normalize_saved_values(values_iterable):
             normalized.append((name, v))
     return normalized
 
+from matplotlib.patches import Circle
+from matplotlib.colors import LogNorm
+import matplotlib.pyplot as plt
+import numpy as np
+
+def plot_monomer_brightness(
+    image_data_cps,
+    df,
+    show_fits=True,
+    plot_brightness_histogram=False,
+    normalization=False,
+    pix_size_um=0.1,
+    cmap='magma',
+    single_ucnp_brightness=None
+):
+    """
+    Plot brightness map and overlay Gaussian-fit circles colored by brightness category.
+
+    Categories:
+      - Monomers: brightness_fit < 2 * single_ucnp_brightness
+      - Dimers:   2 * single_ucnp_brightness <= brightness_fit < 3 * single_ucnp_brightness
+      - Multimers:brightness_fit >= 3 * single_ucnp_brightness
+
+    Notes:
+      - `single_ucnp_brightness` defaults to np.mean(image_data_cps).
+      - Thresholds are compared in the same units as `row['brightness_fit']`.
+    """
+
+    # --- figure sizing and normalization ---
+    fig_width, fig_height = 5, 5
+    scale = fig_width / 5
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
+    norm = LogNorm() if normalization else None
+    im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=norm, origin='lower')
+    ax.tick_params(axis='both', length=0,
+                   labelleft=False, labelright=False,
+                   labeltop=False, labelbottom=False)
+
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.ax.tick_params(labelsize=10 * scale)
+    cbar.set_label('pps', fontsize=10 * scale)
+
+    # --- thresholds & colors ---
+    if single_ucnp_brightness is None:
+        single_ucnp_brightness = float(np.mean(image_data_cps))
+
+    single_np_cutoff = 2.0 * single_ucnp_brightness
+    dimer_cutoff     = 3.0 * single_ucnp_brightness
+    # multimer_cutoff  = 4.0 * single_ucnp_brightness  # kept for reference, not needed for 3 bins
+
+    category_counts = ["Monomers", "Dimers", "Multimers"]
+
+    # Pull colors from your house palette
+    palette = HWT_aesthetic()
+    try:
+        region_colors = list(palette)[:len(category_counts)]
+    except Exception:
+        # Fallback colors if HWT_aesthetic() doesn't return a list of colors
+        region_colors = ['white', 'cyan', 'magenta']
+
+    # Safe-guard if palette shorter than needed
+    while len(region_colors) < len(category_counts):
+        region_colors.append('white')
+
+    color_map = {
+        "Monomers":  region_colors[0],
+        "Dimers":    region_colors[1],
+        "Multimers": region_colors[2],
+    }
+
+    # --- overlay fits ---
+    if show_fits:
+        for _, row in df.iterrows():
+            x_px = row['x_pix']
+            y_px = row['y_pix']
+
+            # NOTE: brightness_fit is assumed in pps to match cutoffs.
+            brightness_pps = row['brightness_fit']
+            brightness_kpps = brightness_pps / 1000.0
+
+            radius_px = 2 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
+
+            # Categorize by brightness
+            if brightness_pps < single_np_cutoff:
+                cat = "Monomers"
+            elif brightness_pps < dimer_cutoff:
+                cat = "Dimers"
+            else:
+                cat = "Multimers"
+
+            circle_color = color_map[cat]
+            circle = Circle((x_px, y_px), radius_px,
+                            color=circle_color, fill=False,
+                            linewidth=1 * scale, alpha=0.9)
+            ax.add_patch(circle)
+
+            ax.text(x_px + 7.5, y_px + 7.5,
+                    f"{brightness_kpps:.1f} kpps",
+                    color='white', fontsize=7 * scale,
+                    ha='center', va='center')
+
+    plt.tight_layout()
+    HWT_aesthetic()  # keep your aesthetic call consistent with the original
+    return fig
+
 
 @st.cache_data(show_spinner=False)
 def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3):
@@ -193,13 +299,14 @@ def run():
                 image_data_cps = data_to_plot["image"]
                 normalization_to_use = LogNorm() if normalization else None
 
-                fig_image = plot_brightness(
+                fig_image = plot_monomer_brightness(
                     image_data_cps,
                     df_selected,
                     show_fits=show_fits,
                     normalization=normalization_to_use,
                     pix_size_um=0.1,
                     cmap=st.session_state.get("monomers_cmap", "magma"),
+                    single_ucnp_brightness = thresholds
                 )
                 st.pyplot(fig_image)
 
