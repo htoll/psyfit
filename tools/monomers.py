@@ -7,6 +7,7 @@ from matplotlib.colors import LogNorm
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import plotly.express as px
+from matplotlib.lines import Line2D
 
 from utils import plot_brightness, plot_histogram, HWT_aesthetic
 from tools.process_files import process_files
@@ -137,6 +138,12 @@ def plot_monomer_brightness(
                     f"{brightness_kpps:.1f} kpps",
                     color='white', fontsize=7 * scale,
                     ha='center', va='center')
+        legend_elements = [
+        Line2D([0], [0], color=color_map["Monomers"], lw=2, label="Monomers"),
+        Line2D([0], [0], color=color_map["Dimers"], lw=2, label="Dimers"),
+        Line2D([0], [0], color=color_map["Multimers"], lw=2, label="Multimers"),
+    ]
+        ax.legend(handles=legend_elements, loc="upper right", fontsize=8, frameon=False)
 
     plt.tight_layout()
     HWT_aesthetic()  # keep your aesthetic call consistent with the original
