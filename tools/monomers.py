@@ -360,42 +360,42 @@ def run():
                     st.pyplot(fig_hist_final)
 
 
-                        with plot_col1:
-                            bins_for_pie = [user_min_val] + thresholds + [user_max_val]  # [min, 2x, 3x, 4x, max]
-                            num_bins_pie = len(bins_for_pie) - 1
-                            labels_for_pie = CATEGORY_ORDER[:num_bins_pie]  # should be 4 if full range shown
-                        
-                            if len(labels_for_pie) != num_bins_pie:
-                                st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins_pie} bins.")
-                            else:
-                                categories = pd.cut(
-                                    combined_df['brightness_fit'],
-                                    bins=bins_for_pie,
-                                    right=False,
-                                    include_lowest=True,
-                                    labels=labels_for_pie
-                                )
-                                category_counts = categories.value_counts().reset_index()
-                                category_counts.columns = ['Category', 'Count']
-                        
-                                # Force consistent color order by label
-                                plotly_colors = [mcolors.to_hex(CATEGORY_COLORS[label]) for label in labels_for_pie]
-                        
-                                fig_pie = px.pie(
-                                    category_counts,
-                                    values='Count',
-                                    names='Category',
-                                    color='Category',
-                                    color_discrete_map=CATEGORY_COLORS
-                                )
-                                # Larger fonts for readability
-                                fig_pie.update_traces(textposition='inside', textinfo='percent+label', textfont_size=18)
-                                fig_pie.update_layout(
-                                    font=dict(size=18),
-                                    legend=dict(font=dict(size=16)),
-                                    margin=dict(l=0, r=0, t=0, b=0)
-                                )
-                                st.plotly_chart(fig_pie, use_container_width=True)
+                    with plot_col1:
+                        bins_for_pie = [user_min_val] + thresholds + [user_max_val]  # [min, 2x, 3x, 4x, max]
+                        num_bins_pie = len(bins_for_pie) - 1
+                        labels_for_pie = CATEGORY_ORDER[:num_bins_pie]  # should be 4 if full range shown
+                    
+                        if len(labels_for_pie) != num_bins_pie:
+                            st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins_pie} bins.")
+                        else:
+                            categories = pd.cut(
+                                combined_df['brightness_fit'],
+                                bins=bins_for_pie,
+                                right=False,
+                                include_lowest=True,
+                                labels=labels_for_pie
+                            )
+                            category_counts = categories.value_counts().reset_index()
+                            category_counts.columns = ['Category', 'Count']
+                    
+                            # Force consistent color order by label
+                            plotly_colors = [mcolors.to_hex(CATEGORY_COLORS[label]) for label in labels_for_pie]
+                    
+                            fig_pie = px.pie(
+                                category_counts,
+                                values='Count',
+                                names='Category',
+                                color='Category',
+                                color_discrete_map=CATEGORY_COLORS
+                            )
+                            # Larger fonts for readability
+                            fig_pie.update_traces(textposition='inside', textinfo='percent+label', textfont_size=18)
+                            fig_pie.update_layout(
+                                font=dict(size=18),
+                                legend=dict(font=dict(size=16)),
+                                margin=dict(l=0, r=0, t=0, b=0)
+                            )
+                            st.plotly_chart(fig_pie, use_container_width=True)
 
                     else:
                         st.pyplot(fig_hist)
