@@ -397,9 +397,6 @@ def run():
                             )
                             st.plotly_chart(fig_pie, use_container_width=True)
 
-                    else:
-                        st.pyplot(fig_hist)
-
         # Summary PSF count bar plot in left column (col1)
         with col1:
             if st.session_state.get("processed"):
