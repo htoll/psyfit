@@ -14,10 +14,10 @@ from tools.process_files import process_files
 
 CATEGORY_ORDER = ["Monomers", "Dimers", "Trimers", "Multimers"]
 CATEGORY_COLORS = {
-    "Monomers":  "#2ca02c",  # green
-    "Dimers":    "#1f77b4",  # blue
-    "Trimers":   "#ff7f0e",  # orange
-    "Multimers": "#d62728",  # red
+    "Monomers":  "#029E73",  # green
+    "Dimers":    "#0173B2",  # blue
+    "Trimers":   "#DE8F05",  # orange
+    "Multimers": "#D55E00",  # red
 }
 
 def thresholds_from_single_brightness(single_ucnp_brightness: float):
