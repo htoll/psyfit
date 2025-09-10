@@ -138,50 +138,6 @@ def plot_monomer_brightness(
     plt.tight_layout()
     HWT_aesthetic()
     return fig
-3) Make the histogram thresholds match the overlay (2x, 3x, 4x)
-In the right-hand column where you build the histogram, replace the “thresholding method” UI with a single “Single Particle Brightness” input and then derive thresholds via the helper above. Here’s the whole replacement for that block:
-
-python
-Copy code
-# Get defaults
-brightness_vals = combined_df['brightness_fit'].values
-default_min_val = float(np.min(brightness_vals))
-default_max_val = float(np.max(brightness_vals))
-
-user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
-user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
-
-try:
-    user_min_val = float(user_min_val_str); user_max_val = float(user_max_val_str)
-except ValueError:
-    st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
-    st.stop()
-
-if user_min_val >= user_max_val:
-    st.warning("Min brightness must be less than max brightness.")
-else:
-    num_bins = st.number_input("# Bins:", value=50)
-
-    # Single-particle brightness drives thresholds everywhere
-    # default to previous session value or to mean image intensity if missing
-    default_spb = st.session_state.get("single_ucnp_brightness", float(np.mean(brightness_vals)))
-    single_ucnp_brightness = st.number_input(
-        "Single Particle Brightness (pps)",
-        min_value=user_min_val, max_value=user_max_val, value=float(default_spb)
-    )
-    st.session_state["single_ucnp_brightness"] = float(single_ucnp_brightness)
-
-    thresholds = thresholds_from_single_brightness(single_ucnp_brightness)
-
-    # Plot the histogram with unified thresholds
-    fig_hist_final, _, _ = plot_histogram(
-        combined_df,
-        min_val=user_min_val,
-        max_val=user_max_val,
-        num_bins=num_bins,
-        thresholds=thresholds
-    )
-    st.pyplot(fig_hist_final)
 
 @st.cache_data(show_spinner=False)
 def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3):
@@ -363,63 +319,46 @@ def run():
 
         with plot_col2:
             if not combined_df.empty:
+                # Get defaults
                 brightness_vals = combined_df['brightness_fit'].values
                 default_min_val = float(np.min(brightness_vals))
                 default_max_val = float(np.max(brightness_vals))
-
+                
                 user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
                 user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
-
+                
                 try:
                     user_min_val = float(user_min_val_str); user_max_val = float(user_max_val_str)
                 except ValueError:
                     st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
                     st.stop()
-
+                
                 if user_min_val >= user_max_val:
                     st.warning("Min brightness must be less than max brightness.")
                 else:
-                    thresholding_method = st.selectbox(
-                        "Choose thresholding method:",
-                        options=["Automatic (Mu/Sigma)", "Manual"],
-                        help="Automatic sets thresholds at 1.5μ, 2.5μ, 3.5μ"
-                    )
                     num_bins = st.number_input("# Bins:", value=50)
-
-                    fig_hist, mu, sigma = plot_histogram(
+                
+                    # Single-particle brightness drives thresholds everywhere
+                    # default to previous session value or to mean image intensity if missing
+                    default_spb = st.session_state.get("single_ucnp_brightness", float(np.mean(brightness_vals)))
+                    single_ucnp_brightness = st.number_input(
+                        "Single Particle Brightness (pps)",
+                        min_value=user_min_val, max_value=user_max_val, value=float(default_spb)
+                    )
+                    st.session_state["single_ucnp_brightness"] = float(single_ucnp_brightness)
+                
+                    thresholds = thresholds_from_single_brightness(single_ucnp_brightness)
+                
+                    # Plot the histogram with unified thresholds
+                    fig_hist_final, _, _ = plot_histogram(
                         combined_df,
                         min_val=user_min_val,
                         max_val=user_max_val,
-                        num_bins=num_bins
+                        num_bins=num_bins,
+                        thresholds=thresholds
                     )
+                    st.pyplot(fig_hist_final)
 
-                    thresholds = []
-                    if thresholding_method == "Automatic (Mu/Sigma)":
-                        if mu is not None and sigma is not None:
-                            for k in range(1, 4):
-                                t = (2 * k + 1) / 2 * mu
-                                if user_min_val < t < user_max_val:
-                                    thresholds.append(t)
-                        else:
-                            st.warning("Gaussian fit failed to converge. Cannot perform automatic thresholding.")
-                    else:
-                        single_ucnp_brightness = st.number_input("Single Particle Brightness", min_value=user_min_val, max_value=user_max_val, value=(user_max_val + user_min_val) / 2)
-                        st.session_state["single_ucnp_brightness"] = single_ucnp_brightness
-
-                        t1 = 2 * single_ucnp_brightness #monomer cutoff
-                        t2 = 3 * single_ucnp_brightness #dimer cutoff
-                        t3 = 4 * single_ucnp_brightness #multimer cutoff
-                        thresholds = sorted([t1, t2, t3])
-
-                    if thresholds:
-                        fig_hist_final, _, _ = plot_histogram(
-                            combined_df,
-                            min_val=user_min_val,
-                            max_val=user_max_val,
-                            num_bins=num_bins,
-                            thresholds=thresholds
-                        )
-                        st.pyplot(fig_hist_final)
 
                         with plot_col1:
                             bins_for_pie = [user_min_val] + thresholds + [user_max_val]  # [min, 2x, 3x, 4x, max]
