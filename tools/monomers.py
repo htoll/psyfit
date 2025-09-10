@@ -12,6 +12,23 @@ from matplotlib.lines import Line2D
 from utils import plot_brightness, plot_histogram, HWT_aesthetic
 from tools.process_files import process_files
 
+CATEGORY_ORDER = ["Monomers", "Dimers", "Trimers", "Multimers"]
+CATEGORY_COLORS = {
+    "Monomers":  "#2ca02c",  # green
+    "Dimers":    "#1f77b4",  # blue
+    "Trimers":   "#ff7f0e",  # orange
+    "Multimers": "#d62728",  # red
+}
+
+def thresholds_from_single_brightness(single_ucnp_brightness: float):
+    """
+    Return brightness thresholds [t1, t2, t3] in pps
+    that split Monomers < 2x, 2x<=Dimers<3x, 3x<=Trimers<4x, >=4x Multimers.
+    """
+    t1 = 2.0 * single_ucnp_brightness
+    t2 = 3.0 * single_ucnp_brightness
+    t3 = 4.0 * single_ucnp_brightness
+    return [t1, t2, t3]
 
 def _hash_file(uploaded_file):
     uploaded_file.seek(0)
@@ -58,14 +75,9 @@ def plot_monomer_brightness(
     Categories:
       - Monomers: brightness_fit < 2 * single_ucnp_brightness
       - Dimers:   2 * single_ucnp_brightness <= brightness_fit < 3 * single_ucnp_brightness
-      - Multimers:brightness_fit >= 3 * single_ucnp_brightness
-
-    Notes:
-      - `single_ucnp_brightness` defaults to np.mean(image_data_cps).
-      - Thresholds are compared in the same units as `row['brightness_fit']`.
+      - Trimers:  3 * single_ucnp_brightness <= brightness_fit < 4 * single_ucnp_brightness
+      - Multimers:brightness_fit >= 4 * single_ucnp_brightness
     """
-
-    # --- figure sizing and normalization ---
     fig_width, fig_height = 5, 5
     scale = fig_width / 5
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
@@ -80,55 +92,31 @@ def plot_monomer_brightness(
     cbar.ax.tick_params(labelsize=10 * scale)
     cbar.set_label('pps', fontsize=10 * scale)
 
-    # --- thresholds & colors ---
     if single_ucnp_brightness is None:
         single_ucnp_brightness = float(np.mean(image_data_cps))
 
-    single_np_cutoff = 2.0 * single_ucnp_brightness
-    dimer_cutoff     = 3.0 * single_ucnp_brightness
-    # multimer_cutoff  = 4.0 * single_ucnp_brightness  # kept for reference, not needed for 3 bins
+    t1, t2, t3 = thresholds_from_single_brightness(single_ucnp_brightness)
 
-    category_counts = ["Monomers", "Dimers", "Multimers"]
-
-    # Pull colors from your house palette
-    palette = HWT_aesthetic()
-    try:
-        region_colors = list(palette)[:len(category_counts)]
-    except Exception:
-        # Fallback colors if HWT_aesthetic() doesn't return a list of colors
-        region_colors = ['white', 'cyan', 'magenta']
-
-    # Safe-guard if palette shorter than needed
-    while len(region_colors) < len(category_counts):
-        region_colors.append('white')
-
-    color_map = {
-        "Monomers":  region_colors[0],
-        "Dimers":    region_colors[1],
-        "Multimers": region_colors[2],
-    }
-
-    # --- overlay fits ---
     if show_fits:
         for _, row in df.iterrows():
             x_px = row['x_pix']
             y_px = row['y_pix']
-
-            # NOTE: brightness_fit is assumed in pps to match cutoffs.
             brightness_pps = row['brightness_fit']
             brightness_kpps = brightness_pps / 1000.0
 
             radius_px = 3 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
 
-            # Categorize by brightness
-            if brightness_pps < single_np_cutoff:
+            # Categorize by brightness (4 bins)
+            if brightness_pps < t1:
                 cat = "Monomers"
-            elif brightness_pps < dimer_cutoff:
+            elif brightness_pps < t2:
                 cat = "Dimers"
+            elif brightness_pps < t3:
+                cat = "Trimers"
             else:
                 cat = "Multimers"
 
-            circle_color = color_map[cat]
+            circle_color = CATEGORY_COLORS[cat]
             circle = Circle((x_px, y_px), radius_px,
                             color=circle_color, fill=False,
                             linewidth=1.25 * scale, alpha=0.95)
@@ -138,17 +126,62 @@ def plot_monomer_brightness(
                     f"{brightness_kpps:.1f} kpps",
                     color='white', fontsize=7 * scale,
                     ha='center', va='center')
+
         legend_elements = [
-        Line2D([0], [0], color=color_map["Monomers"], lw=2, label="Monomers"),
-        Line2D([0], [0], color=color_map["Dimers"], lw=2, label="Dimers"),
-        Line2D([0], [0], color=color_map["Multimers"], lw=2, label="Multimers"),
-    ]
-        ax.legend(handles=legend_elements, loc="upper right", fontsize=8, frameon=False, labelcolor = 'white')
+            Line2D([0], [0], color=CATEGORY_COLORS["Monomers"], lw=2, label="Monomers"),
+            Line2D([0], [0], color=CATEGORY_COLORS["Dimers"],   lw=2, label="Dimers"),
+            Line2D([0], [0], color=CATEGORY_COLORS["Trimers"],  lw=2, label="Trimers"),
+            Line2D([0], [0], color=CATEGORY_COLORS["Multimers"],lw=2, label="Multimers"),
+        ]
+        ax.legend(handles=legend_elements, loc="upper right", fontsize=8, frameon=False, labelcolor='white')
 
     plt.tight_layout()
-    HWT_aesthetic()  # keep your aesthetic call consistent with the original
+    HWT_aesthetic()
     return fig
+3) Make the histogram thresholds match the overlay (2x, 3x, 4x)
+In the right-hand column where you build the histogram, replace the “thresholding method” UI with a single “Single Particle Brightness” input and then derive thresholds via the helper above. Here’s the whole replacement for that block:
 
+python
+Copy code
+# Get defaults
+brightness_vals = combined_df['brightness_fit'].values
+default_min_val = float(np.min(brightness_vals))
+default_max_val = float(np.max(brightness_vals))
+
+user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
+user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
+
+try:
+    user_min_val = float(user_min_val_str); user_max_val = float(user_max_val_str)
+except ValueError:
+    st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
+    st.stop()
+
+if user_min_val >= user_max_val:
+    st.warning("Min brightness must be less than max brightness.")
+else:
+    num_bins = st.number_input("# Bins:", value=50)
+
+    # Single-particle brightness drives thresholds everywhere
+    # default to previous session value or to mean image intensity if missing
+    default_spb = st.session_state.get("single_ucnp_brightness", float(np.mean(brightness_vals)))
+    single_ucnp_brightness = st.number_input(
+        "Single Particle Brightness (pps)",
+        min_value=user_min_val, max_value=user_max_val, value=float(default_spb)
+    )
+    st.session_state["single_ucnp_brightness"] = float(single_ucnp_brightness)
+
+    thresholds = thresholds_from_single_brightness(single_ucnp_brightness)
+
+    # Plot the histogram with unified thresholds
+    fig_hist_final, _, _ = plot_histogram(
+        combined_df,
+        min_val=user_min_val,
+        max_val=user_max_val,
+        num_bins=num_bins,
+        thresholds=thresholds
+    )
+    st.pyplot(fig_hist_final)
 
 @st.cache_data(show_spinner=False)
 def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3):
@@ -389,16 +422,10 @@ def run():
                         st.pyplot(fig_hist_final)
 
                         with plot_col1:
-                            thresholds = sorted(set(thresholds))
-                            bins_for_pie = [user_min_val] + thresholds + [user_max_val]
+                            bins_for_pie = [user_min_val] + thresholds + [user_max_val]  # [min, 2x, 3x, 4x, max]
                             num_bins_pie = len(bins_for_pie) - 1
-                            base_labels = ["Monomers", "Dimers", "Trimers", "Multimers"]
-                            labels_for_pie = (
-                                base_labels[:num_bins_pie]
-                                if num_bins_pie <= len(base_labels)
-                                else base_labels + [f"Group {i+1}" for i in range(len(base_labels), num_bins_pie)]
-                            )
-
+                            labels_for_pie = CATEGORY_ORDER[:num_bins_pie]  # should be 4 if full range shown
+                        
                             if len(labels_for_pie) != num_bins_pie:
                                 st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins_pie} bins.")
                             else:
@@ -411,17 +438,26 @@ def run():
                                 )
                                 category_counts = categories.value_counts().reset_index()
                                 category_counts.columns = ['Category', 'Count']
-                                palette = HWT_aesthetic()
-                                region_colors = palette[:len(category_counts)]
-                                plotly_colors = [mcolors.to_hex(c) for c in region_colors]
-
+                        
+                                # Force consistent color order by label
+                                plotly_colors = [mcolors.to_hex(CATEGORY_COLORS[label]) for label in labels_for_pie]
+                        
                                 fig_pie = px.pie(
                                     category_counts,
                                     values='Count',
                                     names='Category',
-                                    color_discrete_sequence=plotly_colors
+                                    color='Category',
+                                    color_discrete_map=CATEGORY_COLORS
+                                )
+                                # Larger fonts for readability
+                                fig_pie.update_traces(textposition='inside', textinfo='percent+label', textfont_size=18)
+                                fig_pie.update_layout(
+                                    font=dict(size=18),
+                                    legend=dict(font=dict(size=16)),
+                                    margin=dict(l=0, r=0, t=0, b=0)
                                 )
                                 st.plotly_chart(fig_pie, use_container_width=True)
+
                     else:
                         st.pyplot(fig_hist)
 
@@ -441,8 +477,8 @@ def run():
 
                 fig_count, ax_count = plt.subplots(figsize=(5, 3))
                 ax_count.bar(file_names, counts)
-                ax_count.axhline(mean_count, color='black', linestyle='--', label=f'Avg = {mean_count:.1f}', linewidth=0.5)
-                ax_count.set_ylabel("# Fit PSFs", fontsize=10)
+                ax_count.axhline(mean_count, color=CATEGORY_COLORS["Multimers"], linestyle='--',
+                 label=f'Avg = {mean_count:.1f}', linewidth=0.8)                ax_count.set_ylabel("# Fit PSFs", fontsize=10)
                 ax_count.set_xlabel("SIF #", fontsize=10)
                 ax_count.legend(fontsize=10)
                 ax_count.tick_params(axis='x', labelsize=8)
