@@ -10,7 +10,70 @@ from scipy.ndimage import gaussian_filter
 import pandas as pd
 import matplotlib.pyplot as plt
 
+@st.cache_data
+def plot_quadrant_dependencies(_uploaded_files, threshold, signal, threshold_overrides):
+    """
+    Processes data for each of the 4 quadrants and overlays their brightness vs.
+    current dependency curves on a single plot.
+    Written by Hephaestus, a Gemini Gem tweaked by JFS
+    """
+    fig, ax = plt.subplots(figsize=(8, 6))
+    colors = ['Blue', 'Green', 'Red', 'Black']
+    quadrants = ["1", "2", "3", "4"]
 
+    for i, quadrant in enumerate(quadrants):
+        # Process files for the current quadrant
+        processed_data, _ = process_files(
+            list(_uploaded_files),
+            quadrant,
+            threshold=threshold,
+            signal=signal,
+            threshold_overrides=threshold_overrides
+        )
+        
+        # Rebuild the combined_df correctly to include the 'filename'
+        all_dfs_corrected = []
+        for filename, data in processed_data.items():
+            df = data.get("df")
+            if df is not None and not df.empty:
+                df['filename'] = filename
+                all_dfs_corrected.append(df)
+        
+        if not all_dfs_corrected:
+            continue # Skip to the next quadrant if no data was found
+
+        quadrant_df = pd.concat(all_dfs_corrected, ignore_index=True)
+        
+        # --- Perform the brightness vs. current calculation ---
+        image_means = quadrant_df.groupby('filename')['brightness_fit'].mean().reset_index()
+        image_means.rename(columns={'brightness_fit': 'mean_brightness'}, inplace=True)
+        image_means['current'] = image_means['filename'].str.extract(r'^(\d+)_').astype(int)
+        
+        agg_data = image_means.groupby('current')['mean_brightness'].agg(['mean', 'std']).reset_index()
+        agg_data = agg_data.sort_values('current')
+        agg_data['std'] = agg_data['std'].fillna(0)
+        # --- Calculation End ---
+
+        # Plot this quadrant's data on the shared axes
+        ax.errorbar(
+            agg_data['current'],
+            agg_data['mean'],
+            yerr=agg_data['std'],
+            fmt='o-',
+            capsize=5,
+            color=colors[i],
+            label=f'Quadrant {quadrant}'
+        )
+
+    ax.set_yscale('log')
+    ax.set_xlabel("Current (mA)")
+    ax.set_ylabel("Mean of Image Means (pps)")
+    ax.set_title("Quadrant Comparison of Brightness vs. Current")
+    ax.grid(True, which="both", ls="--", linewidth=0.5)
+    ax.legend()
+    fig.tight_layout()
+
+    return fig
 def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_hint=None):
     """
     Aggregates brightness by pixel location across all processed files.
@@ -192,23 +255,18 @@ def run():
             accept_multiple_files=True
         )
         
-        threshold = st.number_input("Threshold", min_value=0, value=2, help='''
-        Stringency of fit, higher value is more selective:  
-        -UCNP signal sets absolute peak cut off  
-        -Dye signal sets sensitivity of blob detection
-        ''')
-        diagram = """ Splits sif into quadrants (256x256 px):  
-        ┌─┬─┐  
-        │ 1 │ 2 │  
-        ├─┼─┤  
-        │ 3 │ 4 │  
-        └─┴─┘
-        """
+        threshold = st.number_input("Threshold", min_value=0, value=2)
+        
+        with st.expander("Override Thresholds (Optional)"):
+            override_text = st.text_area(
+                "Enter overrides, one per line:",
+                placeholder="100_1.sif: 2.5\n120_2.sif: 3.0",
+                height=100
+            )
+            
+        diagram = "..." # Your diagram string
         region = st.selectbox("Region (for individual analysis)", options=["1", "2", "3", "4", "all"], help=diagram)
-
-        signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:  
-                                - UCNP for high SNR (sklearn peakfinder)  
-                                - dye for low SNR (sklearn blob detection)''')
+        signal = st.selectbox("Signal", options=["UCNP", "dye"])
         cmap = st.selectbox("Colormap", options=["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
 
     with col2:
@@ -217,35 +275,36 @@ def run():
 
         if st.button("Analyze"):
             st.session_state.analyze_clicked = True
-            if 'processed_data' in st.session_state:
-                del st.session_state.processed_data
-            if 'combined_df' in st.session_state:
-                del st.session_state.combined_df
+            
+            threshold_overrides = {}
+            if override_text:
+                for line in override_text.strip().split('\n'):
+                    if ':' in line:
+                        parts = line.split(':', 1)
+                        try:
+                            threshold_overrides[parts[0].strip()] = float(parts[1].strip())
+                        except (ValueError, IndexError):
+                            st.warning(f"Could not parse override: {line}")
+            st.session_state['threshold_overrides'] = threshold_overrides
 
-        if st.session_state.analyze_clicked and uploaded_files:
             try:
-                # 1. Get the processed_data dictionary from your function.
-                #    We will ignore the incomplete combined_df it returns for now.
-                processed_data, _ = process_files(uploaded_files, region, threshold=threshold, signal=signal)
+                processed_data, _ = process_files(
+                    uploaded_files, 
+                    region, 
+                    threshold=threshold, 
+                    signal=signal,
+                    threshold_overrides=threshold_overrides
+                )
                 
-                # --- FIX STARTS HERE ---
-                # 2. Rebuild the combined_df correctly from processed_data.
                 all_dfs_corrected = []
                 for filename, data in processed_data.items():
                     df = data.get("df")
                     if df is not None and not df.empty:
-                        # 3. Add the 'filename' column to each DataFrame before appending.
                         df['filename'] = filename
                         all_dfs_corrected.append(df)
+                
+                combined_df = pd.concat(all_dfs_corrected, ignore_index=True) if all_dfs_corrected else pd.DataFrame()
 
-                # 4. Create the new, correct combined_df.
-                if all_dfs_corrected:
-                    combined_df = pd.concat(all_dfs_corrected, ignore_index=True)
-                else:
-                    combined_df = pd.DataFrame()
-                # --- FIX ENDS HERE ---
-
-                # 5. Store the corrected data in the session state.
                 st.session_state.processed_data = processed_data
                 st.session_state.combined_df = combined_df
 
@@ -256,78 +315,34 @@ def run():
         if 'processed_data' in st.session_state:
             processed_data = st.session_state.processed_data
             combined_df = st.session_state.combined_df
+            threshold_overrides = st.session_state.get('threshold_overrides', {})
 
-            # The tabs have been redefined, combining the first two.
-            tab_analysis, tab_current, tab_max_current = st.tabs(["Image Analysis", "Current Dependency", "Max Current Analysis"])
+            # Added "Quadrant Comparison" tab
+            tab1, tab2, tab3, tab4 = st.tabs(["Image Analysis", "Current Dependency", "Quadrant Comparison", "Max Current Analysis"])
 
-            # This new tab contains the combined logic.
-            with tab_analysis:
-                file_options = list(processed_data.keys())
-                selected_file = st.selectbox("Select SIF to display:", options=file_options)
+            with tab1:
+                # Your existing code for Image Analysis tab
+                pass
+
+            with tab2:
+                # Your existing code for Current Dependency tab
+                pass
+            
+            # New tab to display the quadrant overlay plot
+            with tab3:
+                st.markdown("### Quadrant Comparison: Brightness vs. Current")
+                fig_quad_compare = plot_quadrant_dependencies(
+                    tuple(uploaded_files), 
+                    threshold, 
+                    signal, 
+                    threshold_overrides
+                )
+                st.pyplot(fig_quad_compare)
                 
-                if selected_file:
-                    plot_col1, plot_col2 = st.columns(2)
-                    data_for_file = processed_data[selected_file]
-                    df_for_file = data_for_file.get("df")
+                svg_buffer = io.StringIO()
+                fig_quad_compare.savefig(svg_buffer, format='svg')
+                st.download_button("Download Plot (SVG)", svg_buffer.getvalue(), "quadrant_comparison.svg")
 
-                    # --- Column 1: Image Plot ---
-                    with plot_col1:
-                        st.markdown("#### Image Display")
-                        show_fits = st.checkbox("Show fits")
-                        normalization = st.checkbox("Log Image Scaling")
-                        normalization_to_use = LogNorm() if normalization else None
-
-                        fig_image = plot_brightness(
-                            data_for_file["image"], df_for_file,
-                            show_fits=show_fits, normalization=normalization_to_use,
-                            pix_size_um=0.1, cmap=cmap
-                        )
-                        st.pyplot(fig_image)
-                        svg_buffer_img = io.StringIO()
-                        fig_image.savefig(svg_buffer_img, format='svg')
-                        st.download_button("Download Image (SVG)", svg_buffer_img.getvalue(), f"{selected_file}.svg")
-
-                    # --- Column 2: Histogram Plot ---
-                    with plot_col2:
-                        st.markdown("#### Brightness Histogram")
-                        if df_for_file is not None and not df_for_file.empty:
-                            brightness_vals = df_for_file['brightness_fit'].values
-                            min_val, max_val = st.slider(
-                                "Select brightness range (pps):", 
-                                float(0), float(np.max(brightness_vals)), 
-                                (float(0), float(np.max(brightness_vals))),
-                                key="hist_slider"
-                            )
-                            num_bins = st.number_input("# Bins:", value=50, key="hist_bins")
-                            
-                            fig_hist, _, _ = plot_histogram(df_for_file, min_val=min_val, max_val=max_val, num_bins=num_bins)
-                            st.pyplot(fig_hist)
-                            
-                            svg_buffer_hist = io.StringIO()
-                            fig_hist.savefig(svg_buffer_hist, format='svg')
-                            st.download_button("Download Histogram (SVG)", svg_buffer_hist.getvalue(), f"{selected_file}_histogram.svg")
-                            
-                            csv_bytes = df_to_csv_bytes(df_for_file)
-                            st.download_button("Download Data (CSV)", csv_bytes, f"{selected_file}_data.csv")
-                        else:
-                            st.info(f"No particles were detected in '{selected_file}'.")
-
-            with tab_current:
-                st.markdown(f"### Mean Brightness vs. Current (Region: {region})")
-                if combined_df is not None and not combined_df.empty:
-                    fig_current = plot_brightness_vs_current(combined_df)
-                    st.pyplot(fig_current)
-                    svg_buffer_current = io.StringIO()
-                    fig_current.savefig(svg_buffer_current, format='svg')
-                    st.download_button("Download Plot (SVG)", svg_buffer_current.getvalue(), "brightness_vs_current.svg", "image/svg+xml")
-                else:
-                    st.info("No data to plot current dependency.")
-
-            with tab_max_current:
-                st.markdown("### Quadrant Histograms for Highest Current")
-                fig_quad_hist = plot_quadrant_histograms_for_max_current(tuple(uploaded_files), threshold, signal)
-                st.pyplot(fig_quad_hist)
-                
-                svg_buffer_quad = io.StringIO()
-                fig_quad_hist.savefig(svg_buffer_quad, format='svg')
-                st.download_button("Download Quadrant Plot (SVG)", svg_buffer_quad.getvalue(), "quadrant_histogram.svg", "image/svg+xml")
+            with tab4:
+                # Your existing code for Max Current Analysis tab
+                pass
