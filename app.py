@@ -23,7 +23,7 @@ st.sidebar.title("Tools")
 tool_registry = {
     "Batch Convert": ("tools.batch_convert", "run"),
     "Brightness": ("tools.analyze_single_sif", "run"),
-    "Delaunay Colocalization": ("tools.delaunayJFS", "run"),
+    "Saturation Series": ("tools.SaturationSeries", "run"),
     "Dye Colocalization": ("tools.colocalization", "run"),
     "Shelling Injection Table": ("tools.shelling_table", "run"),
     "Monomer Estimation": ("tools.monomers", "run"),
