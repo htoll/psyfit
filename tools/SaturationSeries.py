@@ -8,8 +8,48 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.stats import norm
 
+def plot_histogram(df, min_val, max_val, num_bins):
+    """
+    Plots a histogram of brightness data, calculates its mean and std directly,
+    and overlays a Gaussian curve based on those calculated parameters.
+    Written by Hephaestus, a Gemini Gem tweaked by JFS
+    """
+    fig, ax = plt.subplots()
+    
+    # Filter the data based on the slider range
+    brightness_data = df['brightness_fit']
+    filtered_data = brightness_data[(brightness_data >= min_val) & (brightness_data <= max_val)]
 
+    if filtered_data.empty:
+        ax.text(0.5, 0.5, "No data in selected range.", ha='center')
+        return fig, 0, 0
+
+    # Step 1: Plot the histogram
+    counts, bin_edges, _ = ax.hist(filtered_data, bins=num_bins, color='skyblue', edgecolor='black', alpha=0.7, label='Data')
+    
+    # Step 2: Calculate mean and standard deviation directly from the data
+    mean_val = filtered_data.mean()
+    std_val = filtered_data.std()
+
+    # Step 3: Plot the Gaussian curve using the calculated parameters
+    x_axis = np.linspace(bin_edges[0], bin_edges[-1], 100)
+    
+    # Scale the PDF to match the histogram's height
+    bin_width = bin_edges[1] - bin_edges[0]
+    scaling_factor = len(filtered_data) * bin_width
+    gaussian_pdf = norm.pdf(x_axis, mean_val, std_val) * scaling_factor
+    
+    ax.plot(x_axis, gaussian_pdf, color='red', linestyle='--', linewidth=2, label=f'Gaussian (μ={mean_val:.1f}, σ={std_val:.1f})')
+
+    ax.set_title("Brightness Distribution")
+    ax.set_xlabel("Brightness (pps)")
+    ax.set_ylabel("Counts")
+    ax.legend()
+    fig.tight_layout()
+
+    return fig, mean_val, std_val
 def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_hint=None):
     """
     Aggregates brightness by pixel location across all processed files.
