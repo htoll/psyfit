@@ -26,6 +26,9 @@ import io
 import re
 import os
 import textwrap
+
+def gaussian(x, amp, mu, sigma):
+  return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None):
     """
     Plots the brightness histogram with a Gaussian fit and optional vertical thresholds.
