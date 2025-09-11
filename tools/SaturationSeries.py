@@ -121,21 +121,34 @@ def plot_quadrant_histograms_for_max_current(_uploaded_files, threshold, signal)
     fig, axes = plt.subplots(2, 2, figsize=(10, 8), constrained_layout=True)
     axes = axes.flatten()  # Flatten the 2x2 array for easy iteration
     all_dfs = []
-    
-    # Process data for each quadrant to build a complete dataframe
+
+    # Process data for each quadrant. We will capture the detailed dictionary
+    # (processed_data_quad) to retain the filename for each particle.
     for i in range(1, 5):
         quadrant = str(i)
-        # We only need the dataframe part of the output
-        _, df_quad = process_files(list(_uploaded_files), quadrant, threshold=threshold, signal=signal)
-        if df_quad is not None and not df_quad.empty:
-            df_quad['quadrant'] = quadrant
-            all_dfs.append(df_quad)
-            
+        
+        # We use the first return value from process_files, which is a
+        # dictionary mapping filenames to their data.
+        processed_data_quad, _ = process_files(list(_uploaded_files), quadrant, threshold=threshold, signal=signal)
+
+        # Iterate through each file's results for the current quadrant
+        for filename, data in processed_data_quad.items():
+            df = data.get("df")
+            if df is not None and not df.empty:
+                # Create a copy and add the filename and quadrant as new columns
+                df_with_meta = df.copy()
+                df_with_meta['filename'] = filename
+                df_with_meta['quadrant'] = quadrant
+                all_dfs.append(df_with_meta)
+                
     if not all_dfs:
         fig.text(0.5, 0.5, "No data found in any quadrant.", ha='center')
         return fig
 
+    # This new DataFrame now contains the 'filename' and 'quadrant' columns
     combined_df = pd.concat(all_dfs, ignore_index=True)
+    
+    # This line will now execute successfully
     combined_df['current'] = combined_df['filename'].str.extract(r'^(\d+)_').astype(int)
     max_current = combined_df['current'].max()
 
@@ -160,7 +173,6 @@ def plot_quadrant_histograms_for_max_current(_uploaded_files, threshold, signal)
             ax.set_title(f"Quadrant {quadrant}")
 
     return fig
-
 # --- Keep your build_brightness_heatmap function here ---
 # --- Add the new plot_brightness_vs_current function here ---
 def run():
