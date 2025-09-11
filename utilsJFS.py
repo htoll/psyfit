@@ -61,7 +61,7 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
     mu, sigma = None, None
     p0 = [np.max(counts), np.mean(brightness_vals), np.std(brightness_vals)]
     try:
-        popt = [np.mean(brightness_vals), np.std(brightness_vals)]
+        popt = p0
         mu, sigma = popt[1], popt[2]
         x_fit = np.linspace(edges[0], edges[-1], 500)
         y_fit = gaussian(x_fit, *popt)
