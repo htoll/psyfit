@@ -194,8 +194,8 @@ def run():
         region = st.selectbox("Region (for individual analysis)", options=["1", "2", "3", "4", "all"], help=diagram)
 
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:  
-                                     - UCNP for high SNR (sklearn peakfinder)  
-                                     - dye for low SNR (sklearn blob detection)''')
+                                - UCNP for high SNR (sklearn peakfinder)  
+                                - dye for low SNR (sklearn blob detection)''')
         cmap = st.selectbox("Colormap", options=["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
 
     with col2:
@@ -222,62 +222,62 @@ def run():
             processed_data = st.session_state.processed_data
             combined_df = st.session_state.combined_df
 
-            tab1, tab2, tab3, tab4 = st.tabs(["Individual Image", "Brightness Histogram", "Current Dependency", "Max Current Analysis"])
+            # The tabs have been redefined, combining the first two.
+            tab_analysis, tab_current, tab_max_current = st.tabs(["Image Analysis", "Current Dependency", "Max Current Analysis"])
 
-            with tab1:
+            # This new tab contains the combined logic.
+            with tab_analysis:
                 file_options = list(processed_data.keys())
-                selected_file_name = st.selectbox("Select SIF to display:", options=file_options)
+                selected_file = st.selectbox("Select SIF to display:", options=file_options)
                 
-                show_fits = st.checkbox("Show fits")
-                normalization = st.checkbox("Log Image Scaling")
-                normalization_to_use = LogNorm() if normalization else None
+                if selected_file:
+                    plot_col1, plot_col2 = st.columns(2)
+                    data_for_file = processed_data[selected_file]
+                    df_for_file = data_for_file.get("df")
 
-                if selected_file_name in processed_data:
-                    data_to_plot = processed_data[selected_file_name]
-                    fig_image = plot_brightness(
-                        data_to_plot["image"], data_to_plot["df"],
-                        show_fits=show_fits, normalization=normalization_to_use,
-                        pix_size_um=0.1, cmap=cmap
-                    )
-                    st.pyplot(fig_image)
-                    svg_buffer = io.StringIO()
-                    fig_image.savefig(svg_buffer, format='svg')
-                    st.download_button("Download Image (SVG)", svg_buffer.getvalue(), f"{selected_file_name}.svg", "image/svg+xml")
+                    # --- Column 1: Image Plot ---
+                    with plot_col1:
+                        st.markdown("#### Image Display")
+                        show_fits = st.checkbox("Show fits")
+                        normalization = st.checkbox("Log Image Scaling")
+                        normalization_to_use = LogNorm() if normalization else None
 
-            # MODIFIED: This tab now shows a histogram for a user-selected file.
-            with tab2:
-                st.markdown("### Brightness Histogram per Image")
-                if processed_data:
-                    file_options_hist = list(processed_data.keys())
-                    selected_file_hist = st.selectbox("Select file for histogram:", options=file_options_hist, key="hist_select")
-                    
-                    df_selected_for_hist = processed_data[selected_file_hist].get("df")
-
-                    if df_selected_for_hist is not None and not df_selected_for_hist.empty:
-                        brightness_vals = df_selected_for_hist['brightness_fit'].values
-                        min_val, max_val = st.slider(
-                            "Select brightness range (pps):", 
-                            float(np.min(brightness_vals)), float(np.max(brightness_vals)), 
-                            (float(np.min(brightness_vals)), float(np.max(brightness_vals))),
-                            key="hist_slider"
+                        fig_image = plot_brightness(
+                            data_for_file["image"], df_for_file,
+                            show_fits=show_fits, normalization=normalization_to_use,
+                            pix_size_um=0.1, cmap=cmap
                         )
-                        num_bins = st.number_input("# Bins:", value=50, key="hist_bins")
-                        
-                        fig_hist, _, _ = plot_histogram(df_selected_for_hist, min_val=min_val, max_val=max_val, num_bins=num_bins)
-                        st.pyplot(fig_hist)
+                        st.pyplot(fig_image)
+                        svg_buffer_img = io.StringIO()
+                        fig_image.savefig(svg_buffer_img, format='svg')
+                        st.download_button("Download Image (SVG)", svg_buffer_img.getvalue(), f"{selected_file}.svg")
 
-                        svg_buffer_hist = io.StringIO()
-                        fig_hist.savefig(svg_buffer_hist, format='svg')
-                        st.download_button("Download Histogram (SVG)", svg_buffer_hist.getvalue(), f"{selected_file_hist}_histogram.svg", "image/svg+xml", key="dl_hist_svg")
-                        
-                        csv_bytes = df_to_csv_bytes(df_selected_for_hist)
-                        st.download_button("Download Selected Data (CSV)", csv_bytes, f"{selected_file_hist}_data.csv", "text/csv", key="dl_hist_csv")
-                    else:
-                        st.info(f"No particles were detected in '{selected_file_hist}'.")
-                else:
-                    st.info("No data available. Please run analysis first.")
+                    # --- Column 2: Histogram Plot ---
+                    with plot_col2:
+                        st.markdown("#### Brightness Histogram")
+                        if df_for_file is not None and not df_for_file.empty:
+                            brightness_vals = df_for_file['brightness_fit'].values
+                            min_val, max_val = st.slider(
+                                "Select brightness range (pps):", 
+                                float(np.min(brightness_vals)), float(np.max(brightness_vals)), 
+                                (float(np.min(brightness_vals)), float(np.max(brightness_vals))),
+                                key="hist_slider"
+                            )
+                            num_bins = st.number_input("# Bins:", value=50, key="hist_bins")
+                            
+                            fig_hist, _, _ = plot_histogram(df_for_file, min_val=min_val, max_val=max_val, num_bins=num_bins)
+                            st.pyplot(fig_hist)
+                            
+                            svg_buffer_hist = io.StringIO()
+                            fig_hist.savefig(svg_buffer_hist, format='svg')
+                            st.download_button("Download Histogram (SVG)", svg_buffer_hist.getvalue(), f"{selected_file}_histogram.svg")
+                            
+                            csv_bytes = df_to_csv_bytes(df_for_file)
+                            st.download_button("Download Data (CSV)", csv_bytes, f"{selected_file}_data.csv")
+                        else:
+                            st.info(f"No particles were detected in '{selected_file}'.")
 
-            with tab3:
+            with tab_current:
                 st.markdown(f"### Mean Brightness vs. Current (Region: {region})")
                 if combined_df is not None and not combined_df.empty:
                     fig_current = plot_brightness_vs_current(combined_df)
@@ -288,7 +288,7 @@ def run():
                 else:
                     st.info("No data to plot current dependency.")
 
-            with tab4:
+            with tab_max_current:
                 st.markdown("### Quadrant Histograms for Highest Current")
                 fig_quad_hist = plot_quadrant_histograms_for_max_current(tuple(uploaded_files), threshold, signal)
                 st.pyplot(fig_quad_hist)
@@ -296,3 +296,4 @@ def run():
                 svg_buffer_quad = io.StringIO()
                 fig_quad_hist.savefig(svg_buffer_quad, format='svg')
                 st.download_button("Download Quadrant Plot (SVG)", svg_buffer_quad.getvalue(), "quadrant_histogram.svg", "image/svg+xml")
+
