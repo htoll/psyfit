@@ -271,8 +271,8 @@ def run():
                             brightness_vals = df_for_file['brightness_fit'].values
                             min_val, max_val = st.slider(
                                 "Select brightness range (pps):", 
-                                float(np.min(brightness_vals)), float(np.max(brightness_vals)), 
-                                (float(np.min(brightness_vals)), float(np.max(brightness_vals))),
+                                float(0), float(np.max(brightness_vals)), 
+                                (float(0), float(np.max(brightness_vals))),
                                 key="hist_slider"
                             )
                             num_bins = st.number_input("# Bins:", value=50, key="hist_bins")
