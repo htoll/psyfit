@@ -71,11 +71,9 @@ def plot_brightness_vs_current(df):
     the standard deviation of the image means for each current.
     Written by Hephaestus, a Gemini Gem tweaked by JFS
     """
-    if df is None or df.empty or 'brightness_fit' not in df.columns:
-        if 'filename' not in df.columns:
-            fig, ax = plt.subplots()
-            ax.text(0.5, 0.5, "filename error", ha='center', va='center')
-            return fig
+    if df is None or df.empty or 'brightness_fit' not in df.columns or 'filename' not in df.columns:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "filename error", ha='center', va='center')
         return fig
 
     # Step 1: Calculate the mean brightness for each individual image (FOV).
@@ -226,9 +224,31 @@ def run():
 
         if st.session_state.analyze_clicked and uploaded_files:
             try:
-                processed_data, combined_df = process_files(uploaded_files, region, threshold=threshold, signal=signal)
+                # 1. Get the processed_data dictionary from your function.
+                #    We will ignore the incomplete combined_df it returns for now.
+                processed_data, _ = process_files(uploaded_files, region, threshold=threshold, signal=signal)
+                
+                # --- FIX STARTS HERE ---
+                # 2. Rebuild the combined_df correctly from processed_data.
+                all_dfs_corrected = []
+                for filename, data in processed_data.items():
+                    df = data.get("df")
+                    if df is not None and not df.empty:
+                        # 3. Add the 'filename' column to each DataFrame before appending.
+                        df['filename'] = filename
+                        all_dfs_corrected.append(df)
+
+                # 4. Create the new, correct combined_df.
+                if all_dfs_corrected:
+                    combined_df = pd.concat(all_dfs_corrected, ignore_index=True)
+                else:
+                    combined_df = pd.DataFrame()
+                # --- FIX ENDS HERE ---
+
+                # 5. Store the corrected data in the session state.
                 st.session_state.processed_data = processed_data
                 st.session_state.combined_df = combined_df
+
             except Exception as e:
                 st.error(f"Error processing files: {e}")
                 st.session_state.analyze_clicked = False
