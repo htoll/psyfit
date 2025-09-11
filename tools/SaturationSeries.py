@@ -71,9 +71,9 @@ def plot_brightness_vs_current(df):
     the standard deviation of the image means for each current.
     Written by Hephaestus, a Gemini Gem tweaked by JFS
     """
-    if df is None or df.empty or 'filename' not in df.columns or 'brightness_fit' not in df.columns:
+    if df is None or df.empty or 'brightness_fit' not in df.columns:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, "Dataframe Empty \n" + str(df), ha='center', va='center')
+        ax.text(0.5, 0.5, "Dataframe Empty", ha='center', va='center')
         return fig
 
     # Step 1: Calculate the mean brightness for each individual image (FOV).
