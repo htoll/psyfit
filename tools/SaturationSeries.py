@@ -72,8 +72,10 @@ def plot_brightness_vs_current(df):
     Written by Hephaestus, a Gemini Gem tweaked by JFS
     """
     if df is None or df.empty or 'brightness_fit' not in df.columns:
-        fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, "Dataframe Empty", ha='center', va='center')
+        if 'filename' not in df.columns:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "filename error", ha='center', va='center')
+            return fig
         return fig
 
     # Step 1: Calculate the mean brightness for each individual image (FOV).
