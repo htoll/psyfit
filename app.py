@@ -1,89 +1,161 @@
-import streamlit as st
-import sys
+# app.py
 import os
-import io
+import sys
+import traceback
+import importlib
+import importlib.util
+from importlib import metadata as importlib_metadata
+import platform
+import streamlit as st
 
-
+# Ensure local imports work when running "streamlit run app.py"
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from tools import analyze_single_sif, batch_convert, colocalization, monomers, delaunayJFS, plot_csv, shelling_table, read_movie
-import tools.spherical_tem as spherical_tem
+# --- Page setup ---
+try:
+    st.set_page_config(layout="wide")
+except Exception:
+    pass
 
-import sif_parser
-
-from skimage.feature import peak_local_max
-from skimage.feature import blob_log
-
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
-
-import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
-from matplotlib.colors import LogNorm
-
-
-from scipy.ndimage import zoom
-from scipy.ndimage import gaussian_filter
-from scipy.optimize import curve_fit
-from scipy.optimize import least_squares
-
-from datetime import date
-
-
-
-# Region breakdown:
-#    1 | 2
-#    -----
-#    3 | 4
-
-import streamlit as st
-import os
-st.set_page_config(layout="wide")
-
-# Sidebar navigation
 st.sidebar.title("Tools")
-tool = st.sidebar.radio("Analyze:", [
-    "Batch Convert",
-    "Brightness",
-    "Delaunay Colocalization",
-    "Dye Colocalization",
-    "Shelling Injection Table",
-    "Monomer Estimation",
-    "Process Movie",
-   # "Plot CSVs",
-    "Spherical NP TEM"
-    
-])
+
+# Central registry: Display Name -> (module_path, callable_name)
+tool_registry = {
+    "Batch Convert": ("tools.batch_convert", "run"),
+    "Brightness": ("tools.analyze_single_sif", "run"),
+    "Delaunay Colocalization": ("tools.delaunayJFS", "run"),
+    "Dye Colocalization": ("tools.colocalization", "run"),
+    "Shelling Injection Table": ("tools.shelling_table", "run"),
+    "Monomer Estimation": ("tools.monomers", "run"),
+    "Process Movie": ("tools.read_movie", "run"),
+    # "Plot CSVs": ("tools.plot_csv", "run"),  # commented like your original
+    "Spherical NP TEM": ("tools.spherical_tem", "run"),
+}
+
+show_traces = st.sidebar.toggle(
+    "Show error tracebacks",
+    value=False,
+    help="Expand to see full Python tracebacks when tools error."
+)
+
+# ---- Diagnostics Sidebar ----
+with st.sidebar.expander("Diagnostics", expanded=False):
+    # Basic environment
+    st.markdown("**Environment**")
+    st.code(
+        f"python: {platform.python_version()}\n"
+        f"os: {platform.system()} {platform.release()} ({platform.version()})\n"
+        f"executable: {sys.executable}\n"
+        f"cwd: {os.getcwd()}",
+        language="bash"
+    )
+
+    # Key library versions via importlib.metadata (avoids importing the libs)
+    wanted_pkgs = [
+        "numpy", "scipy", "scikit-image", "scikit-learn",
+        "matplotlib", "pandas", "streamlit"
+    ]
+    st.markdown("**Package versions**")
+
+    def pkg_version(name: str) -> str:
+        try:
+            return importlib_metadata.version(name)
+        except importlib_metadata.PackageNotFoundError:
+            return "not installed"
+        except Exception as e:
+            return f"error: {type(e).__name__}"
+
+    versions_text = "\n".join([f"{p}: {pkg_version(p)}" for p in wanted_pkgs])
+    st.code(versions_text, language="bash")
+
+    # sys.path (first few entries)
+    st.markdown("**sys.path (first 5)**")
+    st.code("\n".join(sys.path[:5]) + ("\n…",)[0], language="bash")
+
+    # Tool availability without importing (fast + safe)
+    st.markdown("**Tool availability (light check)**")
+    rows = []
+    for label, (modpath, funcname) in tool_registry.items():
+        spec = importlib.util.find_spec(modpath)
+        rows.append(f"{label}: module={'found' if spec else 'missing'}")
+    st.code("\n".join(rows), language="bash")
+
+    # Optional deep check for a specific tool (imports the module)
+    st.markdown("**Deep check a tool** (imports module)")
+    deep_tool = st.selectbox("Pick a tool to deep-check:", list(tool_registry.keys()))
+    if st.button("Run deep check"):
+        modpath, funcname = tool_registry[deep_tool]
+        try:
+            module = importlib.import_module(modpath)
+            fn = getattr(module, funcname, None)
+            callable_ok = callable(fn)
+            st.success(
+                f"Imported `{modpath}` OK. "
+                f"{'Found' if fn else 'Missing'} `{funcname}`; "
+                f"{'callable' if callable_ok else 'not callable'}."
+            )
+        except Exception as e:
+            st.error(f"Deep check failed for {deep_tool}: {type(e).__name__}: {e}")
+            if show_traces:
+                st.code("".join(traceback.format_exception(e)), language="pytb")
+
+# ---- Main tool launcher ----
+available_labels = list(tool_registry.keys())
+label_to_key = {label: key for label, key in tool_registry.items()}
+tool_label = st.sidebar.radio("Analyze:", available_labels, index=0)
+
 col1, col2 = st.columns([1, 2])
 
-if tool == "Brightness":
-    analyze_single_sif.run()
+def render_error_context(title: str, err: Exception):
+    st.error(f"⚠️ {title}: {type(err).__name__}: {err}")
+    if show_traces:
+        tb = "".join(traceback.format_exception(err))
+        with st.expander("View traceback"):
+            st.code(tb, language="pytb")
 
+def safe_import(module_path: str):
+    try:
+        return importlib.import_module(module_path), None
+    except Exception as e:
+        return None, e
 
-# Tool: Analyze Colocalization Set
-elif tool == "Dye Colocalization":
-    colocalization.run()
+def safe_getattr(module, attr: str):
+    try:
+        fn = getattr(module, attr)
+        if not callable(fn):
+            raise TypeError(f"Attribute '{attr}' on '{module.__name__}' is not callable.")
+        return fn, None
+    except Exception as e:
+        return None, e
 
-# Tool: Batch Convert SIFs
-elif tool == "Batch Convert":
-    batch_convert.run()
+def safe_run_tool(modpath: str, funcname: str, label: str):
+    with st.spinner(f"Loading {label}…"):
+        module, import_err = safe_import(modpath)
+        if import_err:
+            render_error_context(f"Failed to import {label} ({modpath})", import_err)
+            return
 
-elif tool == 'Shelling Injection Table':
-    shelling_table.run()
+    run_fn, getattr_err = safe_getattr(module, funcname)
+    if getattr_err:
+        render_error_context(f"Failed to find '{funcname}()' in {modpath}", getattr_err)
+        return
 
-elif tool == 'Monomer Estimation':
-    monomers.run()
+    with st.spinner(f"Running {label}…"):
+        try:
+            return run_fn()
+        except Exception as e:
+            render_error_context(f"{label} crashed while running", e)
+            with st.expander("Quick things to check"):
+                st.markdown(
+                    "- Are the input files/paths valid?\n"
+                    "- Did package versions change (e.g., scikit-image, scipy, sklearn)?\n"
+                    "- Any GPU/driver issues for heavy operations?\n"
+                    "- Toggle 'Show error tracebacks' above to see details."
+                )
+            return
 
-elif tool == 'Delaunay Colocalization':
-    delaunayJFS.run()
-
-elif tool == "Plot CSVs":
-    plot_csv.run()
-
-elif tool == "Process Movie":
-    read_movie.run()
-
-elif tool =="Spherical NP TEM":
-    spherical_tem.run()
-
-
+if tool_label in label_to_key:
+    modpath, funcname = label_to_key[tool_label]
+    safe_run_tool(modpath, funcname, tool_label)
+else:
+    st.info("Select a tool from the sidebar to begin.")
