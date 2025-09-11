@@ -65,37 +65,37 @@ def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_
     return heatmap 
 def plot_brightness_vs_current(df):
     """
-    Calculates mean brightness per image, then aggregates these means by current.
-    Plots the mean of image means vs. current, with error bars showing
-    the standard deviation of the image means for each current.
+    Calculates the mean and standard deviation of all particle brightness values
+    for each current. Plots the mean vs. current with error bars showing the
+    standard deviation of the particle distribution.
     Written by Hephaestus, a Gemini Gem tweaked by JFS
     """
+    # Check if the initial dataframe is valid.
     if df is None or df.empty or 'filename' not in df.columns or 'brightness_fit' not in df.columns:
         fig, ax = plt.subplots()
         ax.text(0.5, 0.5, "No data available to plot.", ha='center', va='center')
         return fig
 
-    # Step 1: Calculate the mean brightness for each individual image (FOV).
-    image_means = df.groupby('filename')['brightness_fit'].mean().reset_index()
-    image_means.rename(columns={'brightness_fit': 'mean_brightness'}, inplace=True)
+    df_copy = df.copy()
 
-    # Step 2: Extract the current from the filename in our new dataframe of means.
-    image_means['current'] = image_means['filename'].str.extract(r'^(\d+)_').astype(int)
+    # Step 1: Extract the current from the filename for every particle.
+    df_copy['current'] = df_copy['filename'].str.extract(r'^(\d+)_').astype(int)
 
-    # Step 3: Group the image means by current and calculate the final aggregate statistics.
-    # The result is the mean of image means and the standard deviation of image means.
-    agg_data = image_means.groupby('current')['mean_brightness'].agg(['mean', 'std']).reset_index()
+    # Step 2: Group all particles directly by current.
+    # This calculates the mean and std dev from the entire population of
+    # particles at each current value.
+    agg_data = df_copy.groupby('current')['brightness_fit'].agg(['mean', 'std']).reset_index()
     agg_data = agg_data.sort_values('current')
     
-    # If a current has only one FOV, its std dev will be NaN. Set it to 0.
+    # If a group has only one particle, its std dev will be NaN. Fill with 0.
     agg_data['std'] = agg_data['std'].fillna(0)
 
-    # Step 4: Create the plot (this part remains the same).
+    # Step 3: Create the plot.
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.errorbar(
         agg_data['current'],
-        agg_data['mean'],  # This is the mean of the image means
-        yerr=agg_data['std'],    # This is the std dev of the image means
+        agg_data['mean'],      # This is the mean of all particles.
+        yerr=agg_data['std'],  # This is the std dev of all particles.
         fmt='o-',
         capsize=5,
         ecolor='red',
@@ -105,7 +105,7 @@ def plot_brightness_vs_current(df):
 
     ax.set_yscale('log')
     ax.set_xlabel("Current (mA)")
-    ax.set_ylabel("Mean of Image Means (pps)")
+    ax.set_ylabel("Mean Particle Brightness (pps)")
     ax.set_title("Mean Particle Brightness vs. Current")
     ax.grid(True, which="both", ls="--", linewidth=0.5)
     fig.tight_layout()
