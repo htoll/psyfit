@@ -6,6 +6,9 @@ from tools.process_files import process_files
 from matplotlib.colors import LogNorm
 import numpy as np
 from scipy.ndimage import gaussian_filter
+import pandas as pd
+import matplotlib.pyplot as plt
+
 
 def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_hint=None):
     """
@@ -59,23 +62,66 @@ def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_
         # Accumulate brightness at pixel locations
         np.add.at(heatmap, (yi, xi), ws)
 
-    return heatmap
+    return heatmap 
+def plot_brightness_vs_current(df):
+    """
+    Plots mean brightness vs. current with std dev error bars.
+    Assumes df has 'filename' and 'brightness_fit' columns.
+    Filename format is expected to be 'CURRENT_FOV.sif'.
+    Written by Hephaestus, a Gemini Gem tweaked by JFS
+    """
+    if df is None or df.empty or 'filename' not in df.columns or 'brightness_fit' not in df.columns:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "No data available to plot.", ha='center', va='center')
+        return fig
 
+    # Use a regular expression to safely extract the current (integer part) from the filename
+    df['current'] = df['filename'].str.extract(r'^(\d+)_').astype(int)
+
+    # Group data by the extracted current and calculate the mean and standard deviation
+    aggData = df.groupby('current')['brightness_fit'].agg(['mean', 'std']).reset_index()
+    aggData = aggData.sort_values('current')
+    
+    # If a group has only one data point, its standard deviation will be NaN. Replace with 0.
+    aggData['std'] = aggData['std'].fillna(0)
+
+    # Create the plot
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    ax.errorbar(
+        aggData['current'],
+        aggData['mean'],
+        yerr=aggData['std'],
+        fmt='o-',
+        capsize=5,
+        ecolor='red',
+        markerfacecolor='blue',
+        markeredgecolor='blue'
+    )
+
+
+
+# --- Keep your build_brightness_heatmap function here ---
+# --- Add the new plot_brightness_vs_current function here ---
 
 def run():
     col1, col2 = st.columns([1, 2])
+    
     @st.cache_data
     def df_to_csv_bytes(df):
         return df.to_csv(index=False).encode("utf-8")
 
     with col1:
         st.header("Analyze SIF Files")
-        uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
-        threshold = st.number_input("Threshold", min_value=0, value=2, help = '''
+        
+        # New UI for directory input instead of file uploader
+        sif_directory = st.text_input("Path to SIF file directory", help="Enter the full path to the folder containing your .sif files.")
+        
+        threshold = st.number_input("Threshold", min_value=0, value=2, help='''
         Stringency of fit, higher value is more selective:  
         -UCNP signal sets absolute peak cut off  
         -Dye signal sets sensitivity of blob detection
-        ''')        
+        ''')
         diagram = """ Splits sif into quadrants (256x256 px):  
         ┌─┬─┐  
         │ 1 │ 2 │  
@@ -83,180 +129,128 @@ def run():
         │ 3 │ 4 │  
         └─┴─┘
         """
-        region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help = diagram)
+        region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
 
-        signal = st.selectbox("Signal", options=["UCNP", "dye"], help= '''Changes detection method:  
-                                                                - UCNP for high SNR (sklearn peakfinder)  
-                                                                - dye for low SNR (sklearn blob detection)''')
-        cmap = st.selectbox("Colormap", options = ["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
-
+        signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:  
+                                     - UCNP for high SNR (sklearn peakfinder)  
+                                     - dye for low SNR (sklearn blob detection)''')
+        cmap = st.selectbox("Colormap", options=["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
 
     with col2:
         if "analyze_clicked" not in st.session_state:
             st.session_state.analyze_clicked = False
-    
-        plot_col1, plot_col2 = st.columns(2)
-    
-        with plot_col1:
-            show_fits = st.checkbox("Show fits")
-            plot_brightness_histogram = True
-            normalization = st.checkbox("Log Image Scaling")
-    
-            if st.button("Analyze"):
-                st.session_state.analyze_clicked = True
-    
-        if st.session_state.analyze_clicked and uploaded_files:
+
+        if st.button("Analyze"):
+            st.session_state.analyze_clicked = True
+            # Clear previous data if re-analyzing
+            if 'processed_data' in st.session_state:
+                del st.session_state.processed_data
+            if 'combined_df' in st.session_state:
+                del st.session_state.combined_df
+
+        if st.session_state.analyze_clicked and sif_directory:
+            if not os.path.isdir(sif_directory):
+                st.error(f"Directory not found: {sif_directory}")
+                st.session_state.analyze_clicked = False
+                return
+
+            # Find and load files matching the specified pattern
+            sif_files_to_process = []
+            file_pattern = re.compile(r"^\d+_\d+\.sif$")
+            
+            # Using st.cache_data to avoid reloading files on every rerun
+            @st.cache_data
+            def load_sif_files(directory):
+                loaded_files = []
+                filenames = sorted(os.listdir(directory), key=lambda x: int(x.split('_')[0]))
+                for filename in filenames:
+                    if file_pattern.match(filename):
+                        file_path = os.path.join(directory, filename)
+                        try:
+                            with open(file_path, 'rb') as f:
+                                file_bytes = io.BytesIO(f.read())
+                                file_bytes.name = filename  # Mock UploadedFile object
+                                loaded_files.append(file_bytes)
+                        except IOError as e:
+                            st.warning(f"Could not read file {filename}: {e}")
+                return loaded_files
+
+            sif_files_to_process = load_sif_files(sif_directory)
+
+            if not sif_files_to_process:
+                st.warning("No files matching the 'integer_FOV.sif' format found.")
+                st.session_state.analyze_clicked = False
+                return
+
             try:
-                processed_data, combined_df = process_files(uploaded_files, region, threshold = threshold, signal=signal)
-    
-                if len(uploaded_files) > 1:
-                    file_options = [f.name for f in uploaded_files]
-                    selected_file_name = st.selectbox("Select sif to display:", options=file_options)
-                else:
-                    selected_file_name = uploaded_files[0].name
-    
-                if selected_file_name in processed_data:
-                    data_to_plot = processed_data[selected_file_name]
-                    df_selected = data_to_plot["df"]
-                    image_data_cps = data_to_plot["image"]
-    
-                    normalization_to_use = LogNorm() if normalization else None
-                    fig_image = plot_brightness(
-                        image_data_cps,
-                        df_selected,
-                        show_fits=show_fits,
-                        normalization=normalization_to_use,
-                        pix_size_um=0.1,
-                        cmap=cmap
-                    )
-    
-                    with plot_col1:
-                        st.pyplot(fig_image)
-                        svg_buffer = io.StringIO()
-                        fig_image.savefig(svg_buffer, format='svg')
-                        svg_data = svg_buffer.getvalue()
-                        svg_buffer.close()
-                        st.download_button(
-                            label="Download PSFs",
-                            data=svg_data,
-                            file_name=f"{selected_file_name}.svg",
-                            mime="image/svg+xml"
-                        )
-                        if combined_df is not None and not combined_df.empty:
-                            csv_bytes = df_to_csv_bytes(combined_df)
-                            st.download_button(
-                                label="Download as CSV",
-                                data=csv_bytes,
-                                file_name=f"{os.path.splitext(selected_file_name)[0]}_compiled.csv",
-                                mime="text/csv"
-                            )
-                        else:
-                            st.info("No compiled data available to download yet.")
-    
-                    with plot_col2:
-                        if plot_brightness_histogram and not combined_df.empty:
-                            brightness_vals = combined_df['brightness_fit'].values
-                            default_min_val = float(np.min(brightness_vals))
-                            default_max_val = float(np.max(brightness_vals))
-    
-                            user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
-                            user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
-    
-                            try:
-                                user_min = float(user_min_val_str)
-                                user_max = float(user_max_val_str)
-                            except ValueError:
-                                st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
-                                return
-    
-                            num_bins = st.number_input("# Bins:", value=50)
-    
-                            if user_min < user_max:
-                                fig_hist, _, _ = plot_histogram(
-                                    combined_df,
-                                    min_val=user_min,
-                                    max_val=user_max,
-                                    num_bins=num_bins
-                                )
-                                st.pyplot(fig_hist)
-    
-                                svg_buffer_hist = io.StringIO()
-                                fig_hist.savefig(svg_buffer_hist, format='svg')
-                                svg_data_hist = svg_buffer_hist.getvalue()
-                                svg_buffer_hist.close()
-    
-                                st.download_button(
-                                    label="Download histogram",
-                                    data=svg_data_hist,
-                                    file_name="combined_histogram.svg",
-                                    mime="image/svg+xml"
-                                )
-                            else:
-                                st.warning("Min greater than max.")
-                else:
-                    st.error(f"Data for file '{selected_file_name}' not found.")
-    
+                # Process all found files
+                processed_data, combined_df = process_files(sif_files_to_process, region, threshold=threshold, signal=signal)
+                st.session_state.processed_data = processed_data
+                st.session_state.combined_df = combined_df
+
             except Exception as e:
                 st.error(f"Error processing files: {e}")
                 st.session_state.analyze_clicked = False
 
-    # --- Global Brightness Heatmap (across all SIFs) ---
-    with plot_col2:
-        st.markdown("### Global Brightness Heatmap")
-        show_heatmap = st.toggle("Show heatmap (all SIFs)", value=False, help="Aggregates brightness across all detections from all uploaded .sif files.")
-        if show_heatmap:
-            # Smoothing controls
-            smooth_sigma = st.slider("Smoothing (σ, px)", min_value=0.0, max_value=8.0, value=2.0, step=0.5,
-                                     help="Apply Gaussian smoothing to reduce patchy coverage. Set to 0 for no smoothing.")
-            heat_cmap = st.selectbox("Heatmap colormap", options=["magma", "inferno", "plasma", "viridis", "hot", "cividis"], index=0)
-    
-            try:
-                # Use current image shape as a hint for consistent sizing
-                shape_hint = image_data_cps.shape if isinstance(image_data_cps, np.ndarray) else None
-                heatmap = build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_hint=shape_hint)
-    
-                # Optional smoothing
-                if smooth_sigma > 0:
-                    if gaussian_filter is not None:
-                        heatmap = gaussian_filter(heatmap, sigma=smooth_sigma, mode="nearest")
-                    else:
-                        # Lightweight fallback: simple box blur via convolution
-                        k = int(max(1, round(smooth_sigma * 3)))
-                        kernel = np.ones((k, k), dtype=np.float64)
-                        kernel /= kernel.sum()
-                        # Pad and convolve (valid for small kernels and moderate sizes)
-                        from numpy.lib.stride_tricks import sliding_window_view
-                        if heatmap.shape[0] >= k and heatmap.shape[1] >= k:
-                            windows = sliding_window_view(
-                                np.pad(heatmap, ((k//2, k-1-k//2), (k//2, k-1-k//2)), mode="edge"),
-                                (k, k)
-                            )
-                            heatmap = (windows * kernel).sum(axis=(-1, -2))
-    
-                # Plot
-                import matplotlib.pyplot as plt
-                fig_hm, ax_hm = plt.subplots()
-                im = ax_hm.imshow(heatmap, origin="lower", cmap=heat_cmap, norm=None)
-                ax_hm.set_title("Brightness Heatmap (All SIFs)")
-                ax_hm.set_xlabel("X (px)")
-                ax_hm.set_ylabel("Y (px)")
-                cbar = fig_hm.colorbar(im, ax=ax_hm, fraction=0.046, pad=0.04)
-                cbar.set_label("Summed brightness (pps)")
-    
-                st.pyplot(fig_hm)
-    
-                # Download SVG
-                hm_svg_buf = io.StringIO()
-                fig_hm.savefig(hm_svg_buf, format="svg", bbox_inches="tight")
-                hm_svg_data = hm_svg_buf.getvalue()
-                hm_svg_buf.close()
-    
-                st.download_button(
-                    label="Download heatmap (SVG)",
-                    data=hm_svg_data,
-                    file_name="global_brightness_heatmap.svg",
-                    mime="image/svg+xml"
-                )
-    
-            except Exception as e_hm:
-                st.warning(f"Couldn't build heatmap: {e_hm}")
+        # Display results if they exist in session state
+        if 'processed_data' in st.session_state:
+            processed_data = st.session_state.processed_data
+            combined_df = st.session_state.combined_df
+
+            # Create tabs for different plots
+            tab1, tab2, tab3 = st.tabs(["Individual Image", "Brightness Histogram", "Current Dependency"])
+
+            with tab1:
+                file_options = list(processed_data.keys())
+                selected_file_name = st.selectbox("Select SIF to display:", options=file_options)
+                
+                show_fits = st.checkbox("Show fits")
+                normalization = st.checkbox("Log Image Scaling")
+                normalization_to_use = LogNorm() if normalization else None
+
+                if selected_file_name in processed_data:
+                    data_to_plot = processed_data[selected_file_name]
+                    fig_image = plot_brightness(
+                        data_to_plot["image"], data_to_plot["df"],
+                        show_fits=show_fits, normalization=normalization_to_use,
+                        pix_size_um=0.1, cmap=cmap
+                    )
+                    st.pyplot(fig_image)
+                    
+                    # Add download buttons
+                    svg_buffer = io.StringIO()
+                    fig_image.savefig(svg_buffer, format='svg')
+                    st.download_button("Download Image (SVG)", svg_buffer.getvalue(), f"{selected_file_name}.svg", "image/svg+xml")
+
+            with tab2:
+                if combined_df is not None and not combined_df.empty:
+                    st.markdown("### Combined Brightness Histogram")
+                    brightness_vals = combined_df['brightness_fit'].values
+                    min_val, max_val = st.slider("Select brightness range (pps):", 
+                                                 float(np.min(brightness_vals)), float(np.max(brightness_vals)), 
+                                                 (float(np.min(brightness_vals)), float(np.max(brightness_vals))))
+                    num_bins = st.number_input("# Bins:", value=50, key="hist_bins")
+                    
+                    fig_hist, _, _ = plot_histogram(combined_df, min_val=min_val, max_val=max_val, num_bins=num_bins)
+                    st.pyplot(fig_hist)
+
+                    svg_buffer_hist = io.StringIO()
+                    fig_hist.savefig(svg_buffer_hist, format='svg')
+                    st.download_button("Download Histogram (SVG)", svg_buffer_hist.getvalue(), "histogram.svg", "image/svg+xml")
+                    
+                    csv_bytes = df_to_csv_bytes(combined_df)
+                    st.download_button("Download All Data (CSV)", csv_bytes, "combined_data.csv", "text/csv")
+                else:
+                    st.info("No data for histogram.")
+
+            with tab3:
+                st.markdown(f"### Mean Brightness vs. Current (Region: {region})")
+                if combined_df is not None and not combined_df.empty:
+                    fig_current = plot_brightness_vs_current(combined_df)
+                    st.pyplot(fig_current)
+                    
+                    svg_buffer_current = io.StringIO()
+                    fig_current.savefig(svg_buffer_current, format='svg')
+                    st.download_button("Download Plot (SVG)", svg_buffer_current.getvalue(), "brightness_vs_current.svg", "image/svg+xml")
+                else:
+                    st.info("No data to plot current dependency.")
