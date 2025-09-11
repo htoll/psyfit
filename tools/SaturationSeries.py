@@ -99,11 +99,58 @@ def plot_brightness_vs_current(df):
         markeredgecolor='blue'
     )
 
+@st.cache_data
+def plot_quadrant_histograms_for_max_current(_uploaded_files, threshold, signal):
+    """
+    Processes files for all 4 quadrants, finds the max current, and
+    plots a 2x2 grid of brightness histograms for that current.
+    Written by Hephaestus, a Gemini Gem tweaked by JFS
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8), constrained_layout=True)
+    axes = axes.flatten()  # Flatten the 2x2 array for easy iteration
+    all_dfs = []
+    
+    # Process data for each quadrant to build a complete dataframe
+    for i in range(1, 5):
+        quadrant = str(i)
+        # We only need the dataframe part of the output
+        _, df_quad = process_files(list(_uploaded_files), quadrant, threshold=threshold, signal=signal)
+        if df_quad is not None and not df_quad.empty:
+            df_quad['quadrant'] = quadrant
+            all_dfs.append(df_quad)
+            
+    if not all_dfs:
+        fig.text(0.5, 0.5, "No data found in any quadrant.", ha='center')
+        return fig
 
+    combined_df = pd.concat(all_dfs, ignore_index=True)
+    combined_df['current'] = combined_df['filename'].str.extract(r'^(\d+)_').astype(int)
+    max_current = combined_df['current'].max()
+
+    fig.suptitle(f"Brightness Histograms for Max Current: {max_current} mA", fontsize=16)
+
+    for i in range(4):
+        ax = axes[i]
+        quadrant = str(i + 1)
+        
+        # Filter data for the current quadrant and the max current
+        quad_data = combined_df[(combined_df['quadrant'] == quadrant) & (combined_df['current'] == max_current)]
+        
+        if not quad_data.empty:
+            brightness_data = quad_data['brightness_fit']
+            ax.hist(brightness_data, bins=50, color='skyblue', edgecolor='black')
+            ax.set_title(f"Quadrant {quadrant}")
+            ax.set_xlabel("Brightness (pps)")
+            ax.set_ylabel("Counts")
+            ax.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
+        else:
+            ax.text(0.5, 0.5, "No data", ha='center')
+            ax.set_title(f"Quadrant {quadrant}")
+
+    return fig
 
 # --- Keep your build_brightness_heatmap function here ---
 # --- Add the new plot_brightness_vs_current function here ---
-
 def run():
     col1, col2 = st.columns([1, 2])
     
@@ -114,8 +161,12 @@ def run():
     with col1:
         st.header("Analyze SIF Files")
         
-        # New UI for directory input instead of file uploader
-        sif_directory = st.text_input("Path to SIF file directory", help="Enter the full path to the folder containing your .sif files.")
+        # Reverted to a multi-file uploader button
+        uploaded_files = st.file_uploader(
+            "Upload .sif files (e.g., 100_1.sif, 120_1.sif)", 
+            type=["sif"], 
+            accept_multiple_files=True
+        )
         
         threshold = st.number_input("Threshold", min_value=0, value=2, help='''
         Stringency of fit, higher value is more selective:  
@@ -129,7 +180,7 @@ def run():
         │ 3 │ 4 │  
         └─┴─┘
         """
-        region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
+        region = st.selectbox("Region (for individual analysis)", options=["1", "2", "3", "4", "all"], help=diagram)
 
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:  
                                      - UCNP for high SNR (sklearn peakfinder)  
@@ -148,46 +199,12 @@ def run():
             if 'combined_df' in st.session_state:
                 del st.session_state.combined_df
 
-        if st.session_state.analyze_clicked and sif_directory:
-            if not os.path.isdir(sif_directory):
-                st.error(f"Directory not found: {sif_directory}")
-                st.session_state.analyze_clicked = False
-                return
-
-            # Find and load files matching the specified pattern
-            sif_files_to_process = []
-            file_pattern = re.compile(r"^\d+_\d+\.sif$")
-            
-            # Using st.cache_data to avoid reloading files on every rerun
-            @st.cache_data
-            def load_sif_files(directory):
-                loaded_files = []
-                filenames = sorted(os.listdir(directory), key=lambda x: int(x.split('_')[0]))
-                for filename in filenames:
-                    if file_pattern.match(filename):
-                        file_path = os.path.join(directory, filename)
-                        try:
-                            with open(file_path, 'rb') as f:
-                                file_bytes = io.BytesIO(f.read())
-                                file_bytes.name = filename  # Mock UploadedFile object
-                                loaded_files.append(file_bytes)
-                        except IOError as e:
-                            st.warning(f"Could not read file {filename}: {e}")
-                return loaded_files
-
-            sif_files_to_process = load_sif_files(sif_directory)
-
-            if not sif_files_to_process:
-                st.warning("No files matching the 'integer_FOV.sif' format found.")
-                st.session_state.analyze_clicked = False
-                return
-
+        if st.session_state.analyze_clicked and uploaded_files:
             try:
-                # Process all found files
-                processed_data, combined_df = process_files(sif_files_to_process, region, threshold=threshold, signal=signal)
+                # Process files for the user-selected region for the first three tabs
+                processed_data, combined_df = process_files(uploaded_files, region, threshold=threshold, signal=signal)
                 st.session_state.processed_data = processed_data
                 st.session_state.combined_df = combined_df
-
             except Exception as e:
                 st.error(f"Error processing files: {e}")
                 st.session_state.analyze_clicked = False
@@ -198,7 +215,7 @@ def run():
             combined_df = st.session_state.combined_df
 
             # Create tabs for different plots
-            tab1, tab2, tab3 = st.tabs(["Individual Image", "Brightness Histogram", "Current Dependency"])
+            tab1, tab2, tab3, tab4 = st.tabs(["Individual Image", "Brightness Histogram", "Current Dependency", "Max Current Analysis"])
 
             with tab1:
                 file_options = list(processed_data.keys())
@@ -216,8 +233,6 @@ def run():
                         pix_size_um=0.1, cmap=cmap
                     )
                     st.pyplot(fig_image)
-                    
-                    # Add download buttons
                     svg_buffer = io.StringIO()
                     fig_image.savefig(svg_buffer, format='svg')
                     st.download_button("Download Image (SVG)", svg_buffer.getvalue(), f"{selected_file_name}.svg", "image/svg+xml")
@@ -230,14 +245,11 @@ def run():
                                                  float(np.min(brightness_vals)), float(np.max(brightness_vals)), 
                                                  (float(np.min(brightness_vals)), float(np.max(brightness_vals))))
                     num_bins = st.number_input("# Bins:", value=50, key="hist_bins")
-                    
                     fig_hist, _, _ = plot_histogram(combined_df, min_val=min_val, max_val=max_val, num_bins=num_bins)
                     st.pyplot(fig_hist)
-
                     svg_buffer_hist = io.StringIO()
                     fig_hist.savefig(svg_buffer_hist, format='svg')
                     st.download_button("Download Histogram (SVG)", svg_buffer_hist.getvalue(), "histogram.svg", "image/svg+xml")
-                    
                     csv_bytes = df_to_csv_bytes(combined_df)
                     st.download_button("Download All Data (CSV)", csv_bytes, "combined_data.csv", "text/csv")
                 else:
@@ -248,9 +260,20 @@ def run():
                 if combined_df is not None and not combined_df.empty:
                     fig_current = plot_brightness_vs_current(combined_df)
                     st.pyplot(fig_current)
-                    
                     svg_buffer_current = io.StringIO()
                     fig_current.savefig(svg_buffer_current, format='svg')
                     st.download_button("Download Plot (SVG)", svg_buffer_current.getvalue(), "brightness_vs_current.svg", "image/svg+xml")
                 else:
                     st.info("No data to plot current dependency.")
+
+            # New tab for the 4-quadrant histogram plot
+            with tab4:
+                st.markdown("### Quadrant Histograms for Highest Current")
+                # The tuple() makes the list hashable for caching
+                fig_quad_hist = plot_quadrant_histograms_for_max_current(tuple(uploaded_files), threshold, signal)
+                st.pyplot(fig_quad_hist)
+                
+                svg_buffer_quad = io.StringIO()
+                fig_quad_hist.savefig(svg_buffer_quad, format='svg')
+                st.download_button("Download Quadrant Plot (SVG)", svg_buffer_quad.getvalue(), "quadrant_histogram.svg", "image/svg+xml")
+
