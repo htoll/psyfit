@@ -27,6 +27,8 @@ import re
 import os
 import textwrap
 
+from utils import HWT_aesthetic
+
 def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None):
