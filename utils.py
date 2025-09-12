@@ -223,7 +223,7 @@ def plot_brightness(
     pix_size_um=0.1,
     cmap='magma',
     *,
-    interactive=True,                
+    interactive=False,                
     dragmode='zoom'                    # 'zoom' (magnifier) or 'pan'
 ):
     """
