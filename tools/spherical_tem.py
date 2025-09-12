@@ -37,8 +37,7 @@ from skimage.measure import regionprops, label
 from skimage.morphology import (
     remove_small_objects,
     binary_closing,
-    disk,
-)
+    disk)
 from skimage.segmentation import watershed
 from streamlit_plotly_events import plotly_events
 from sklearn.cluster import KMeans
@@ -198,10 +197,15 @@ def segment_and_measure_shapes(
     # Binary image and watershed segmentation
     im_bi = data < threshold
     im_bi = binary_closing(im_bi, disk(3))
-    im_bi = remove_small_objects(im_bi, min_size=min_area_px)
+
     dist = distance_transform_edt(im_bi)
-    labels_ws = watershed(-dist, mask=im_bi)
-    labels_ws = label(labels_ws > 0)
+    # Use h-maxima transform to mimic MATLAB's imextendedmin
+    hmax = h_maxima(dist, 2)
+    markers = label(hmax)
+    labels_ws = watershed(-dist, markers=markers, mask=im_bi)
+    im_bi[labels_ws == 0] = 0
+    im_bi = remove_small_objects(im_bi, min_size=min_area_px)
+    labels_ws = label(im_bi)
 
     # Prepare measurement containers
     diameters_nm: List[float] = []
@@ -238,8 +242,7 @@ def segment_and_measure_shapes(
         cy, cx = p.centroid  # note: regionprops returns (row, col)
 
         if shape_type == "Sphere":
-            if circ < 0.82 or circ > 1.2:
-                continue
+
             diam_px = (maj + minr_axis) / 2
             d_nm = diam_px * nm_per_px
             if d_nm < 2:
@@ -441,8 +444,7 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
         sel = next(r for r in results if r["name"] == sel_name)
 
         tab1, tab2 = st.tabs(["Annotated", "Watershed"])
-        tab1.image(sel["annotated_png"], caption="Detected shapes", use_column_width=True)
-        tab2.image(sel["watershed_png"], caption="Watershed labels", use_column_width=True)
+
 
         # ------------------------------------------------------------------
         # Combined histograms
