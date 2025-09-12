@@ -94,7 +94,7 @@ def run():
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help= '''Changes detection method:  
                                                                 - UCNP for high SNR (sklearn peakfinder)  
                                                                 - dye for low SNR (sklearn blob detection)''')
-        cmap = st.selectbox("Colormap", options = ["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
+        cmap = st.selectbox("Colormap", options = ['plasma', 'gray', "magma", 'viridis', 'hot', 'hsv'])
 
 
     with col2:
