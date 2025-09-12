@@ -214,8 +214,8 @@ def run():
         region = st.selectbox("Region (for individual analysis)", options=["1", "2", "3", "4", "all"], help=diagram)
 
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:  
-                                - UCNP for high SNR (sklearn peakfinder)  
-                                - dye for low SNR (sklearn blob detection)''')
+                                 - UCNP for high SNR (sklearn peakfinder)  
+                                 - dye for low SNR (sklearn blob detection)''')
         cmap = st.selectbox("Colormap", options=["magma", 'viridis', 'plasma', 'hot', 'gray', 'hsv'])
 
     with col2:
@@ -231,114 +231,93 @@ def run():
 
         if st.session_state.analyze_clicked and uploaded_files:
             try:
-                # 1. Get the processed_data dictionary from your function.
-                #    We will ignore the incomplete combined_df it returns for now.
+                # Process files for the individually selected region for the first tab
                 processed_data, _ = process_files(uploaded_files, region, threshold=threshold, signal=signal)
-                
-                # --- FIX STARTS HERE ---
-                # 2. Rebuild the combined_df correctly from processed_data.
-                all_dfs_corrected = []
-                for filename, data in processed_data.items():
-                    df = data.get("df")
-                    if df is not None and not df.empty:
-                        # 3. Add the 'filename' column to each DataFrame before appending.
-                        df['filename'] = filename
-                        all_dfs_corrected.append(df)
-
-                # 4. Create the new, correct combined_df.
-                if all_dfs_corrected:
-                    combined_df = pd.concat(all_dfs_corrected, ignore_index=True)
-                else:
-                    combined_df = pd.DataFrame()
-                # --- FIX ENDS HERE ---
-
-                # 5. Store the corrected data in the session state.
                 st.session_state.processed_data = processed_data
-                st.session_state.combined_df = combined_df
 
             except Exception as e:
                 st.error(f"Error processing files: {e}")
                 st.session_state.analyze_clicked = False
 
         if 'processed_data' in st.session_state:
-    processed_data = st.session_state.processed_data
+            processed_data = st.session_state.processed_data
 
-    # Define the new tab structure
-    tab_analysis, tab_summary = st.tabs(["Image Analysis", "Quadrant Summary"])
+            # Define the new tab structure with the merged summary tab
+            tab_analysis, tab_summary = st.tabs(["Image Analysis", "Quadrant Summary"])
 
-    # --- TAB 1: REMAINS THE SAME ---
-    with tab_analysis:
-        file_options = list(processed_data.keys())
-        selected_file = st.selectbox("Select SIF to display:", options=file_options)
+            # --- TAB 1: INDIVIDUAL IMAGE ANALYSIS (Unchanged) ---
+            with tab_analysis:
+                file_options = list(processed_data.keys())
+                selected_file = st.selectbox("Select SIF to display:", options=file_options, key="file_select")
+                
+                if selected_file:
+                    plot_col1, plot_col2 = st.columns(2)
+                    data_for_file = processed_data[selected_file]
+                    df_for_file = data_for_file.get("df")
 
-        if selected_file:
-            plot_col1, plot_col2 = st.columns(2)
-            data_for_file = processed_data[selected_file]
-            df_for_file = data_for_file.get("df")
+                    with plot_col1:
+                        st.markdown("#### Image Display")
+                        show_fits = st.checkbox("Show fits", key="fits_check")
+                        normalization = st.checkbox("Log Image Scaling", key="log_check")
+                        normalization_to_use = LogNorm() if normalization else None
 
-            # Column 1: Image Plot
-            with plot_col1:
-                st.markdown("#### Image Display")
-                show_fits = st.checkbox("Show fits")
-                normalization = st.checkbox("Log Image Scaling")
-                normalization_to_use = LogNorm() if normalization else None
+                        fig_image = plot_brightness(
+                            data_for_file["image"], df_for_file,
+                            show_fits=show_fits, normalization=normalization_to_use,
+                            pix_size_um=0.1, cmap=cmap
+                        )
+                        st.pyplot(fig_image)
+                        svg_buffer_img = io.StringIO()
+                        fig_image.savefig(svg_buffer_img, format='svg')
+                        st.download_button("Download Image (SVG)", svg_buffer_img.getvalue(), f"{selected_file}.svg")
 
-                fig_image = plot_brightness(
-                    data_for_file["image"], df_for_file,
-                    show_fits=show_fits, normalization=normalization_to_use,
-                    pix_size_um=0.1, cmap=cmap
-                )
-                st.pyplot(fig_image)
-                svg_buffer_img = io.StringIO()
-                fig_image.savefig(svg_buffer_img, format='svg')
-                st.download_button("Download Image (SVG)", svg_buffer_img.getvalue(), f"{selected_file}.svg")
+                    with plot_col2:
+                        st.markdown("#### Brightness Histogram")
+                        if df_for_file is not None and not df_for_file.empty:
+                            brightness_vals = df_for_file['brightness_fit'].values
+                            min_val, max_val = st.slider(
+                                "Select brightness range (pps):", 
+                                float(0), float(np.max(brightness_vals)), 
+                                (float(0), float(np.max(brightness_vals))),
+                                key="hist_slider"
+                            )
+                            num_bins = st.number_input("# Bins:", value=50, key="hist_bins")
+                            
+                            fig_hist, _, _ = plot_histogram(df_for_file, min_val=min_val, max_val=max_val, num_bins=num_bins)
+                            st.pyplot(fig_hist)
+                            
+                            svg_buffer_hist = io.StringIO()
+                            fig_hist.savefig(svg_buffer_hist, format='svg')
+                            st.download_button("Download Histogram (SVG)", svg_buffer_hist.getvalue(), f"{selected_file}_histogram.svg")
+                            
+                            csv_bytes = df_to_csv_bytes(df_for_file)
+                            st.download_button("Download Data (CSV)", csv_bytes, f"{selected_file}_data.csv")
+                        else:
+                            st.info(f"No particles were detected in '{selected_file}'.")
 
-            # Column 2: Histogram Plot
-            with plot_col2:
-                st.markdown("#### Brightness Histogram")
-                if df_for_file is not None and not df_for_file.empty:
-                    brightness_vals = df_for_file['brightness_fit'].values
-                    min_val, max_val = st.slider(
-                        "Select brightness range (pps):", 
-                        float(0), float(np.max(brightness_vals)), 
-                        (float(0), float(np.max(brightness_vals))),
-                        key="hist_slider"
-                    )
-                    num_bins = st.number_input("# Bins:", value=50, key="hist_bins")
+            # --- TAB 2: NEW MERGED QUADRANT SUMMARY TAB ---
+            with tab_summary:
+                st.markdown("### Comprehensive Quadrant Analysis")
+                # Process data for all quadrants once and cache the result
+                summary_df = process_all_quadrants(tuple(uploaded_files), threshold, signal)
 
-                    fig_hist, _, _ = plot_histogram(df_for_file, min_val=min_val, max_val=max_val, num_bins=num_bins)
-                    st.pyplot(fig_hist)
+                if not summary_df.empty:
+                    # Plot 1: Brightness vs. Current for all Quads
+                    st.markdown("#### Brightness vs. Current by Quadrant")
+                    fig_currents = plot_all_quadrant_brightness_vs_current(summary_df)
+                    st.pyplot(fig_currents)
+                    svg_buffer_currents = io.StringIO()
+                    fig_currents.savefig(svg_buffer_currents, format='svg')
+                    st.download_button("Download Current Plot (SVG)", svg_buffer_currents.getvalue(), "all_quad_brightness_vs_current.svg", key="dl_current")
 
-                    svg_buffer_hist = io.StringIO()
-                    fig_hist.savefig(svg_buffer_hist, format='svg')
-                    st.download_button("Download Histogram (SVG)", svg_buffer_hist.getvalue(), f"{selected_file}_histogram.svg")
+                    st.markdown("---") # Visual separator
 
-                    csv_bytes = df_to_csv_bytes(df_for_file)
-                    st.download_button("Download Data (CSV)", csv_bytes, f"{selected_file}_data.csv")
+                    # Plot 2: Histograms at Max Current
+                    st.markdown("#### Brightness Histograms for Highest Current")
+                    fig_quad_hist = plot_quadrant_histograms_for_max_current(summary_df)
+                    st.pyplot(fig_quad_hist)
+                    svg_buffer_quad = io.StringIO()
+                    fig_quad_hist.savefig(svg_buffer_quad, format='svg')
+                    st.download_button("Download Quadrant Plot (SVG)", svg_buffer_quad.getvalue(), "quadrant_histogram.svg", key="dl_quad")
                 else:
-                    st.info(f"No particles were detected in '{selected_file}'.")
-
-    # --- TAB 2: THE NEW MERGED TAB ---
-    with tab_summary:
-        st.markdown("### Comprehensive Quadrant Analysis")
-        # Process data for all quadrants once
-        summary_df = process_all_quadrants(tuple(uploaded_files), threshold, signal)
-
-        if not summary_df.empty:
-            # Plot 1: Brightness vs. Current for all Quads
-            fig_currents = plot_all_quadrant_brightness_vs_current(summary_df)
-            st.pyplot(fig_currents)
-            svg_buffer_currents = io.StringIO()
-            fig_currents.savefig(svg_buffer_currents, format='svg')
-            st.download_button("Download Current Plot (SVG)", svg_buffer_currents.getvalue(), "all_quad_brightness_vs_current.svg")
-
-            st.markdown("---") # Visual separator
-
-            # Plot 2: Histograms at Max Current
-            fig_quad_hist = plot_quadrant_histograms_for_max_current(summary_df)
-            st.pyplot(fig_quad_hist)
-            svg_buffer_quad = io.StringIO()
-            fig_quad_hist.savefig(svg_buffer_quad, format='svg')
-            st.download_button("Download Quadrant Plot (SVG)", svg_buffer_quad.getvalue(), "quadrant_histogram.svg")
-        else:
-            st.info("No particle data found across all quadrants to generate summary plots.")
+                    st.warning("No particle data found across any quadrant. Cannot generate summary plots.") 
