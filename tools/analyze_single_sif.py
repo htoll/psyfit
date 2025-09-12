@@ -201,10 +201,29 @@ def run():
                                 st.pyplot(fig_hist)
     
                                 svg_buffer_hist = io.StringIO()
-                                fig_hist.savefig(svg_buffer_hist, format='svg')
-                                svg_data_hist = svg_buffer_hist.getvalue()
-                                svg_buffer_hist.close()
-    
+                                if hasattr(svg_buffer_hist, "savefig"):  # Matplotlib fig
+                                        st.pyplot(svg_buffer_hist)
+                                        svg_buffer = io.StringIO()
+                                        fig_image.savefig(svg_buffer, format='svg')
+                                        svg_data = svg_buffer.getvalue()
+                                        svg_buffer.close()
+                                        st.download_button(
+                                            label="Download PSFs",
+                                            data=svg_buffer_hist,
+                                            file_name=f"{selected_file_name}.svg",
+                                            mime="image/svg+xml"
+                                        )
+                                
+                                else:  # Plotly fig
+                                    st.plotly_chart(
+                                        svg_buffer_hist,
+                                        use_container_width=True,
+                                        config={
+                                            "displaylogo": False,
+                                            "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
+                                        },
+                                    )
+            
                                 st.download_button(
                                     label="Download histogram",
                                     data=svg_data_hist,
@@ -267,17 +286,29 @@ def run():
     
                 # Download SVG
                 hm_svg_buf = io.StringIO()
-                fig_hm.savefig(hm_svg_buf, format="svg", bbox_inches="tight")
-                hm_svg_data = hm_svg_buf.getvalue()
-                hm_svg_buf.close()
-    
-                st.download_button(
-                    label="Download heatmap (SVG)",
-                    data=hm_svg_data,
-                    file_name="global_brightness_heatmap.svg",
-                    mime="image/svg+xml"
-                )
-    
+                if hasattr(fig_image, "savefig"):  # Matplotlib fig
+                        st.pyplot(fig_image)
+                        svg_buffer = io.StringIO()
+                        fig_image.savefig(svg_buffer, format='svg')
+                        svg_data = svg_buffer.getvalue()
+                        svg_buffer.close()
+                        st.download_button(
+                            label="Download PSFs",
+                            data=svg_data,
+                            file_name=f"{selected_file_name}.svg",
+                            mime="image/svg+xml"
+                        )
+                
+                else:  # Plotly fig
+                    st.plotly_chart(
+                        fig_image,
+                        use_container_width=True,
+                        config={
+                            "displaylogo": False,
+                            "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
+                        },
+                    )
+
             except Exception as e_hm:
                 st.warning(f"Couldn't build heatmap: {e_hm}")
 
