@@ -218,12 +218,12 @@ def plot_brightness(
     image_data_cps,
     df,
     show_fits=True,
-    plot_brightness_histogram=False,   # kept for signature compatibility
+    plot_brightness_histogram=False,   
     normalization=False,
     pix_size_um=0.1,
     cmap='magma',
     *,
-    interactive=False,                 # <-- NEW, defaults to old behavior
+    interactive=True,                
     dragmode='zoom'                    # 'zoom' (magnifier) or 'pan'
 ):
     """
