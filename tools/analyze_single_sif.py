@@ -138,22 +138,18 @@ def run():
                     )
     
                     with plot_col1:
-                        st.pyplot(fig_image)
-                        svg_buffer = io.StringIO()
-                        if hasattr(fig_image, "savefig"):  # Matplotlib fig
-                                st.pyplot(fig_image)
-                                svg_buffer = io.StringIO()
-                                fig_image.savefig(svg_buffer, format='svg')
-                                svg_data = svg_buffer.getvalue()
-                                svg_buffer.close()
-                                st.download_button(
-                                    label="Download PSFs",
-                                    data=svg_data,
-                                    file_name=f"{selected_file_name}.svg",
-                                    mime="image/svg+xml"
-                                )
-                        
-                        else:  # Plotly fig
+                        # Display the figure appropriately and offer SVG download
+                        if hasattr(fig_image, "savefig"):
+                            st.pyplot(fig_image)
+                            svg_buffer = io.StringIO()
+                            fig_image.savefig(svg_buffer, format="svg")
+                            st.download_button(
+                                label="Download PSFs",
+                                data=svg_buffer.getvalue(),
+                                file_name=f"{selected_file_name}.svg",
+                                mime="image/svg+xml",
+                            )
+                        else:
                             st.plotly_chart(
                                 fig_image,
                                 use_container_width=True,
@@ -162,17 +158,27 @@ def run():
                                     "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
                                 },
                             )
+                            try:
+                                svg_data = fig_image.to_image(format="svg")
+                                st.download_button(
+                                    label="Download PSFs",
+                                    data=svg_data,
+                                    file_name=f"{selected_file_name}.svg",
+                                    mime="image/svg+xml",
+                                )
+                            except Exception:
+                                pass
+
                         if combined_df is not None and not combined_df.empty:
                             csv_bytes = df_to_csv_bytes(combined_df)
                             st.download_button(
                                 label="Download as CSV",
                                 data=csv_bytes,
                                 file_name=f"{os.path.splitext(selected_file_name)[0]}_compiled.csv",
-                                mime="text/csv"
+                                mime="text/csv",
                             )
                         else:
                             st.info("No compiled data available to download yet.")
-    
                     with plot_col2:
                         if plot_brightness_histogram and not combined_df.empty:
                             brightness_vals = combined_df['brightness_fit'].values
@@ -196,40 +202,38 @@ def run():
                                     combined_df,
                                     min_val=user_min,
                                     max_val=user_max,
-                                    num_bins=num_bins
+                                    num_bins=num_bins,
                                 )
-                                st.pyplot(fig_hist)
-    
-                                svg_buffer_hist = io.StringIO()
-                                if hasattr(svg_buffer_hist, "savefig"):  # Matplotlib fig
-                                        st.pyplot(svg_buffer_hist)
-                                        svg_buffer = io.StringIO()
-                                        fig_image.savefig(svg_buffer, format='svg')
-                                        svg_data = svg_buffer.getvalue()
-                                        svg_buffer.close()
-                                        st.download_button(
-                                            label="Download PSFs",
-                                            data=svg_buffer_hist,
-                                            file_name=f"{selected_file_name}.svg",
-                                            mime="image/svg+xml"
-                                        )
-                                
-                                else:  # Plotly fig
+                                if hasattr(fig_hist, "savefig"):
+                                    st.pyplot(fig_hist)
+                                    hist_buffer = io.StringIO()
+                                    fig_hist.savefig(hist_buffer, format="svg")
+                                    st.download_button(
+                                        label="Download histogram",
+                                        data=hist_buffer.getvalue(),
+                                        file_name="combined_histogram.svg",
+                                        mime="image/svg+xml",
+                                    )
+                                else:
                                     st.plotly_chart(
-                                        svg_buffer_hist,
+                                        fig_hist,
                                         use_container_width=True,
                                         config={
                                             "displaylogo": False,
                                             "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
                                         },
                                     )
-            
-                                st.download_button(
-                                    label="Download histogram",
-                                    data=svg_data_hist,
-                                    file_name="combined_histogram.svg",
-                                    mime="image/svg+xml"
-                                )
+                                    try:
+                                        hist_svg = fig_hist.to_image(format="svg")
+                                        st.download_button(
+                                            label="Download histogram",
+                                            data=hist_svg,
+                                            file_name="combined_histogram.svg",
+                                            mime="image/svg+xml",
+                                        )
+                                    except Exception:
+                                        pass
+
                             else:
                                 st.warning("Min greater than max.")
                 else:
@@ -283,31 +287,16 @@ def run():
                 cbar.set_label("Summed brightness (pps)")
     
                 st.pyplot(fig_hm)
-    
+
                 # Download SVG
                 hm_svg_buf = io.StringIO()
-                if hasattr(fig_image, "savefig"):  # Matplotlib fig
-                        st.pyplot(fig_image)
-                        svg_buffer = io.StringIO()
-                        fig_image.savefig(svg_buffer, format='svg')
-                        svg_data = svg_buffer.getvalue()
-                        svg_buffer.close()
-                        st.download_button(
-                            label="Download PSFs",
-                            data=svg_data,
-                            file_name=f"{selected_file_name}.svg",
-                            mime="image/svg+xml"
-                        )
-                
-                else:  # Plotly fig
-                    st.plotly_chart(
-                        fig_image,
-                        use_container_width=True,
-                        config={
-                            "displaylogo": False,
-                            "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
-                        },
-                    )
+                fig_hm.savefig(hm_svg_buf, format="svg")
+                st.download_button(
+                    label="Download heatmap",
+                    data=hm_svg_buf.getvalue(),
+                    file_name="brightness_heatmap.svg",
+                    mime="image/svg+xml",
+                )
 
             except Exception as e_hm:
                 st.warning(f"Couldn't build heatmap: {e_hm}")
