@@ -292,8 +292,12 @@ def plot_brightness(
         aspect="equal",
         color_continuous_scale=plotly_scale
     )
-    fig.data[0].customdata = img
-    fig.data[0].hovertemplate = "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata:.1f}<extra></extra>"
+    # store original cps values for accurate hover information
+    img_custom = np.expand_dims(img, axis=-1)
+    fig.data[0].customdata = img_custom
+    fig.data[0].hovertemplate = (
+        "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata[0]:.1f}<extra></extra>"
+    )
     fig.update_layout(
         margin=dict(l=0, r=0, t=30, b=0),
         dragmode=dragmode,
@@ -590,7 +594,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     n_files = len(sif_files)
     n_cols = min(4, max(1, n_files))   # between 1 and 4, never more than files
     n_rows = int(np.ceil(n_files / n_cols))
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
     if isinstance(axes, np.ndarray):
         axes = axes.flatten()
     else:

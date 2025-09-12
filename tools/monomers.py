@@ -161,8 +161,11 @@ def plot_monomer_brightness(
         img_display = img
 
     fig = px.imshow(img_display, origin="lower", aspect="equal", color_continuous_scale=plotly_scale)
-    fig.data[0].customdata = img
-    fig.data[0].hovertemplate = "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata:.1f}<extra></extra>"
+    img_custom = np.expand_dims(img, axis=-1)
+    fig.data[0].customdata = img_custom
+    fig.data[0].hovertemplate = (
+        "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata[0]:.1f}<extra></extra>"
+    )
     fig.update_layout(
         margin=dict(l=0, r=0, t=30, b=0),
         dragmode=dragmode,
@@ -395,26 +398,26 @@ def run():
                     interactive=True,
                 )
                 fig_image.update_layout(height=640)
+                fmt = save_format.lower()
+                if fmt not in {"png", "jpeg", "jpg", "svg", "webp"}:
+                    fmt = "png"
                 st.plotly_chart(
                     fig_image,
                     use_container_width=True,
                     config={
                         "displaylogo": False,
                         "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
+                        "toImageButtonOptions": {"format": fmt},
                     },
                 )
 
-                import plotly.io as pio
-                try:
-                    img_bytes = pio.to_image(fig_image, format=save_format)
-                    st.download_button(
-                        label=f"Download PSFs ({save_format})",
-                        data=img_bytes,
-                        file_name=f"{selected_file_name}.{save_format}",
-                        mime=mime_map[save_format],
-                    )
-                except Exception as e:
-                    st.warning(f"Static image export failed: {e}")
+                html_bytes = fig_image.to_html().encode("utf-8")
+                st.download_button(
+                    label="Download PSFs (HTML)",
+                    data=html_bytes,
+                    file_name=f"{selected_file_name}.html",
+                    mime="text/html",
+                )
             else:
                 st.error(f"Data for file '{selected_file_name}' not found.")
 

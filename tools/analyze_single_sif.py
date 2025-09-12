@@ -156,25 +156,25 @@ def run():
                         )
                     else:
                         fig_image.update_layout(height=640)
+                        fmt = save_format.lower()
+                        if fmt not in {"png", "jpeg", "jpg", "svg", "webp"}:
+                            fmt = "png"
                         st.plotly_chart(
                             fig_image,
                             use_container_width=True,
                             config={
                                 "displaylogo": False,
                                 "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
+                                "toImageButtonOptions": {"format": fmt},
                             },
                         )
-                        import plotly.io as pio
-                        try:
-                            img_bytes = pio.to_image(fig_image, format=save_format)
-                            st.download_button(
-                                label=f"Download PSFs ({save_format})",
-                                data=img_bytes,
-                                file_name=f"{selected_file_name}.{save_format}",
-                                mime=mime_map[save_format],
-                            )
-                        except Exception as e:
-                            st.warning(f"Static image export failed: {e}")
+                        html_bytes = fig_image.to_html().encode("utf-8")
+                        st.download_button(
+                            label="Download PSFs (HTML)",
+                            data=html_bytes,
+                            file_name=f"{selected_file_name}.html",
+                            mime="text/html",
+                        )
 
                     if combined_df is not None and not combined_df.empty:
                         csv_bytes = df_to_csv_bytes(combined_df)
@@ -224,24 +224,24 @@ def run():
                                 )
                             else:
                                 fig_hist.update_layout(height=400)
+                                fmt_h = save_format.lower()
+                                if fmt_h not in {"png", "jpeg", "jpg", "svg", "webp"}:
+                                    fmt_h = "png"
                                 st.plotly_chart(
                                     fig_hist,
                                     use_container_width=True,
                                     config={
                                         "displaylogo": False,
                                         "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
+                                        "toImageButtonOptions": {"format": fmt_h},
                                     },
                                 )
-                                try:
-                                    hist_bytes = fig_hist.to_image(format=save_format)
-                                    st.download_button(
-                                        label=f"Download histogram ({save_format})",
-                                        data=hist_bytes,
-                                        file_name=f"combined_histogram.{save_format}",
-                                        mime=mime_map[save_format],
-                                    )
-                                except Exception:
-                                    pass
+                                st.download_button(
+                                    label="Download histogram (HTML)",
+                                    data=fig_hist.to_html().encode("utf-8"),
+                                    file_name="combined_histogram.html",
+                                    mime="text/html",
+                                )
                         else:
                             st.warning("Min greater than max.")
             else:
