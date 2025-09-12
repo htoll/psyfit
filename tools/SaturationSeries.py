@@ -64,93 +64,78 @@ def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_
         np.add.at(heatmap, (yi, xi), ws)
 
     return heatmap 
-def plot_brightness_vs_current(df):
+def plot_all_quadrant_brightness_vs_current(combined_df):
     """
-    Calculates mean brightness per image, then aggregates these means by current.
-    Plots the mean of image means vs. current, with error bars showing
-    the standard deviation of the image means for each current.
+    Calculates and plots the mean brightness vs. current for all four quadrants
+    on a single plot, with error bars showing the standard deviation of image means.
     Written by Hephaestus, a Gemini Gem tweaked by JFS
     """
-    if df is None or df.empty or 'brightness_fit' not in df.columns or 'filename' not in df.columns:
+    if combined_df is None or combined_df.empty:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, "filename error", ha='center', va='center')
+        ax.text(0.5, 0.5, "No data available to plot.", ha='center', va='center')
         return fig
 
-    # Step 1: Calculate the mean brightness for each individual image (FOV).
-    image_means = df.groupby('filename')['brightness_fit'].mean().reset_index()
-    image_means.rename(columns={'brightness_fit': 'mean_brightness'}, inplace=True)
-
-    # Step 2: Extract the current from the filename in our new dataframe of means.
-    image_means['current'] = image_means['filename'].str.extract(r'^(\d+)_').astype(int)
-
-    # Step 3: Group the image means by current and calculate the final aggregate statistics.
-    # The result is the mean of image means and the standard deviation of image means.
-    agg_data = image_means.groupby('current')['mean_brightness'].agg(['mean', 'std']).reset_index()
-    agg_data = agg_data.sort_values('current')
-    
-    # If a current has only one FOV, its std dev will be NaN. Set it to 0.
-    agg_data['std'] = agg_data['std'].fillna(0)
-
-    # Step 4: Create the plot (this part remains the same).
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.errorbar(
-        agg_data['current'],
-        agg_data['mean'],  # This is the mean of the image means
-        yerr=agg_data['std'],    # This is the std dev of the image means
-        fmt='o-',
-        capsize=5,
-        ecolor='red',
-        markerfacecolor='blue',
-        markeredgecolor='blue'
-    )
+    
+    # Define colors for each quadrant
+    colors = {"1": "blue", "2": "green", "3": "red", "4": "black"}
+
+    # Group by quadrant and process each one
+    for quadrant, quad_df in combined_df.groupby('quadrant'):
+        # Step 1: Calculate the mean brightness for each individual image (FOV).
+        image_means = quad_df.groupby('filename')['brightness_fit'].mean().reset_index()
+        image_means.rename(columns={'brightness_fit': 'mean_brightness'}, inplace=True)
+
+        # Step 2: Extract the current from the filename.
+        # Check if 'current' column already exists from a previous step
+        if 'current' not in image_means.columns:
+             image_means['current'] = image_means['filename'].str.extract(r'^(\d+)_').astype(int)
+
+        # Step 3: Group by current to get the mean and std of the image means.
+        agg_data = image_means.groupby('current')['mean_brightness'].agg(['mean', 'std']).reset_index()
+        agg_data = agg_data.sort_values('current')
+        agg_data['std'] = agg_data['std'].fillna(0) # Fill NaN for single-FOV currents
+
+        # Step 4: Plot this quadrant's data
+        ax.errorbar(
+            agg_data['current'],
+            agg_data['mean'],
+            yerr=agg_data['std'],
+            fmt='o-',
+            capsize=5,
+            label=f'Quadrant {quadrant}',
+            color=colors.get(str(quadrant), 'gray') # Use gray for unexpected quadrants
+        )
 
     ax.set_yscale('log')
     ax.set_xlabel("Current (mA)")
     ax.set_ylabel("Mean of Image Means (pps)")
-    ax.set_title("Mean Particle Brightness vs. Current")
+    ax.set_title("Mean Particle Brightness vs. Current by Quadrant")
     ax.grid(True, which="both", ls="--", linewidth=0.5)
+    ax.legend()
     fig.tight_layout()
 
     return fig
+
 @st.cache_data
-def plot_quadrant_histograms_for_max_current(_uploaded_files, threshold, signal):
+def plot_quadrant_histograms_for_max_current(combined_df): # Changed arguments
     """
-    Processes files for all 4 quadrants, finds the max current, and
-    plots a 2x2 grid of brightness histograms for that current.
+    Takes a combined DataFrame for all quadrants and plots a 2x2 grid of 
+    brightness histograms for the single highest current found in the data.
     Written by Hephaestus, a Gemini Gem tweaked by JFS
     """
     fig, axes = plt.subplots(2, 2, figsize=(10, 8), constrained_layout=True)
-    axes = axes.flatten()  # Flatten the 2x2 array for easy iteration
-    all_dfs = []
+    axes = axes.flatten()
 
-    # Process data for each quadrant. We will capture the detailed dictionary
-    # (processed_data_quad) to retain the filename for each particle.
-    for i in range(1, 5):
-        quadrant = str(i)
-        
-        # We use the first return value from process_files, which is a
-        # dictionary mapping filenames to their data.
-        processed_data_quad, _ = process_files(list(_uploaded_files), quadrant, threshold=threshold, signal=signal)
-
-        # Iterate through each file's results for the current quadrant
-        for filename, data in processed_data_quad.items():
-            df = data.get("df")
-            if df is not None and not df.empty:
-                # Create a copy and add the filename and quadrant as new columns
-                df_with_meta = df.copy()
-                df_with_meta['filename'] = filename
-                df_with_meta['quadrant'] = quadrant
-                all_dfs.append(df_with_meta)
-                
-    if not all_dfs:
+    if combined_df is None or combined_df.empty:
         fig.text(0.5, 0.5, "No data found in any quadrant.", ha='center')
         return fig
 
-    # This new DataFrame now contains the 'filename' and 'quadrant' columns
-    combined_df = pd.concat(all_dfs, ignore_index=True)
-    
+    # This part is now simplified as the df is passed in
     # This line will now execute successfully
-    combined_df['current'] = combined_df['filename'].str.extract(r'^(\d+)_').astype(int)
+    if 'current' not in combined_df.columns:
+        combined_df['current'] = combined_df['filename'].str.extract(r'^(\d+)_').astype(int)
+    
     max_current = combined_df['current'].max()
 
     fig.suptitle(f"Brightness Histograms for Max Current: {max_current} mA", fontsize=16)
@@ -174,6 +159,28 @@ def plot_quadrant_histograms_for_max_current(_uploaded_files, threshold, signal)
             ax.set_title(f"Quadrant {quadrant}")
 
     return fig
+@st.cache_data
+def process_all_quadrants(_uploaded_files, threshold, signal):
+    """Processes files for all 4 quadrants and returns a single combined DataFrame."""
+    all_dfs = []
+    for i in range(1, 5):
+        quadrant = str(i)
+        processed_data_quad, _ = process_files(list(_uploaded_files), quadrant, threshold=threshold, signal=signal)
+
+        for filename, data in processed_data_quad.items():
+            df = data.get("df")
+            if df is not None and not df.empty:
+                df_with_meta = df.copy()
+                df_with_meta['filename'] = filename
+                df_with_meta['quadrant'] = quadrant
+                all_dfs.append(df_with_meta)
+
+    if not all_dfs:
+        return pd.DataFrame()
+
+    combined_df = pd.concat(all_dfs, ignore_index=True)
+    combined_df['current'] = combined_df['filename'].str.extract(r'^(\d+)_').astype(int)
+    return combined_df
 # --- Keep your build_brightness_heatmap function here ---
 # --- Add the new plot_brightness_vs_current function here ---
 def run():
@@ -254,80 +261,84 @@ def run():
                 st.session_state.analyze_clicked = False
 
         if 'processed_data' in st.session_state:
-            processed_data = st.session_state.processed_data
-            combined_df = st.session_state.combined_df
+    processed_data = st.session_state.processed_data
 
-            # The tabs have been redefined, combining the first two.
-            tab_analysis, tab_current, tab_max_current = st.tabs(["Image Analysis", "Current Dependency", "Max Current Analysis"])
+    # Define the new tab structure
+    tab_analysis, tab_summary = st.tabs(["Image Analysis", "Quadrant Summary"])
 
-            # This new tab contains the combined logic.
-            with tab_analysis:
-                file_options = list(processed_data.keys())
-                selected_file = st.selectbox("Select SIF to display:", options=file_options)
-                
-                if selected_file:
-                    plot_col1, plot_col2 = st.columns(2)
-                    data_for_file = processed_data[selected_file]
-                    df_for_file = data_for_file.get("df")
+    # --- TAB 1: REMAINS THE SAME ---
+    with tab_analysis:
+        file_options = list(processed_data.keys())
+        selected_file = st.selectbox("Select SIF to display:", options=file_options)
 
-                    # --- Column 1: Image Plot ---
-                    with plot_col1:
-                        st.markdown("#### Image Display")
-                        show_fits = st.checkbox("Show fits")
-                        normalization = st.checkbox("Log Image Scaling")
-                        normalization_to_use = LogNorm() if normalization else None
+        if selected_file:
+            plot_col1, plot_col2 = st.columns(2)
+            data_for_file = processed_data[selected_file]
+            df_for_file = data_for_file.get("df")
 
-                        fig_image = plot_brightness(
-                            data_for_file["image"], df_for_file,
-                            show_fits=show_fits, normalization=normalization_to_use,
-                            pix_size_um=0.1, cmap=cmap
-                        )
-                        st.pyplot(fig_image)
-                        svg_buffer_img = io.StringIO()
-                        fig_image.savefig(svg_buffer_img, format='svg')
-                        st.download_button("Download Image (SVG)", svg_buffer_img.getvalue(), f"{selected_file}.svg")
+            # Column 1: Image Plot
+            with plot_col1:
+                st.markdown("#### Image Display")
+                show_fits = st.checkbox("Show fits")
+                normalization = st.checkbox("Log Image Scaling")
+                normalization_to_use = LogNorm() if normalization else None
 
-                    # --- Column 2: Histogram Plot ---
-                    with plot_col2:
-                        st.markdown("#### Brightness Histogram")
-                        if df_for_file is not None and not df_for_file.empty:
-                            brightness_vals = df_for_file['brightness_fit'].values
-                            min_val, max_val = st.slider(
-                                "Select brightness range (pps):", 
-                                float(0), float(np.max(brightness_vals)), 
-                                (float(0), float(np.max(brightness_vals))),
-                                key="hist_slider"
-                            )
-                            num_bins = st.number_input("# Bins:", value=50, key="hist_bins")
-                            
-                            fig_hist, _, _ = plot_histogram(df_for_file, min_val=min_val, max_val=max_val, num_bins=num_bins)
-                            st.pyplot(fig_hist)
-                            
-                            svg_buffer_hist = io.StringIO()
-                            fig_hist.savefig(svg_buffer_hist, format='svg')
-                            st.download_button("Download Histogram (SVG)", svg_buffer_hist.getvalue(), f"{selected_file}_histogram.svg")
-                            
-                            csv_bytes = df_to_csv_bytes(df_for_file)
-                            st.download_button("Download Data (CSV)", csv_bytes, f"{selected_file}_data.csv")
-                        else:
-                            st.info(f"No particles were detected in '{selected_file}'.")
+                fig_image = plot_brightness(
+                    data_for_file["image"], df_for_file,
+                    show_fits=show_fits, normalization=normalization_to_use,
+                    pix_size_um=0.1, cmap=cmap
+                )
+                st.pyplot(fig_image)
+                svg_buffer_img = io.StringIO()
+                fig_image.savefig(svg_buffer_img, format='svg')
+                st.download_button("Download Image (SVG)", svg_buffer_img.getvalue(), f"{selected_file}.svg")
 
-            with tab_current:
-                st.markdown(f"### Mean Brightness vs. Current (Region: {region})")
-                if combined_df is not None and not combined_df.empty:
-                    fig_current = plot_brightness_vs_current(combined_df)
-                    st.pyplot(fig_current)
-                    svg_buffer_current = io.StringIO()
-                    fig_current.savefig(svg_buffer_current, format='svg')
-                    st.download_button("Download Plot (SVG)", svg_buffer_current.getvalue(), "brightness_vs_current.svg", "image/svg+xml")
+            # Column 2: Histogram Plot
+            with plot_col2:
+                st.markdown("#### Brightness Histogram")
+                if df_for_file is not None and not df_for_file.empty:
+                    brightness_vals = df_for_file['brightness_fit'].values
+                    min_val, max_val = st.slider(
+                        "Select brightness range (pps):", 
+                        float(0), float(np.max(brightness_vals)), 
+                        (float(0), float(np.max(brightness_vals))),
+                        key="hist_slider"
+                    )
+                    num_bins = st.number_input("# Bins:", value=50, key="hist_bins")
+
+                    fig_hist, _, _ = plot_histogram(df_for_file, min_val=min_val, max_val=max_val, num_bins=num_bins)
+                    st.pyplot(fig_hist)
+
+                    svg_buffer_hist = io.StringIO()
+                    fig_hist.savefig(svg_buffer_hist, format='svg')
+                    st.download_button("Download Histogram (SVG)", svg_buffer_hist.getvalue(), f"{selected_file}_histogram.svg")
+
+                    csv_bytes = df_to_csv_bytes(df_for_file)
+                    st.download_button("Download Data (CSV)", csv_bytes, f"{selected_file}_data.csv")
                 else:
-                    st.info("No data to plot current dependency.")
+                    st.info(f"No particles were detected in '{selected_file}'.")
 
-            with tab_max_current:
-                st.markdown("### Quadrant Histograms for Highest Current")
-                fig_quad_hist = plot_quadrant_histograms_for_max_current(tuple(uploaded_files), threshold, signal)
-                st.pyplot(fig_quad_hist)
-                
-                svg_buffer_quad = io.StringIO()
-                fig_quad_hist.savefig(svg_buffer_quad, format='svg')
-                st.download_button("Download Quadrant Plot (SVG)", svg_buffer_quad.getvalue(), "quadrant_histogram.svg", "image/svg+xml")
+    # --- TAB 2: THE NEW MERGED TAB ---
+    with tab_summary:
+        st.markdown("### Comprehensive Quadrant Analysis")
+        # Process data for all quadrants once
+        summary_df = process_all_quadrants(tuple(uploaded_files), threshold, signal)
+
+        if not summary_df.empty:
+            # Plot 1: Brightness vs. Current for all Quads
+            fig_currents = plot_all_quadrant_brightness_vs_current(summary_df)
+            st.pyplot(fig_currents)
+            svg_buffer_currents = io.StringIO()
+            fig_currents.savefig(svg_buffer_currents, format='svg')
+            st.download_button("Download Current Plot (SVG)", svg_buffer_currents.getvalue(), "all_quad_brightness_vs_current.svg")
+
+            st.markdown("---") # Visual separator
+
+            # Plot 2: Histograms at Max Current
+            fig_quad_hist = plot_quadrant_histograms_for_max_current(summary_df)
+            st.pyplot(fig_quad_hist)
+            svg_buffer_quad = io.StringIO()
+            fig_quad_hist.savefig(svg_buffer_quad, format='svg')
+            st.download_button("Download Quadrant Plot (SVG)", svg_buffer_quad.getvalue(), "quadrant_histogram.svg")
+        else:
+            st.info("No particle data found across all quadrants to generate summary plots.")
