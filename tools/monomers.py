@@ -351,7 +351,7 @@ def run():
                                 """
             region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
 
-            cmap = st.selectbox("Colormap", options=["magma", "viridis", "plasma", "hot", "gray", "hsv"])
+            cmap = st.selectbox("Colormap", options=["plasma", "viridis", "magma", "hot", "gray", "hsv"])
             st.session_state["monomers_cmap"] = cmap
 
             # PROCESS
