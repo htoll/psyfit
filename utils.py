@@ -11,6 +11,8 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from matplotlib.colors import LogNorm
 from matplotlib.colors import Normalize
+import plotly.express as px
+import plotly.graph_objects as go
 
 import seaborn as sns
 
@@ -172,39 +174,144 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
-def plot_brightness(image_data_cps, df, show_fits = True, plot_brightness_histogram = False, normalization = False, pix_size_um = 0.1, cmap = 'magma'):
+def plot_brightness(
+    image_data_cps,
+    df,
+    show_fits=True,
+    plot_brightness_histogram=False,
+    normalization=False,
+    pix_size_um=0.1,
+    cmap="magma",
+    interactive=False,
+):
 
+    if interactive:
+        img = image_data_cps
+        if normalization:
+            # approximate LogNorm by log10 scaling
+            eps = max(float(np.percentile(img, 0.01)), 1e-9)
+            img = np.log10(np.clip(img, eps, None))
+            colorbar_title = "log10(cps)"
+        else:
+            colorbar_title = "cps"
+
+        cmap_map = {
+            "magma": "Magma",
+            "viridis": "Viridis",
+            "plasma": "Plasma",
+            "hot": "Hot",
+            "gray": "Gray",
+            "hsv": "HSV",
+        }
+        plotly_scale = cmap_map.get(cmap, "Magma")
+
+        fig = px.imshow(
+            img,
+            color_continuous_scale=plotly_scale,
+            origin="lower",
+            aspect="equal",
+        )
+        fig.update_layout(
+            margin=dict(l=0, r=0, t=0, b=0),
+            coloraxis_colorbar=dict(title=colorbar_title),
+            xaxis_title="X (px)",
+            yaxis_title="Y (px)",
+        )
+
+        if show_fits and df is not None and not df.empty:
+            x_candidates = ["x", "x_px", "col", "column", "x_pix", "x_idx"]
+            y_candidates = ["y", "y_px", "row", "line", "y_pix", "y_idx"]
+            x_col = next((c for c in x_candidates if c in df.columns), None)
+            y_col = next((c for c in y_candidates if c in df.columns), None)
+            if x_col and y_col:
+                xs = df[x_col].to_numpy()
+                ys = df[y_col].to_numpy()
+                if "sigx_fit" in df.columns and "sigy_fit" in df.columns:
+                    radii = 2 * np.maximum(df["sigx_fit"], df["sigy_fit"]) / pix_size_um
+                elif "r" in df.columns:
+                    radii = df["r"].to_numpy()
+                else:
+                    radii = np.full_like(xs, 4.0, dtype=float)
+
+                shapes = []
+                for x, y, r in zip(xs, ys, radii):
+                    shapes.append(
+                        dict(
+                            type="circle",
+                            xref="x",
+                            yref="y",
+                            x0=x - r,
+                            x1=x + r,
+                            y0=y - r,
+                            y1=y + r,
+                            line=dict(width=1.5),
+                            fillcolor="rgba(0,0,0,0)",
+                            layer="above",
+                        )
+                    )
+                fig.update_layout(shapes=shapes)
+
+                hovertemplate = "x=%{x:.2f}px<br>y=%{y:.2f}px"
+                custom = None
+                if "brightness_fit" in df.columns:
+                    br = df["brightness_fit"].to_numpy()
+                    custom = np.stack([br], axis=1)
+                    hovertemplate += "<br>brightness=%{customdata[0]:.3e} pps"
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=xs,
+                        y=ys,
+                        mode="markers",
+                        marker=dict(symbol="circle-open", size=10, line=dict(width=1.5)),
+                        name="Fits",
+                        showlegend=False,
+                        customdata=custom,
+                        hovertemplate=hovertemplate,
+                    )
+                )
+
+        h, w = img.shape
+        fig.update_xaxes(range=[-0.5, w - 0.5], constrain="domain")
+        fig.update_yaxes(range=[-0.5, h - 0.5], scaleanchor="x", scaleratio=1)
+        return fig
+
+    # --- static matplotlib version ---
     fig_width, fig_height = 5, 5
-    
-    scale = fig_width / 5  
+    scale = fig_width / 5
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     if normalization:
         normalization = LogNorm()
     else:
         normalization = None
-    im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=normalization, origin='lower') 
-    ax.tick_params(axis='both',length=0, labelleft=False, labelright=False, labeltop=False, labelbottom=False)
+    im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=normalization, origin="lower")
+    ax.tick_params(axis="both", length=0, labelleft=False, labelright=False, labeltop=False, labelbottom=False)
 
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.ax.tick_params(labelsize = 10*scale)
-    cbar.set_label('pps', fontsize=10*scale)  
+    cbar.ax.tick_params(labelsize=10 * scale)
+    cbar.set_label("pps", fontsize=10 * scale)
 
-    if show_fits:
+    if show_fits and df is not None and not df.empty:
         for _, row in df.iterrows():
-            x_px = row['x_pix']
-            y_px = row['y_pix']
-            brightness_kpps = row['brightness_fit'] / 1000
-            radius_px = 2 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
-    
-            circle = Circle((x_px, y_px), radius_px, color='white', fill=False, linewidth=1*scale, alpha=0.7)
-            ax.add_patch(circle)
-    
-            ax.text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
-                    color='white', fontsize=7*scale, ha='center', va='center')
+            x_px = row["x_pix"]
+            y_px = row["y_pix"]
+            brightness_kpps = row["brightness_fit"] / 1000
+            radius_px = 2 * max(row["sigx_fit"], row["sigy_fit"]) / pix_size_um
 
-    #ax.set_xlabel('x (px)', fontsize = 10*scale)
-    #ax.set_ylabel('y (px)', fontsize = 10*scale)
+            circle = Circle((x_px, y_px), radius_px, color="white", fill=False, linewidth=1 * scale, alpha=0.7)
+            ax.add_patch(circle)
+
+            ax.text(
+                x_px + 7.5,
+                y_px + 7.5,
+                f"{brightness_kpps:.1f} kpps",
+                color="white",
+                fontsize=7 * scale,
+                ha="center",
+                va="center",
+            )
+
     plt.tight_layout()
     HWT_aesthetic()
     return fig

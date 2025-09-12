@@ -6,8 +6,6 @@ from tools.process_files import process_files
 from matplotlib.colors import LogNorm
 import numpy as np
 from scipy.ndimage import gaussian_filter
-import plotly.express as px
-import plotly.graph_objects as go
 
 def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_hint=None):
     """
@@ -62,109 +60,6 @@ def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_
         np.add.at(heatmap, (yi, xi), ws)
 
     return heatmap
-
-
-def plot_brightness_interactive(
-    image_2d,
-    df,
-    show_fits=True,
-    normalization=None,
-    pix_size_um=0.1,
-    cmap="magma",
-    circle_radius_px=None,   # if None, try to infer or default
-):
-    """
-    Returns a Plotly Figure with the image and (optionally) vector circles/labels.
-    - Vector overlays (shapes + scatter text) stay crisp when zooming.
-    - Dragmode, modebar, etc. can be controlled by caller.
-    """
-    # ---- image prep (log scaling to approximate LogNorm) ----
-    img = image_2d
-    if normalization is not None:  # LogNorm-like
-        eps = max(float(np.percentile(img, 0.01)), 1e-9)
-        img = np.log10(np.clip(img, eps, None))  # simple perceptual log
-
-    # ---- colormap mapping ----
-    cmap_map = {
-        "magma": "Magma", "viridis": "Viridis", "plasma": "Plasma",
-        "hot": "Hot", "gray": "Gray", "hsv": "HSV"
-    }
-    plotly_scale = cmap_map.get(cmap, "Magma")
-
-    # ---- base image (origin lower to match your Matplotlib) ----
-    fig = px.imshow(
-        img,
-        color_continuous_scale=plotly_scale,
-        origin="lower",
-        aspect="equal"
-    )
-    fig.update_layout(
-        margin=dict(l=0, r=0, t=30, b=0),
-        coloraxis_colorbar=dict(title="cps" if normalization is None else "log10(cps)"),
-        xaxis_title="X (px)",
-        yaxis_title="Y (px)",
-    )
-
-    if df is not None and not df.empty and show_fits:
-        # ---- find columns ----
-        x_candidates = ["x", "x_px", "col", "column", "x_pix", "x_idx"]
-        y_candidates = ["y", "y_px", "row", "line", "y_pix", "y_idx"]
-        x_col = next((c for c in x_candidates if c in df.columns), None)
-        y_col = next((c for c in y_candidates if c in df.columns), None)
-        b_col = "brightness_fit" if "brightness_fit" in df.columns else None
-
-        if x_col and y_col:
-            xs = df[x_col].to_numpy()
-            ys = df[y_col].to_numpy()
-
-            # radius heuristics
-            if circle_radius_px is None:
-                if "r" in df.columns:
-                    rs = df["r"].to_numpy()
-                elif "sigma" in df.columns:
-                    rs = (df["sigma"].to_numpy() * 2.355)  # ~FWHM in px
-                else:
-                    rs = np.full_like(xs, 4.0, dtype=float)  # sane default
-            else:
-                rs = np.full_like(xs, float(circle_radius_px), dtype=float)
-
-            # overlay vector circles as shapes + centers as scatter (crisp on zoom)
-            shapes = []
-            for x, y, r in zip(xs, ys, rs):
-                shapes.append(dict(
-                    type="circle",
-                    xref="x", yref="y",
-                    x0=x - r, x1=x + r,
-                    y0=y - r, y1=y + r,
-                    line=dict(width=1.5),
-                    fillcolor="rgba(0,0,0,0)",  # hollow
-                    layer="above",
-                ))
-            fig.update_layout(shapes=shapes)
-
-            # brightness in hover
-            custom = None
-            hovertemplate = "x=%{x:.2f}px<br>y=%{y:.2f}px"
-            if b_col:
-                br = df[b_col].to_numpy()
-                custom = np.stack([br], axis=1)
-                hovertemplate += "<br>brightness=%{customdata[0]:.3e} pps"
-
-            fig.add_trace(go.Scatter(
-                x=xs, y=ys, mode="markers",
-                marker=dict(symbol="circle-open", size=10, line=dict(width=1.5)),
-                name="Fits",
-                customdata=custom,
-                hovertemplate=hovertemplate,
-                showlegend=False,
-            ))
-
-    # keep pixels aligned and axes tight
-    h, w = img.shape
-    fig.update_xaxes(range=[-0.5, w - 0.5], constrain="domain")
-    fig.update_yaxes(range=[-0.5, h - 0.5], scaleanchor="x", scaleratio=1)
-
-    return fig
 
 
 
@@ -241,13 +136,14 @@ def run():
                         st.markdown("#### Zoom & Inspect")
                         zoom_mode = st.toggle("🔍 Magnifying glass", value=True,
                                               help="Turn on to box-zoom by click-and-drag. Turn off to pan.")
-                        fig_interactive = plot_brightness_interactive(
+                        fig_interactive = plot_brightness(
                             image_data_cps,
                             df_selected if show_fits else None,
                             show_fits=show_fits,
                             normalization=normalization_to_use,
                             pix_size_um=0.1,
                             cmap=cmap,
+                            interactive=True,
                         )
                         # Set drag mode based on toggle
                         fig_interactive.update_layout(dragmode="zoom" if zoom_mode else "pan")
