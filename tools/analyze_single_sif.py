@@ -104,9 +104,14 @@ def run():
         show_fits = st.checkbox("Show fits")
         normalization = st.checkbox("Log Image Scaling")
         save_format = st.selectbox("Download format", options=["svg", "png", "jpeg"]).lower()
+        show_heatmap = st.toggle(
+            "Show heatmap (all SIFs)",
+            value=False,
+            help="Aggregates brightness across all detections from all uploaded .sif files.",
+        )
 
-        if st.button("Analyze"):
-            st.session_state.analyze_clicked = True
+    if st.button("Analyze"):
+        st.session_state.analyze_clicked = True
 
     brightness_col, hist_col = st.columns([3, 1])
     mime_map = {"svg": "image/svg+xml", "png": "image/png", "jpeg": "image/jpeg"}
@@ -168,7 +173,13 @@ def run():
                                 mime=mime_map[save_format],
                             )
                         except Exception:
-                            pass
+                            html_bytes = fig_image.to_html().encode("utf-8")
+                            st.download_button(
+                                label="Download PSFs (html)",
+                                data=html_bytes,
+                                file_name=f"{selected_file_name}.html",
+                                mime="text/html",
+                            )
 
                     if combined_df is not None and not combined_df.empty:
                         csv_bytes = df_to_csv_bytes(combined_df)
@@ -246,14 +257,22 @@ def run():
             st.session_state.analyze_clicked = False
 
     # --- Global Brightness Heatmap (across all SIFs) ---
-    with hist_col:
-        st.markdown("### Global Brightness Heatmap")
-        show_heatmap = st.toggle("Show heatmap (all SIFs)", value=False, help="Aggregates brightness across all detections from all uploaded .sif files.")
-        if show_heatmap:
+    if show_heatmap:
+        with hist_col:
             if processed_data:
-                smooth_sigma = st.slider("Smoothing (σ, px)", min_value=0.0, max_value=8.0, value=2.0, step=0.5,
-                                         help="Apply Gaussian smoothing to reduce patchy coverage. Set to 0 for no smoothing.")
-                heat_cmap = st.selectbox("Heatmap colormap", options=["magma", "inferno", "plasma", "viridis", "hot", "cividis"], index=0)
+                smooth_sigma = st.slider(
+                    "Smoothing (σ, px)",
+                    min_value=0.0,
+                    max_value=8.0,
+                    value=2.0,
+                    step=0.5,
+                    help="Apply Gaussian smoothing to reduce patchy coverage. Set to 0 for no smoothing.",
+                )
+                heat_cmap = st.selectbox(
+                    "Heatmap colormap",
+                    options=["magma", "inferno", "plasma", "viridis", "hot", "cividis"],
+                    index=0,
+                )
 
                 try:
                     shape_hint = image_data_cps.shape if isinstance(image_data_cps, np.ndarray) else None
