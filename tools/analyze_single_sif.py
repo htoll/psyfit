@@ -133,7 +133,8 @@ def run():
                         show_fits=show_fits,
                         normalization=normalization_to_use,
                         pix_size_um=0.1,
-                        cmap=cmap
+                        cmap=cmap,
+                        interactive = True
                     )
     
                     with plot_col1:
