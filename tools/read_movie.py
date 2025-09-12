@@ -408,12 +408,12 @@ def run():
         export_fmt = st.selectbox("Download format", ["MP4", "MOV", "TIFF"], index=0)
 
     uploaded = st.file_uploader("Upload a .sif movie", type=["sif"], accept_multiple_files=False)
-    uploaded_name = uploaded.name  # e.g. "experiment1.sif"
-    base = os.path.splitext(os.path.basename(uploaded_name))[0]
-    today = date.today().strftime("%Y%m%d")
     if not uploaded:
         st.info("Upload a .sif file to begin.")
         return
+    uploaded_name = uploaded.name  # e.g. "experiment1.sif"
+    base = os.path.splitext(os.path.basename(uploaded_name))[0]
+    today = date.today().strftime("%Y%m%d")
 
     raw_frames = None
     frames_u8: List[np.ndarray] = []

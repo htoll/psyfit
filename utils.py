@@ -281,15 +281,19 @@ def plot_brightness(
     img = image_data_cps.astype(float)
     if normalization:
         eps = max(float(np.percentile(img, 0.01)), 1e-9)
-        img = np.log10(np.clip(img + 1.0, eps, None))  # perceptual log
+        img_display = np.log10(np.clip(img + 1.0, eps, None))
+    else:
+        img_display = img
 
-    # Base image
+    # Base image with stored cps for hover
     fig = px.imshow(
-        img,
+        img_display,
         origin="lower",
         aspect="equal",
         color_continuous_scale=plotly_scale
     )
+    fig.data[0].customdata = img
+    fig.data[0].hovertemplate = "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata:.1f}<extra></extra>"
     fig.update_layout(
         margin=dict(l=0, r=0, t=30, b=0),
         dragmode=dragmode,
@@ -305,29 +309,13 @@ def plot_brightness(
         yaxis_title="Y (px)"
     )
 
-    # Crisp vector overlays (circles + labels) when show_fits
-    if show_fits and df is not None and not df.empty:
+    xs = ys = rs = br = None
+    if df is not None and not df.empty:
         xs = df["x_pix"].to_numpy()
         ys = df["y_pix"].to_numpy()
-        # radius in pixels, matching your original formula
         rs = (2 * np.maximum(df["sigx_fit"].to_numpy(), df["sigy_fit"].to_numpy()) / pix_size_um).astype(float)
-        br = (df["brightness_fit"].to_numpy() / 1000.0).astype(float)  # kpps for labels
+        br = (df["brightness_fit"].to_numpy() / 1000.0).astype(float)
 
-        # Draw circle shapes (stay sharp when zooming)
-        shapes = []
-        for x, y, r in zip(xs, ys, rs):
-            shapes.append(dict(
-                type="circle",
-                xref="x", yref="y",
-                x0=x - r, x1=x + r,
-                y0=y - r, y1=y + r,
-                line=dict(width=1.5, color="white"),
-                fillcolor="rgba(0,0,0,0)",
-                layer="above",
-            ))
-        fig.update_layout(shapes=shapes)
-
-        # Invisible markers for hover information only
         custom = np.stack([br], axis=1)
         fig.add_trace(go.Scatter(
             x=xs,
@@ -340,17 +328,29 @@ def plot_brightness(
             showlegend=False,
         ))
 
-        # Text labels (also vector, non-pixelating)
-        fig.add_trace(go.Scatter(
-            x=xs + 7.5, y=ys + 7.5, mode="text",
-            text=[f"{v:.1f} kpps" for v in br],
-            textfont=dict(color="white", size=10),
-            textposition="middle center",
-            showlegend=False,
-            hoverinfo="skip"
-        ))
+        if show_fits:
+            shapes = []
+            for x, y, r in zip(xs, ys, rs):
+                shapes.append(dict(
+                    type="circle",
+                    xref="x", yref="y",
+                    x0=x - r, x1=x + r,
+                    y0=y - r, y1=y + r,
+                    line=dict(width=1.5, color="white"),
+                    fillcolor="rgba(0,0,0,0)",
+                    layer="above",
+                ))
+            fig.update_layout(shapes=shapes)
 
-    # Keep pixel coordinates aligned and square pixels
+            fig.add_trace(go.Scatter(
+                x=xs + 7.5, y=ys + 7.5, mode="text",
+                text=[f"{v:.1f} kpps" for v in br],
+                textfont=dict(color="white", size=10),
+                textposition="middle center",
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+# Keep pixel coordinates aligned and square pixels
     h, w = img.shape
     fig.update_xaxes(range=[-0.5, w - 0.5], constrain="domain", showgrid=False, zeroline=False)
     fig.update_yaxes(range=[-0.5, h - 0.5], scaleanchor="x", scaleratio=1, showgrid=False, zeroline=False)

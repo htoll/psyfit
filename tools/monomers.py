@@ -59,6 +59,7 @@ from matplotlib.colors import LogNorm
 import matplotlib.pyplot as plt
 import numpy as np
 
+
 def plot_monomer_brightness(
     image_data_cps,
     df,
@@ -67,77 +68,165 @@ def plot_monomer_brightness(
     normalization=False,
     pix_size_um=0.1,
     cmap='magma',
-    single_ucnp_brightness=None
+    single_ucnp_brightness=None,
+    *,
+    interactive=False,
+    dragmode='zoom'
 ):
     """
     Plot brightness map and overlay Gaussian-fit circles colored by brightness category.
-
-    Categories:
-      - Monomers: brightness_fit < 2 * single_ucnp_brightness
-      - Dimers:   2 * single_ucnp_brightness <= brightness_fit < 3 * single_ucnp_brightness
-      - Trimers:  3 * single_ucnp_brightness <= brightness_fit < 4 * single_ucnp_brightness
-      - Multimers:brightness_fit >= 4 * single_ucnp_brightness
+    If interactive=True returns a Plotly figure; otherwise Matplotlib.
     """
-    fig_width, fig_height = 5, 5
-    scale = fig_width / 5
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    if not interactive:
+        fig_width, fig_height = 5, 5
+        scale = fig_width / 5
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
-    norm = LogNorm() if normalization else None
-    im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=norm, origin='lower')
-    ax.tick_params(axis='both', length=0,
-                   labelleft=False, labelright=False,
-                   labeltop=False, labelbottom=False)
+        norm = LogNorm() if normalization else None
+        im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=norm, origin='lower')
+        ax.tick_params(axis='both', length=0,
+                       labelleft=False, labelright=False,
+                       labeltop=False, labelbottom=False)
 
-    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.ax.tick_params(labelsize=10 * scale)
-    cbar.set_label('pps', fontsize=10 * scale)
+        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.ax.tick_params(labelsize=10 * scale)
+        cbar.set_label('pps', fontsize=10 * scale)
+
+        if single_ucnp_brightness is None:
+            single_ucnp_brightness = float(np.mean(image_data_cps))
+
+        t1, t2, t3 = thresholds_from_single_brightness(single_ucnp_brightness)
+
+        if show_fits:
+            for _, row in df.iterrows():
+                x_px = row['x_pix']
+                y_px = row['y_pix']
+                brightness_pps = row['brightness_fit']
+                brightness_kpps = brightness_pps / 1000.0
+
+                radius_px = 3 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
+
+                if brightness_pps < t1:
+                    cat = "Monomers"
+                elif brightness_pps < t2:
+                    cat = "Dimers"
+                elif brightness_pps < t3:
+                    cat = "Trimers"
+                else:
+                    cat = "Multimers"
+
+                circle_color = CATEGORY_COLORS[cat]
+                circle = Circle((x_px, y_px), radius_px,
+                                color=circle_color, fill=False,
+                                linewidth=1.25 * scale, alpha=0.95)
+                ax.add_patch(circle)
+
+                ax.text(x_px + 7.5, y_px + 7.5,
+                        f"{brightness_kpps:.1f} kpps",
+                        color='white', fontsize=7 * scale,
+                        ha='center', va='center')
+
+            legend_elements = [
+                Line2D([0], [0], color=CATEGORY_COLORS["Monomers"], lw=2, label="Monomers"),
+                Line2D([0], [0], color=CATEGORY_COLORS["Dimers"],   lw=2, label="Dimers"),
+                Line2D([0], [0], color=CATEGORY_COLORS["Trimers"],  lw=2, label="Trimers"),
+                Line2D([0], [0], color=CATEGORY_COLORS["Multimers"],lw=2, label="Multimers"),
+            ]
+            ax.legend(handles=legend_elements, loc="upper right", fontsize=8, frameon=False, labelcolor='white')
+
+        plt.tight_layout()
+        HWT_aesthetic()
+        return fig
+
+    # --- Interactive Plotly path ---
+    import plotly.express as px
+    import plotly.graph_objects as go
+    import numpy as np
 
     if single_ucnp_brightness is None:
         single_ucnp_brightness = float(np.mean(image_data_cps))
-
     t1, t2, t3 = thresholds_from_single_brightness(single_ucnp_brightness)
 
-    if show_fits:
-        for _, row in df.iterrows():
-            x_px = row['x_pix']
-            y_px = row['y_pix']
-            brightness_pps = row['brightness_fit']
-            brightness_kpps = brightness_pps / 1000.0
+    cmap_map = {
+        "magma": "Magma", "viridis": "Viridis", "plasma": "Plasma",
+        "hot": "Hot", "gray": "Gray", "hsv": "HSV", "cividis": "Cividis", "inferno": "Inferno"
+    }
+    plotly_scale = cmap_map.get(cmap, "Magma")
 
-            radius_px = 3 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
+    img = image_data_cps.astype(float)
+    if normalization:
+        eps = max(float(np.percentile(img, 0.01)), 1e-9)
+        img_display = np.log10(np.clip(img + 1.0, eps, None))
+    else:
+        img_display = img
 
-            # Categorize by brightness (4 bins)
-            if brightness_pps < t1:
-                cat = "Monomers"
-            elif brightness_pps < t2:
-                cat = "Dimers"
-            elif brightness_pps < t3:
-                cat = "Trimers"
-            else:
-                cat = "Multimers"
+    fig = px.imshow(img_display, origin="lower", aspect="equal", color_continuous_scale=plotly_scale)
+    fig.data[0].customdata = img
+    fig.data[0].hovertemplate = "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata:.1f}<extra></extra>"
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=30, b=0),
+        dragmode=dragmode,
+        coloraxis_colorbar=dict(
+            title="pps" if not normalization else "log10(pps)",
+            yanchor="middle",
+            y=0.5,
+            lenmode="fraction",
+            len=0.8,
+            thickness=20,
+        ),
+        xaxis_title="X (px)",
+        yaxis_title="Y (px)"
+    )
 
-            circle_color = CATEGORY_COLORS[cat]
-            circle = Circle((x_px, y_px), radius_px,
-                            color=circle_color, fill=False,
-                            linewidth=1.25 * scale, alpha=0.95)
-            ax.add_patch(circle)
+    if df is not None and not df.empty:
+        xs = df['x_pix'].to_numpy()
+        ys = df['y_pix'].to_numpy()
+        rs = (3 * np.maximum(df['sigx_fit'].to_numpy(), df['sigy_fit'].to_numpy()) / pix_size_um).astype(float)
+        br = df['brightness_fit'].to_numpy()
+        br_k = (br / 1000.0).astype(float)
+        cats = np.where(br < t1, 'Monomers', np.where(br < t2, 'Dimers', np.where(br < t3, 'Trimers', 'Multimers')))
+        colors = [CATEGORY_COLORS[c] for c in cats]
 
-            ax.text(x_px + 7.5, y_px + 7.5,
-                    f"{brightness_kpps:.1f} kpps",
-                    color='white', fontsize=7 * scale,
-                    ha='center', va='center')
+        custom = np.stack([br_k, cats], axis=1)
+        fig.add_trace(go.Scatter(
+            x=xs,
+            y=ys,
+            mode='markers',
+            marker=dict(size=1, opacity=0),
+            name='Fits',
+            customdata=custom,
+            hovertemplate="x=%{x:.2f}px<br>y=%{y:.2f}px<br>brightness=%{customdata[0]:.1f} kpps<br>%{customdata[1]}<extra></extra>",
+            showlegend=False,
+        ))
 
-        legend_elements = [
-            Line2D([0], [0], color=CATEGORY_COLORS["Monomers"], lw=2, label="Monomers"),
-            Line2D([0], [0], color=CATEGORY_COLORS["Dimers"],   lw=2, label="Dimers"),
-            Line2D([0], [0], color=CATEGORY_COLORS["Trimers"],  lw=2, label="Trimers"),
-            Line2D([0], [0], color=CATEGORY_COLORS["Multimers"],lw=2, label="Multimers"),
-        ]
-        ax.legend(handles=legend_elements, loc="upper right", fontsize=8, frameon=False, labelcolor='white')
+        if show_fits:
+            shapes=[]
+            for x,y,r,c in zip(xs,ys,rs,colors):
+                shapes.append(dict(type='circle', xref='x', yref='y', x0=x-r, x1=x+r, y0=y-r, y1=y+r,
+                                   line=dict(width=1.5, color=c), fillcolor='rgba(0,0,0,0)', layer='above'))
+            fig.update_layout(shapes=shapes)
 
-    plt.tight_layout()
-    HWT_aesthetic()
+            fig.add_trace(go.Scatter(
+                x=xs + 7.5,
+                y=ys + 7.5,
+                mode='text',
+                text=[f"{v:.1f} kpps" for v in br_k],
+                textfont=dict(color='white', size=10),
+                textposition='middle center',
+                showlegend=False,
+                hoverinfo='skip',
+            ))
+
+            for cat in CATEGORY_ORDER:
+                fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
+                                         marker=dict(color=CATEGORY_COLORS[cat], size=10),
+                                         name=cat))
+
+    h, w = img.shape
+    fig.update_xaxes(range=[-0.5, w - 0.5], constrain='domain', showgrid=False, zeroline=False)
+    fig.update_yaxes(range=[-0.5, h - 0.5], scaleanchor='x', scaleratio=1, showgrid=False, zeroline=False)
     return fig
+
 
 @st.cache_data(show_spinner=False)
 def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3):
@@ -279,10 +368,12 @@ def run():
         processed_data, combined_df = st.session_state.processed
 
         plot_col1, plot_col2 = col2.columns(2)
+        mime_map = {"svg": "image/svg+xml", "png": "image/png", "jpeg": "image/jpeg"}
 
         with plot_col1:
             show_fits = st.checkbox("Show fits", value=True)
             normalization = st.checkbox("Log Image Scaling", value = True)
+            save_format = st.selectbox("Download format", ["svg", "png", "jpeg"]).lower()
 
             selected_file_name = st.session_state.get("selected_file_name")
             if not selected_file_name and processed_data:
@@ -293,8 +384,6 @@ def run():
                 data_to_plot = processed_data[selected_file_name]
                 df_selected = data_to_plot["df"]
                 image_data_cps = data_to_plot["image"]
-                normalization_to_use = LogNorm() if normalization else None
-
                 fig_image = plot_monomer_brightness(
                     image_data_cps,
                     df_selected,
@@ -302,18 +391,30 @@ def run():
                     normalization=normalization,
                     pix_size_um=0.1,
                     cmap=st.session_state.get("monomers_cmap", "magma"),
-                    single_ucnp_brightness = st.session_state.get("single_ucnp_brightness")
+                    single_ucnp_brightness = st.session_state.get("single_ucnp_brightness"),
+                    interactive=True,
                 )
-                st.pyplot(fig_image)
+                fig_image.update_layout(height=640)
+                st.plotly_chart(
+                    fig_image,
+                    use_container_width=True,
+                    config={
+                        "displaylogo": False,
+                        "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
+                    },
+                )
 
-                svg_buffer = io.StringIO()
-                fig_image.savefig(svg_buffer, format='svg')
-                st.download_button(
-                    label="Download PSFs",
-                    data=svg_buffer.getvalue(),
-                    file_name=f"{selected_file_name}.svg",
-                    mime="image/svg+xml"
-                )
+                import plotly.io as pio
+                try:
+                    img_bytes = pio.to_image(fig_image, format=save_format)
+                    st.download_button(
+                        label=f"Download PSFs ({save_format})",
+                        data=img_bytes,
+                        file_name=f"{selected_file_name}.{save_format}",
+                        mime=mime_map[save_format],
+                    )
+                except Exception as e:
+                    st.warning(f"Static image export failed: {e}")
             else:
                 st.error(f"Data for file '{selected_file_name}' not found.")
 
@@ -361,10 +462,11 @@ def run():
 
 
                     with plot_col1:
-                        bins_for_pie = [user_min_val] + thresholds + [user_max_val]  # [min, 2x, 3x, 4x, max]
+                        bins_for_pie = [user_min_val] + [t for t in thresholds if user_min_val < t < user_max_val] + [user_max_val]
+                        bins_for_pie = sorted(bins_for_pie)
                         num_bins_pie = len(bins_for_pie) - 1
-                        labels_for_pie = CATEGORY_ORDER[:num_bins_pie]  # should be 4 if full range shown
-                    
+                        labels_for_pie = CATEGORY_ORDER[:num_bins_pie]
+
                         if len(labels_for_pie) != num_bins_pie:
                             st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins_pie} bins.")
                         else:
