@@ -100,7 +100,7 @@ def run():
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:
                                                                 - UCNP for high SNR (sklearn peakfinder)
                                                                 - dye for low SNR (sklearn blob detection)''')
-        cmap = st.selectbox("Colormap", options=['plasma', 'gray', 'binary', 'pink', 'seismic', 'vanimo', 'mamagua', 'berlin', 'coolwarm', "magma", 'viridis', 'hot', 'hsv'])
+        cmap = st.selectbox("Colormap", options=['plasma', 'gray', "magma", 'viridis', 'hot', 'hsv'])
         show_fits = st.checkbox("Show fits")
         normalization = st.checkbox("Log Image Scaling")
         save_format = st.selectbox("Download format", options=["svg", "png", "jpeg"]).lower()
@@ -265,7 +265,7 @@ def run():
                 )
                 heat_cmap = st.selectbox(
                     "Heatmap colormap",
-                    options=["magma", "inferno", "plasma", "viridis", "hot", "cividis"],
+                    options=["hot", "magma", "inferno", "plasma", "viridis", "cividis"],
                     index=0,
                 )
 
