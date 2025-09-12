@@ -153,15 +153,15 @@ def run():
                                     mime="image/svg+xml"
                                 )
                         
-                            else:  # Plotly fig
-                                st.plotly_chart(
-                                    fig_image,
-                                    use_container_width=True,
-                                    config={
-                                        "displaylogo": False,
-                                        "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
-                                    },
-                                )
+                        else:  # Plotly fig
+                            st.plotly_chart(
+                                fig_image,
+                                use_container_width=True,
+                                config={
+                                    "displaylogo": False,
+                                    "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
+                                },
+                            )
                         if combined_df is not None and not combined_df.empty:
                             csv_bytes = df_to_csv_bytes(combined_df)
                             st.download_button(
