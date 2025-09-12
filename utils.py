@@ -293,7 +293,14 @@ def plot_brightness(
     fig.update_layout(
         margin=dict(l=0, r=0, t=30, b=0),
         dragmode=dragmode,
-        coloraxis_colorbar=dict(title="pps" if not normalization else "log10(pps)"),
+        coloraxis_colorbar=dict(
+            title="pps" if not normalization else "log10(pps)",
+            yanchor="middle",
+            y=0.5,
+            lenmode="fraction",
+            len=0.8,
+            thickness=20,
+        ),
         xaxis_title="X (px)",
         yaxis_title="Y (px)"
     )
@@ -320,11 +327,13 @@ def plot_brightness(
             ))
         fig.update_layout(shapes=shapes)
 
-        # Centers with hover showing brightness
+        # Invisible markers for hover information only
         custom = np.stack([br], axis=1)
         fig.add_trace(go.Scatter(
-            x=xs, y=ys, mode="markers",
-            marker=dict(symbol="circle-open", size=10, line=dict(width=1.5, color="white")),
+            x=xs,
+            y=ys,
+            mode="markers",
+            marker=dict(size=1, opacity=0),
             name="Fits",
             customdata=custom,
             hovertemplate="x=%{x:.2f}px<br>y=%{y:.2f}px<br>brightness=%{customdata[0]:.1f} kpps<extra></extra>",
