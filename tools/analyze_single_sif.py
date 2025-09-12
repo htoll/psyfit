@@ -68,238 +68,233 @@ def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_
 
 
 
+
 def run():
-    col1, col2 = st.columns([1, 2])
     @st.cache_data
     def df_to_csv_bytes(df):
         return df.to_csv(index=False).encode("utf-8")
 
-    with col1:
+    if "analyze_clicked" not in st.session_state:
+        st.session_state.analyze_clicked = False
+
+    processed_data = None
+    image_data_cps = None
+
+    with st.sidebar:
         st.header("Analyze SIF Files")
         uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
-        threshold = st.number_input("Threshold", min_value=0, value=2, help = '''
-        Stringency of fit, higher value is more selective:  
-        -UCNP signal sets absolute peak cut off  
+        threshold = st.number_input("Threshold", min_value=0, value=2, help='''
+        Stringency of fit, higher value is more selective:
+        -UCNP signal sets absolute peak cut off
         -Dye signal sets sensitivity of blob detection
-        ''')        
-        diagram = """ Splits sif into quadrants (256x256 px):  
-        ┌─┬─┐  
-        │ 1 │ 2 │  
-        ├─┼─┤  
-        │ 3 │ 4 │  
+        ''')
+        diagram = """ Splits sif into quadrants (256x256 px):
+        ┌─┬─┐
+        │ 1 │ 2 │
+        ├─┼─┤
+        │ 3 │ 4 │
         └─┴─┘
         """
-        region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help = diagram)
+        region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
 
-        signal = st.selectbox("Signal", options=["UCNP", "dye"], help= '''Changes detection method:  
-                                                                - UCNP for high SNR (sklearn peakfinder)  
+        signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:
+                                                                - UCNP for high SNR (sklearn peakfinder)
                                                                 - dye for low SNR (sklearn blob detection)''')
-        cmap = st.selectbox("Colormap", options = ['plasma', 'gray', "magma", 'viridis', 'hot', 'hsv'])
+        cmap = st.selectbox("Colormap", options=['plasma', 'gray', "magma", 'viridis', 'hot', 'hsv'])
+        show_fits = st.checkbox("Show fits")
+        normalization = st.checkbox("Log Image Scaling")
+        save_format = st.selectbox("Download format", options=["svg", "png", "jpeg"]).lower()
 
+        if st.button("Analyze"):
+            st.session_state.analyze_clicked = True
 
-    with col2:
-        if "analyze_clicked" not in st.session_state:
-            st.session_state.analyze_clicked = False
-    
-        plot_col1, plot_col2 = st.columns(2)
-    
-        with plot_col1:
-            show_fits = st.checkbox("Show fits")
-            plot_brightness_histogram = True
-            normalization = st.checkbox("Log Image Scaling")
-    
-            if st.button("Analyze"):
-                st.session_state.analyze_clicked = True
-    
-        if st.session_state.analyze_clicked and uploaded_files:
-            try:
-                processed_data, combined_df = process_files(uploaded_files, region, threshold = threshold, signal=signal)
-    
-                if len(uploaded_files) > 1:
-                    file_options = [f.name for f in uploaded_files]
-                    selected_file_name = st.selectbox("Select sif to display:", options=file_options)
-                else:
-                    selected_file_name = uploaded_files[0].name
-    
-                if selected_file_name in processed_data:
-                    data_to_plot = processed_data[selected_file_name]
-                    df_selected = data_to_plot["df"]
-                    image_data_cps = data_to_plot["image"]
-    
-                    normalization_to_use = LogNorm() if normalization else None
-                    fig_image = plot_brightness(
-                        image_data_cps,
-                        df_selected,
-                        show_fits=show_fits,
-                        normalization=normalization_to_use,
-                        pix_size_um=0.1,
-                        cmap=cmap,
-                        interactive = True
-                    )
-    
-                    with plot_col1:
-                        # Display the figure appropriately and offer SVG download
-                        if hasattr(fig_image, "savefig"):
-                            st.pyplot(fig_image)
-                            svg_buffer = io.StringIO()
-                            fig_image.savefig(svg_buffer, format="svg")
+    brightness_col, hist_col = st.columns([3, 1])
+    mime_map = {"svg": "image/svg+xml", "png": "image/png", "jpeg": "image/jpeg"}
+
+    if st.session_state.analyze_clicked and uploaded_files:
+        try:
+            processed_data, combined_df = process_files(uploaded_files, region, threshold=threshold, signal=signal)
+
+            if len(uploaded_files) > 1:
+                file_options = [f.name for f in uploaded_files]
+                selected_file_name = st.selectbox("Select sif to display:", options=file_options)
+            else:
+                selected_file_name = uploaded_files[0].name
+
+            if selected_file_name in processed_data:
+                data_to_plot = processed_data[selected_file_name]
+                df_selected = data_to_plot["df"]
+                image_data_cps = data_to_plot["image"]
+
+                normalization_to_use = LogNorm() if normalization else None
+                fig_image = plot_brightness(
+                    image_data_cps,
+                    df_selected,
+                    show_fits=show_fits,
+                    normalization=normalization_to_use,
+                    pix_size_um=0.1,
+                    cmap=cmap,
+                    interactive=True,
+                )
+
+                with brightness_col:
+                    if hasattr(fig_image, "savefig"):
+                        fig_image.set_size_inches(8, 8)
+                        st.pyplot(fig_image, use_container_width=True)
+                        buffer = io.BytesIO()
+                        fig_image.savefig(buffer, format=save_format)
+                        st.download_button(
+                            label=f"Download PSFs ({save_format})",
+                            data=buffer.getvalue(),
+                            file_name=f"{selected_file_name}.{save_format}",
+                            mime=mime_map[save_format],
+                        )
+                    else:
+                        fig_image.update_layout(height=800)
+                        st.plotly_chart(
+                            fig_image,
+                            use_container_width=True,
+                            config={
+                                "displaylogo": False,
+                                "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
+                            },
+                        )
+                        try:
+                            img_bytes = fig_image.to_image(format=save_format)
                             st.download_button(
-                                label="Download PSFs",
-                                data=svg_buffer.getvalue(),
-                                file_name=f"{selected_file_name}.svg",
-                                mime="image/svg+xml",
+                                label=f"Download PSFs ({save_format})",
+                                data=img_bytes,
+                                file_name=f"{selected_file_name}.{save_format}",
+                                mime=mime_map[save_format],
                             )
-                        else:
-                            st.plotly_chart(
-                                fig_image,
-                                use_container_width=True,
-                                config={
-                                    "displaylogo": False,
-                                    "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
-                                },
+                        except Exception:
+                            pass
+
+                    if combined_df is not None and not combined_df.empty:
+                        csv_bytes = df_to_csv_bytes(combined_df)
+                        st.download_button(
+                            label="Download as CSV",
+                            data=csv_bytes,
+                            file_name=f"{os.path.splitext(selected_file_name)[0]}_compiled.csv",
+                            mime="text/csv",
+                        )
+                    else:
+                        st.info("No compiled data available to download yet.")
+
+                with hist_col:
+                    if not combined_df.empty:
+                        brightness_vals = combined_df['brightness_fit'].values
+                        default_min_val = float(np.min(brightness_vals))
+                        default_max_val = float(np.max(brightness_vals))
+
+                        user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
+                        user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
+
+                        try:
+                            user_min = float(user_min_val_str)
+                            user_max = float(user_max_val_str)
+                        except ValueError:
+                            st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
+                            return
+
+                        num_bins = st.number_input("# Bins:", value=50)
+
+                        if user_min < user_max:
+                            fig_hist, _, _ = plot_histogram(
+                                combined_df,
+                                min_val=user_min,
+                                max_val=user_max,
+                                num_bins=num_bins,
                             )
-                            try:
-                                svg_data = fig_image.to_image(format="svg")
+                            if hasattr(fig_hist, "savefig"):
+                                st.pyplot(fig_hist, use_container_width=True)
+                                hist_buffer = io.BytesIO()
+                                fig_hist.savefig(hist_buffer, format=save_format)
                                 st.download_button(
-                                    label="Download PSFs",
-                                    data=svg_data,
-                                    file_name=f"{selected_file_name}.svg",
-                                    mime="image/svg+xml",
+                                    label=f"Download histogram ({save_format})",
+                                    data=hist_buffer.getvalue(),
+                                    file_name=f"combined_histogram.{save_format}",
+                                    mime=mime_map[save_format],
                                 )
-                            except Exception:
-                                pass
-
-                        if combined_df is not None and not combined_df.empty:
-                            csv_bytes = df_to_csv_bytes(combined_df)
-                            st.download_button(
-                                label="Download as CSV",
-                                data=csv_bytes,
-                                file_name=f"{os.path.splitext(selected_file_name)[0]}_compiled.csv",
-                                mime="text/csv",
-                            )
-                        else:
-                            st.info("No compiled data available to download yet.")
-                    with plot_col2:
-                        if plot_brightness_histogram and not combined_df.empty:
-                            brightness_vals = combined_df['brightness_fit'].values
-                            default_min_val = float(np.min(brightness_vals))
-                            default_max_val = float(np.max(brightness_vals))
-    
-                            user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
-                            user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
-    
-                            try:
-                                user_min = float(user_min_val_str)
-                                user_max = float(user_max_val_str)
-                            except ValueError:
-                                st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
-                                return
-    
-                            num_bins = st.number_input("# Bins:", value=50)
-    
-                            if user_min < user_max:
-                                fig_hist, _, _ = plot_histogram(
-                                    combined_df,
-                                    min_val=user_min,
-                                    max_val=user_max,
-                                    num_bins=num_bins,
-                                )
-                                if hasattr(fig_hist, "savefig"):
-                                    st.pyplot(fig_hist)
-                                    hist_buffer = io.StringIO()
-                                    fig_hist.savefig(hist_buffer, format="svg")
-                                    st.download_button(
-                                        label="Download histogram",
-                                        data=hist_buffer.getvalue(),
-                                        file_name="combined_histogram.svg",
-                                        mime="image/svg+xml",
-                                    )
-                                else:
-                                    st.plotly_chart(
-                                        fig_hist,
-                                        use_container_width=True,
-                                        config={
-                                            "displaylogo": False,
-                                            "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
-                                        },
-                                    )
-                                    try:
-                                        hist_svg = fig_hist.to_image(format="svg")
-                                        st.download_button(
-                                            label="Download histogram",
-                                            data=hist_svg,
-                                            file_name="combined_histogram.svg",
-                                            mime="image/svg+xml",
-                                        )
-                                    except Exception:
-                                        pass
-
                             else:
-                                st.warning("Min greater than max.")
-                else:
-                    st.error(f"Data for file '{selected_file_name}' not found.")
-    
-            except Exception as e:
-                st.error(f"Error processing files: {e}")
-                st.session_state.analyze_clicked = False
+                                fig_hist.update_layout(height=400)
+                                st.plotly_chart(
+                                    fig_hist,
+                                    use_container_width=True,
+                                    config={
+                                        "displaylogo": False,
+                                        "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
+                                    },
+                                )
+                                try:
+                                    hist_bytes = fig_hist.to_image(format=save_format)
+                                    st.download_button(
+                                        label=f"Download histogram ({save_format})",
+                                        data=hist_bytes,
+                                        file_name=f"combined_histogram.{save_format}",
+                                        mime=mime_map[save_format],
+                                    )
+                                except Exception:
+                                    pass
+                        else:
+                            st.warning("Min greater than max.")
+            else:
+                st.error(f"Data for file '{selected_file_name}' not found.")
+
+        except Exception as e:
+            st.error(f"Error processing files: {e}")
+            st.session_state.analyze_clicked = False
 
     # --- Global Brightness Heatmap (across all SIFs) ---
-    with plot_col2:
+    with hist_col:
         st.markdown("### Global Brightness Heatmap")
         show_heatmap = st.toggle("Show heatmap (all SIFs)", value=False, help="Aggregates brightness across all detections from all uploaded .sif files.")
         if show_heatmap:
-            # Smoothing controls
-            smooth_sigma = st.slider("Smoothing (σ, px)", min_value=0.0, max_value=8.0, value=2.0, step=0.5,
-                                     help="Apply Gaussian smoothing to reduce patchy coverage. Set to 0 for no smoothing.")
-            heat_cmap = st.selectbox("Heatmap colormap", options=["magma", "inferno", "plasma", "viridis", "hot", "cividis"], index=0)
-    
-            try:
-                # Use current image shape as a hint for consistent sizing
-                shape_hint = image_data_cps.shape if isinstance(image_data_cps, np.ndarray) else None
-                heatmap = build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_hint=shape_hint)
-    
-                # Optional smoothing
-                if smooth_sigma > 0:
-                    if gaussian_filter is not None:
-                        heatmap = gaussian_filter(heatmap, sigma=smooth_sigma, mode="nearest")
-                    else:
-                        # Lightweight fallback: simple box blur via convolution
-                        k = int(max(1, round(smooth_sigma * 3)))
-                        kernel = np.ones((k, k), dtype=np.float64)
-                        kernel /= kernel.sum()
-                        # Pad and convolve (valid for small kernels and moderate sizes)
-                        from numpy.lib.stride_tricks import sliding_window_view
-                        if heatmap.shape[0] >= k and heatmap.shape[1] >= k:
-                            windows = sliding_window_view(
-                                np.pad(heatmap, ((k//2, k-1-k//2), (k//2, k-1-k//2)), mode="edge"),
-                                (k, k)
-                            )
-                            heatmap = (windows * kernel).sum(axis=(-1, -2))
-    
-                # Plot
-                import matplotlib.pyplot as plt
-                fig_hm, ax_hm = plt.subplots()
-                im = ax_hm.imshow(heatmap, origin="lower", cmap=heat_cmap, norm=None)
-                ax_hm.set_title("Brightness Heatmap (All SIFs)")
-                ax_hm.set_xlabel("X (px)")
-                ax_hm.set_ylabel("Y (px)")
-                cbar = fig_hm.colorbar(im, ax=ax_hm, fraction=0.046, pad=0.04)
-                cbar.set_label("Summed brightness (pps)")
-    
-                st.pyplot(fig_hm)
+            if processed_data:
+                smooth_sigma = st.slider("Smoothing (σ, px)", min_value=0.0, max_value=8.0, value=2.0, step=0.5,
+                                         help="Apply Gaussian smoothing to reduce patchy coverage. Set to 0 for no smoothing.")
+                heat_cmap = st.selectbox("Heatmap colormap", options=["magma", "inferno", "plasma", "viridis", "hot", "cividis"], index=0)
 
-                # Download SVG
-                hm_svg_buf = io.StringIO()
-                fig_hm.savefig(hm_svg_buf, format="svg")
-                st.download_button(
-                    label="Download heatmap",
-                    data=hm_svg_buf.getvalue(),
-                    file_name="brightness_heatmap.svg",
-                    mime="image/svg+xml",
-                )
+                try:
+                    shape_hint = image_data_cps.shape if isinstance(image_data_cps, np.ndarray) else None
+                    heatmap = build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_hint=shape_hint)
 
-            except Exception as e_hm:
-                st.warning(f"Couldn't build heatmap: {e_hm}")
+                    if smooth_sigma > 0:
+                        if gaussian_filter is not None:
+                            heatmap = gaussian_filter(heatmap, sigma=smooth_sigma, mode="nearest")
+                        else:
+                            k = int(max(1, round(smooth_sigma * 3)))
+                            kernel = np.ones((k, k), dtype=np.float64)
+                            kernel /= kernel.sum()
+                            from numpy.lib.stride_tricks import sliding_window_view
+                            if heatmap.shape[0] >= k and heatmap.shape[1] >= k:
+                                windows = sliding_window_view(
+                                    np.pad(heatmap, ((k//2, k-1-k//2), (k//2, k-1-k//2)), mode="edge"),
+                                    (k, k)
+                                )
+                                heatmap = (windows * kernel).sum(axis=(-1, -2))
 
-    
+                    import matplotlib.pyplot as plt
+                    fig_hm, ax_hm = plt.subplots()
+                    im = ax_hm.imshow(heatmap, origin="lower", cmap=heat_cmap, norm=None)
+                    ax_hm.set_title("Brightness Heatmap (All SIFs)")
+                    ax_hm.set_xlabel("X (px)")
+                    ax_hm.set_ylabel("Y (px)")
+                    cbar = fig_hm.colorbar(im, ax=ax_hm, fraction=0.046, pad=0.04)
+                    cbar.set_label("Summed brightness (pps)")
 
+                    st.pyplot(fig_hm)
+
+                    hm_svg_buf = io.StringIO()
+                    fig_hm.savefig(hm_svg_buf, format="svg")
+                    st.download_button(
+                        label="Download heatmap",
+                        data=hm_svg_buf.getvalue(),
+                        file_name="brightness_heatmap.svg",
+                        mime="image/svg+xml",
+                    )
+
+                except Exception as e_hm:
+                    st.warning(f"Couldn't build heatmap: {e_hm}")
+            else:
+                st.info("Run analysis to build heatmap.")
