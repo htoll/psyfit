@@ -140,15 +140,28 @@ def run():
                     with plot_col1:
                         st.pyplot(fig_image)
                         svg_buffer = io.StringIO()
-                        fig_image.savefig(svg_buffer, format='svg')
-                        svg_data = svg_buffer.getvalue()
-                        svg_buffer.close()
-                        st.download_button(
-                            label="Download PSFs",
-                            data=svg_data,
-                            file_name=f"{selected_file_name}.svg",
-                            mime="image/svg+xml"
-                        )
+                        if hasattr(fig_image, "savefig"):  # Matplotlib fig
+                                st.pyplot(fig_image)
+                                svg_buffer = io.StringIO()
+                                fig_image.savefig(svg_buffer, format='svg')
+                                svg_data = svg_buffer.getvalue()
+                                svg_buffer.close()
+                                st.download_button(
+                                    label="Download PSFs",
+                                    data=svg_data,
+                                    file_name=f"{selected_file_name}.svg",
+                                    mime="image/svg+xml"
+                                )
+                        
+                            else:  # Plotly fig
+                                st.plotly_chart(
+                                    fig_image,
+                                    use_container_width=True,
+                                    config={
+                                        "displaylogo": False,
+                                        "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
+                                    },
+                                )
                         if combined_df is not None and not combined_df.empty:
                             csv_bytes = df_to_csv_bytes(combined_df)
                             st.download_button(
