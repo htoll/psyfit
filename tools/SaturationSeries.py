@@ -63,8 +63,7 @@ def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_
         # Accumulate brightness at pixel locations
         np.add.at(heatmap, (yi, xi), ws)
 
-    return heatmap
-    
+    return heatmap 
 def plot_brightness_vs_current(df):
     """
     Calculates mean brightness per image, then aggregates these means by current.
@@ -113,81 +112,6 @@ def plot_brightness_vs_current(df):
     fig.tight_layout()
 
     return fig
-
-# --- NEW FUNCTION 1: Plotting function for all quadrants ---
-def plot_brightness_vs_current_all_quadrants(df):
-    """
-    Plots mean particle brightness vs. current for all four quadrants
-    on a single plot.
-    """
-    if df is None or df.empty:
-        fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, "No data available for plotting.", ha='center', va='center')
-        return fig
-
-    # Calculate mean brightness for each image (FOV) within each quadrant
-    image_means = df.groupby(['filename', 'quadrant'])['brightness_fit'].mean().reset_index()
-    image_means.rename(columns={'brightness_fit': 'mean_brightness'}, inplace=True)
-
-    # Extract current from filename
-    image_means['current'] = image_means['filename'].str.extract(r'^(\d+)_').astype(int)
-
-    # Aggregate by quadrant and current to get the mean and std of image means
-    agg_data = image_means.groupby(['quadrant', 'current'])['mean_brightness'].agg(['mean', 'std']).reset_index()
-    agg_data['std'] = agg_data['std'].fillna(0) # Handle cases with only one image per current
-
-    # Create the plot
-    fig, ax = plt.subplots(figsize=(10, 7))
-    colors = plt.cm.viridis(np.linspace(0, 1, 4))
-    quadrants = sorted(df['quadrant'].unique())
-
-    for i, quadrant in enumerate(quadrants):
-        quad_data = agg_data[agg_data['quadrant'] == quadrant].sort_values('current')
-        if not quad_data.empty:
-            ax.errorbar(
-                quad_data['current'],
-                quad_data['mean'],
-                yerr=quad_data['std'],
-                fmt='o-',
-                capsize=5,
-                label=f"Quadrant {quadrant}",
-                color=colors[i]
-            )
-
-    ax.set_yscale('log')
-    ax.set_xlabel("Current (mA)")
-    ax.set_ylabel("Mean of Image Means (pps)")
-    ax.set_title("Mean Particle Brightness vs. Current (All Quadrants)")
-    ax.grid(True, which="both", ls="--", linewidth=0.5)
-    ax.legend()
-    fig.tight_layout()
-
-    return fig
-
-# --- NEW FUNCTION 2: Caching function to process all quadrants ---
-@st.cache_data
-def process_all_quadrants(_uploaded_files, threshold, signal):
-    """
-    Processes uploaded files for all 4 quadrants and returns a single
-    combined DataFrame with a 'quadrant' column.
-    """
-    all_dfs = []
-    for quadrant in ["1", "2", "3", "4"]:
-        processed_data_quad, _ = process_files(list(_uploaded_files), quadrant, threshold=threshold, signal=signal)
-        for filename, data in processed_data_quad.items():
-            df = data.get("df")
-            if df is not None and not df.empty:
-                df_with_meta = df.copy()
-                df_with_meta['filename'] = filename
-                df_with_meta['quadrant'] = quadrant
-                all_dfs.append(df_with_meta)
-    
-    if not all_dfs:
-        return pd.DataFrame()
-        
-    return pd.concat(all_dfs, ignore_index=True)
-
-
 @st.cache_data
 def plot_quadrant_histograms_for_max_current(_uploaded_files, threshold, signal):
     """
@@ -195,16 +119,37 @@ def plot_quadrant_histograms_for_max_current(_uploaded_files, threshold, signal)
     plots a 2x2 grid of brightness histograms for that current.
     Written by Hephaestus, a Gemini Gem tweaked by JFS
     """
-    # This function can now be simplified by using the new process_all_quadrants function
-    combined_df = process_all_quadrants(_uploaded_files, threshold, signal)
-    
     fig, axes = plt.subplots(2, 2, figsize=(10, 8), constrained_layout=True)
-    axes = axes.flatten()
+    axes = axes.flatten()  # Flatten the 2x2 array for easy iteration
+    all_dfs = []
 
-    if combined_df.empty:
+    # Process data for each quadrant. We will capture the detailed dictionary
+    # (processed_data_quad) to retain the filename for each particle.
+    for i in range(1, 5):
+        quadrant = str(i)
+        
+        # We use the first return value from process_files, which is a
+        # dictionary mapping filenames to their data.
+        processed_data_quad, _ = process_files(list(_uploaded_files), quadrant, threshold=threshold, signal=signal)
+
+        # Iterate through each file's results for the current quadrant
+        for filename, data in processed_data_quad.items():
+            df = data.get("df")
+            if df is not None and not df.empty:
+                # Create a copy and add the filename and quadrant as new columns
+                df_with_meta = df.copy()
+                df_with_meta['filename'] = filename
+                df_with_meta['quadrant'] = quadrant
+                all_dfs.append(df_with_meta)
+                
+    if not all_dfs:
         fig.text(0.5, 0.5, "No data found in any quadrant.", ha='center')
         return fig
-        
+
+    # This new DataFrame now contains the 'filename' and 'quadrant' columns
+    combined_df = pd.concat(all_dfs, ignore_index=True)
+    
+    # This line will now execute successfully
     combined_df['current'] = combined_df['filename'].str.extract(r'^(\d+)_').astype(int)
     max_current = combined_df['current'].max()
 
@@ -229,7 +174,8 @@ def plot_quadrant_histograms_for_max_current(_uploaded_files, threshold, signal)
             ax.set_title(f"Quadrant {quadrant}")
 
     return fig
-
+# --- Keep your build_brightness_heatmap function here ---
+# --- Add the new plot_brightness_vs_current function here ---
 def run():
     col1, col2 = st.columns([1, 2])
     
@@ -271,38 +217,37 @@ def run():
 
         if st.button("Analyze"):
             st.session_state.analyze_clicked = True
-            # Clear all previous data on re-analysis
-            for key in ['processed_data', 'combined_df', 'all_quadrants_df']:
-                if key in st.session_state:
-                    del st.session_state[key]
+            if 'processed_data' in st.session_state:
+                del st.session_state.processed_data
+            if 'combined_df' in st.session_state:
+                del st.session_state.combined_df
 
         if st.session_state.analyze_clicked and uploaded_files:
             try:
-                # --- MODIFIED SECTION ---
-                # 1. Process data for the SINGLE selected region for the 'Image Analysis' tab
+                # 1. Get the processed_data dictionary from your function.
+                #    We will ignore the incomplete combined_df it returns for now.
                 processed_data, _ = process_files(uploaded_files, region, threshold=threshold, signal=signal)
                 
+                # --- FIX STARTS HERE ---
+                # 2. Rebuild the combined_df correctly from processed_data.
                 all_dfs_corrected = []
                 for filename, data in processed_data.items():
                     df = data.get("df")
                     if df is not None and not df.empty:
+                        # 3. Add the 'filename' column to each DataFrame before appending.
                         df['filename'] = filename
                         all_dfs_corrected.append(df)
 
+                # 4. Create the new, correct combined_df.
                 if all_dfs_corrected:
                     combined_df = pd.concat(all_dfs_corrected, ignore_index=True)
                 else:
                     combined_df = pd.DataFrame()
+                # --- FIX ENDS HERE ---
 
-                # Store the single-region data
+                # 5. Store the corrected data in the session state.
                 st.session_state.processed_data = processed_data
                 st.session_state.combined_df = combined_df
-
-                # 2. Process data for ALL quadrants for the 'Current Dependency' tab
-                # We use tuple(uploaded_files) to make the list hashable for caching
-                all_quadrants_df = process_all_quadrants(tuple(uploaded_files), threshold, signal)
-                st.session_state.all_quadrants_df = all_quadrants_df
-                # --- END OF MODIFIED SECTION ---
 
             except Exception as e:
                 st.error(f"Error processing files: {e}")
@@ -310,9 +255,12 @@ def run():
 
         if 'processed_data' in st.session_state:
             processed_data = st.session_state.processed_data
-            
+            combined_df = st.session_state.combined_df
+
+            # The tabs have been redefined, combining the first two.
             tab_analysis, tab_current, tab_max_current = st.tabs(["Image Analysis", "Current Dependency", "Max Current Analysis"])
 
+            # This new tab contains the combined logic.
             with tab_analysis:
                 file_options = list(processed_data.keys())
                 selected_file = st.selectbox("Select SIF to display:", options=file_options)
@@ -322,6 +270,7 @@ def run():
                     data_for_file = processed_data[selected_file]
                     df_for_file = data_for_file.get("df")
 
+                    # --- Column 1: Image Plot ---
                     with plot_col1:
                         st.markdown("#### Image Display")
                         show_fits = st.checkbox("Show fits")
@@ -338,6 +287,7 @@ def run():
                         fig_image.savefig(svg_buffer_img, format='svg')
                         st.download_button("Download Image (SVG)", svg_buffer_img.getvalue(), f"{selected_file}.svg")
 
+                    # --- Column 2: Histogram Plot ---
                     with plot_col2:
                         st.markdown("#### Brightness Histogram")
                         if df_for_file is not None and not df_for_file.empty:
@@ -363,22 +313,15 @@ def run():
                             st.info(f"No particles were detected in '{selected_file}'.")
 
             with tab_current:
-                # --- MODIFIED SECTION ---
-                st.markdown(f"### Mean Brightness vs. Current (All Quadrants)")
-                # Retrieve the all-quadrant dataframe from session state
-                all_quadrants_df = st.session_state.get('all_quadrants_df')
-
-                if all_quadrants_df is not None and not all_quadrants_df.empty:
-                    # Use the new plotting function
-                    fig_current = plot_brightness_vs_current_all_quadrants(all_quadrants_df)
+                st.markdown(f"### Mean Brightness vs. Current (Region: {region})")
+                if combined_df is not None and not combined_df.empty:
+                    fig_current = plot_brightness_vs_current(combined_df)
                     st.pyplot(fig_current)
-                    
                     svg_buffer_current = io.StringIO()
                     fig_current.savefig(svg_buffer_current, format='svg')
-                    st.download_button("Download Plot (SVG)", svg_buffer_current.getvalue(), "brightness_vs_current_all_quads.svg", "image/svg+xml")
+                    st.download_button("Download Plot (SVG)", svg_buffer_current.getvalue(), "brightness_vs_current.svg", "image/svg+xml")
                 else:
                     st.info("No data to plot current dependency.")
-                # --- END OF MODIFIED SECTION ---
 
             with tab_max_current:
                 st.markdown("### Quadrant Histograms for Highest Current")
