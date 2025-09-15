@@ -29,8 +29,6 @@ import textwrap
 
 from utils import HWT_aesthetic, extract_subregion
 
-def testss():
-    print("Woho!")
 
 def integrate_sif_Center(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3):
     image_data, metadata = sif_parser.np_open(sif, ignore_corrupt=True)
