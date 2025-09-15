@@ -149,7 +149,7 @@ def plot_quadrant_histograms_for_max_current(combined_df): # Changed arguments
         
         if not quad_data.empty:
             brightness_data = quad_data['brightness_fit']
-            ax.hist(brightness_data, bins=50, color='skyblue', edgecolor='black')
+            ax.hist(brightness_data, bins=20, color='skyblue', edgecolor='black')
             ax.set_title(f"Quadrant {quadrant}")
             ax.set_xlabel("Brightness (pps)")
             ax.set_ylabel("Counts")
