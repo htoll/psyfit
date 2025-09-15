@@ -37,7 +37,8 @@ from skimage.measure import regionprops, label
 from skimage.morphology import (
     remove_small_objects,
     binary_closing,
-    disk)
+    disk, 
+    h_maxima)
 from skimage.segmentation import watershed
 from streamlit_plotly_events import plotly_events
 from sklearn.cluster import KMeans
