@@ -4,6 +4,7 @@ import io
 from utilsJFS import plot_histogram
 from utils import integrate_sif, plot_brightness
 from tools.process_files import process_files
+from tools.process_files_jfs import process_files_jfs
 from matplotlib.colors import LogNorm
 import numpy as np
 from scipy.ndimage import gaussian_filter
