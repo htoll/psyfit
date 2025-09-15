@@ -4,6 +4,7 @@ import pandas as pd
 from matplotlib.colors import LogNorm
 import io
 from utils import integrate_sif, plot_brightness, plot_histogram 
+from utilsJFS import integrate_sif_Center 
 
 
 @st.cache_data
