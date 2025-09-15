@@ -166,14 +166,31 @@ def process_all_quadrants(_uploaded_files, threshold, signal):
     for i in range(1, 5):
         quadrant = str(i)
         processed_data_quad, _ = process_files(list(_uploaded_files), quadrant, threshold=threshold, signal=signal)
-
+        
         for filename, data in processed_data_quad.items():
             df = data.get("df")
+            
+            # Check if the initial dataframe is valid
             if df is not None and not df.empty:
-                df_with_meta = df.copy()
-                df_with_meta['filename'] = filename
-                df_with_meta['quadrant'] = quadrant
-                all_dfs.append(df_with_meta)
+                # Define the boundary size
+                bound = 64
+                
+                # Apply the filter to keep only data within the central square
+                # The coordinates must be between 64 and (256 - 64) = 192
+                df_filtered = df[
+                    (df['x_pix'] >= bound) & (df['x_pix'] <= 256 - bound) &
+                    (df['y_pix'] >= bound) & (df['y_pix'] <= 256 - bound)
+                ]
+        
+                # Only proceed if entries remain after filtering
+                if not df_filtered.empty:
+                    # It's good practice to create a copy to avoid pandas warnings
+                    df_with_meta = df_filtered.copy()
+                    
+                    df_with_meta['filename'] = filename
+                    df_with_meta['quadrant'] = quadrant
+                    all_dfs.append(df_with_meta)
+
 
     if not all_dfs:
         return pd.DataFrame()
