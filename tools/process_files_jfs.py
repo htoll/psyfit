@@ -25,7 +25,7 @@ def process_files(uploaded_files, region, threshold=1, signal="UCNP", pix_size_u
             f.write(uploaded_file.getbuffer())
         
         try:
-            df, image_data_cps = integrate_sif(file_path, 
+            df, image_data_cps = integrate_sif_Center(file_path, 
                                                region=region,
                                                   threshold=threshold,
                                                signal = signal,
