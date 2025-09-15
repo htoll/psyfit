@@ -173,6 +173,8 @@ def segment_and_measure_shapes(
     threshold: float,
     nm_per_px: float,
     shape_type: str,
+    min_size_value: float,
+    measurement_unit: str,
     min_area_px: int = 5,
 ) -> Dict[str, np.ndarray]:
     """Segment particles and measure their dimensions.
@@ -187,6 +189,10 @@ def segment_and_measure_shapes(
         Pixel to nanometre scaling.
     shape_type: str
         'Sphere', 'Hexagon', or 'Cube'.
+    min_size_value: float
+        Minimum accepted feature size expressed in ``measurement_unit``.
+    measurement_unit: str
+        Unit label for size measurements (``"nm"`` or ``"px"``).
     min_area_px: int
         Minimum area (in pixels) for removing small objects.
 
@@ -214,8 +220,13 @@ def segment_and_measure_shapes(
     lengths_nm: List[float] = []
     widths_nm: List[float] = []
 
-    # Edge exclusion zone (2 nm)
-    exclusion_zone_px = 2 / nm_per_px if nm_per_px > 0 else 0
+    # Determine scaling and exclusion zone based on available calibration
+    if measurement_unit == "nm" and np.isfinite(nm_per_px) and nm_per_px > 0:
+        scale_factor = nm_per_px
+        exclusion_zone_px = 2 / nm_per_px
+    else:
+        scale_factor = 1.0
+        exclusion_zone_px = 0.0
     img_h, img_w = data.shape
 
     fig, ax = plt.subplots()
@@ -245,17 +256,21 @@ def segment_and_measure_shapes(
         if shape_type == "Sphere":
 
             diam_px = (maj + minr_axis) / 2
-            d_nm = diam_px * nm_per_px
-            if d_nm < 2:
+            d_val = diam_px * scale_factor
+            if d_val < min_size_value:
                 continue
-            diameters_nm.append(d_nm)
+            diameters_nm.append(d_val)
             circ_patch = plt.Circle((cx, cy), diam_px / 2, fill=False, color="r", linewidth=1)
             ax.add_patch(circ_patch)
         else:  # Hexagon or Cube (rectangular)
             if 1.2 < aspect < 1.8 and solidity > 0.8:
                 # Rectangle
-                lengths_nm.append(maj * nm_per_px)
-                widths_nm.append(minr_axis * nm_per_px)
+                length_val = maj * scale_factor
+                width_val = minr_axis * scale_factor
+                if length_val < min_size_value or width_val < min_size_value:
+                    continue
+                lengths_nm.append(length_val)
+                widths_nm.append(width_val)
                 rect = plt.Rectangle(
                     (minc, minr),
                     maxc - minc,
@@ -268,7 +283,10 @@ def segment_and_measure_shapes(
             elif solidity > 0.85 and extent > 0.6:
                 # Potential hexagon
                 d = (maj + minr_axis) / 2
-                hex_axes_nm.append(d * nm_per_px)
+                d_val = d * scale_factor
+                if d_val < min_size_value:
+                    continue
+                hex_axes_nm.append(d_val)
                 radius = d / 2
                 theta = np.linspace(0, 2 * np.pi, 7)
                 x = cx + radius * np.cos(theta)
@@ -277,8 +295,10 @@ def segment_and_measure_shapes(
             else:
                 # Mark other shapes lightly for visual debugging
                 diam_px = (maj + minr_axis) / 2
-                circ_patch = plt.Circle((cx, cy), diam_px / 2, fill=False, color="b", linewidth=1)
-                ax.add_patch(circ_patch)
+                d_val = diam_px * scale_factor
+                if d_val >= min_size_value:
+                    circ_patch = plt.Circle((cx, cy), diam_px / 2, fill=False, color="b", linewidth=1)
+                    ax.add_patch(circ_patch)
 
     buf_ann = io.BytesIO()
     fig.savefig(buf_ann, format="png", bbox_inches="tight", pad_inches=0)
@@ -304,6 +324,9 @@ def segment_and_measure_shapes(
     if shape_type == "Cube":
         out["heights_nm"] = np.array(widths_nm, dtype=np.float32)
 
+    out["unit"] = measurement_unit
+    out["nm_per_px"] = float(nm_per_px) if measurement_unit == "nm" else float("nan")
+
     return out
 
 
@@ -317,13 +340,14 @@ def histogram_with_fit(
     nbins: int,
     xrange: Tuple[float, float],
     title: str,
+    unit_label: str,
 ) -> Tuple[go.Figure, float, int]:
     """Return a histogram figure with a Gaussian fit.
 
     Parameters
     ----------
     values: ndarray
-        Data values in nanometres.
+        Data values expressed in ``unit_label`` units.
     nbins: int
         Number of histogram bins.
     xrange: tuple
@@ -346,7 +370,7 @@ def histogram_with_fit(
     else:
         mu = float("nan")
 
-    fig.update_layout(title=title, xaxis_title="Size (nm)", yaxis_title="Count")
+    fig.update_layout(title=title, xaxis_title=f"Size ({unit_label})", yaxis_title="Count")
     return fig, float(mu), n
 
 
@@ -380,12 +404,12 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
         )
         shape_type = st.selectbox("Shape type", ["Sphere", "Hexagon", "Cube"], index=0)
         nbins_int = st.slider("Intensity histogram bins", 20, 200, 60, step=5)
-        default_nm_per_px = st.number_input(
-            "Fallback pixel size (nm per px)",
-            min_value=0.0001,
-            max_value=1000.0,
-            value=1.0,
-            step=0.1,
+        min_shape_size_input = st.number_input(
+            "Minimum shape size (nm, or pixels if calibration missing)",
+            min_value=0.0,
+            max_value=10_000.0,
+            value=4.0,
+            step=0.5,
         )
 
     if "manual_threshold" not in st.session_state:
@@ -393,12 +417,23 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
 
     results: List[Dict[str, np.ndarray]] = []
 
+    missing_scale_files: List[str] = []
+
     if files:
         with st.spinner("Processing …"):
             for i, f in enumerate(files, start=1):
                 dm3 = try_read_dm3(f.read())
                 data = dm3.data
-                nm_per_px = dm3.nm_per_px if np.isfinite(dm3.nm_per_px) else default_nm_per_px
+                nm_per_px = dm3.nm_per_px
+
+                if np.isfinite(nm_per_px) and nm_per_px > 0:
+                    measurement_unit = "nm"
+                    min_size_value = float(min_shape_size_input)
+                else:
+                    measurement_unit = "px"
+                    min_size_value = float(min_shape_size_input)
+                    missing_scale_files.append(f.name)
+                    nm_per_px = float("nan")
 
                 # Threshold selection
                 if method == "Manual":
@@ -434,36 +469,62 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                     threshold=chosen_threshold,
                     nm_per_px=nm_per_px,
                     shape_type=shape_type,
+                    min_size_value=min_size_value,
+                    measurement_unit=measurement_unit,
                     min_area_px=5,
                 )
                 seg["name"] = f.name
                 results.append(seg)
 
         # Dropdown to select image for display
-        names = [r["name"] for r in results]
-        sel_name = st.selectbox("Select image to display", names)
-        sel = next(r for r in results if r["name"] == sel_name)
+        if results:
+            names = [r["name"] for r in results]
+            sel_name = st.selectbox("Select image to display", names)
+            sel = next(r for r in results if r["name"] == sel_name)
 
-        tab1, tab2 = st.tabs(["Annotated", "Watershed"])
+            tab1, tab2 = st.tabs(["Annotated", "Watershed"])
+            with tab1:
+                st.image(sel["annotated_png"], caption=f"Annotated segmentation preview ({sel['unit']})", use_column_width=True)
+            with tab2:
+                st.image(sel["watershed_png"], caption="Watershed labels", use_column_width=True)
 
+        if missing_scale_files:
+            missing_list = "\n".join(f"• {name}" for name in sorted(set(missing_scale_files)))
+            st.warning(
+                "Pixel size metadata was not found for the following file(s). "
+                "All measurements (including the minimum shape size filter) are reported in pixels:\n"
+                f"{missing_list}"
+            )
 
         # ------------------------------------------------------------------
         # Combined histograms
         # ------------------------------------------------------------------
         st.markdown("---")
+
+        units_present = {r.get("unit", "nm") for r in results}
+        if len(units_present) > 1:
+            st.error("Cannot combine histograms because uploaded images use mixed measurement units.")
+            return
+
+        unit_label = units_present.pop() if units_present else "nm"
+
         if shape_type == "Sphere":
             all_d = np.concatenate([r["diameters_nm"] for r in results]) if results else np.array([])
             if all_d.size:
                 range_slider = st.slider(
-                    "Diameter range (nm)",
+                    f"Diameter range ({unit_label})",
                     float(all_d.min()),
                     float(all_d.max()),
                     (float(all_d.min()), float(all_d.max())),
                 )
                 nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
-                fig, mu, n = histogram_with_fit(all_d, nbins, range_slider, "Diameter (nm)")
-                volume = (4 / 3) * np.pi * (mu / 2) ** 3 if np.isfinite(mu) else float("nan")
-                fig.update_layout(title=f"Diameter (nm): μ={mu:.2f}, Vol={volume:.2f} nm³, n={n}")
+                fig, mu, n = histogram_with_fit(all_d, nbins, range_slider, f"Diameter ({unit_label})", unit_label)
+                if unit_label == "nm" and np.isfinite(mu):
+                    volume = (4 / 3) * np.pi * (mu / 2) ** 3
+                    title_suffix = f"μ={mu:.2f}, Vol={volume:.2f} nm³, n={n}"
+                else:
+                    title_suffix = f"μ={mu:.2f}, n={n}"
+                fig.update_layout(title=f"Diameter ({unit_label}): {title_suffix}")
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("No particles detected.")
@@ -474,39 +535,43 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
             all_wid = np.concatenate([r["widths_nm"] for r in results]) if results else np.array([])
             if all_hex.size and all_len.size and all_wid.size:
                 range_hex = st.slider(
-                    "Hexagon diagonal range (nm)",
+                    f"Hexagon diagonal range ({unit_label})",
                     float(all_hex.min()),
                     float(all_hex.max()),
                     (float(all_hex.min()), float(all_hex.max())),
                 )
                 range_len = st.slider(
-                    "Length range (nm)",
+                    f"Length range ({unit_label})",
                     float(all_len.min()),
                     float(all_len.max()),
                     (float(all_len.min()), float(all_len.max())),
                 )
                 range_wid = st.slider(
-                    "Width range (nm)",
+                    f"Width range ({unit_label})",
                     float(all_wid.min()),
                     float(all_wid.max()),
                     (float(all_wid.min()), float(all_wid.max())),
                 )
                 nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
 
-                fig_hex, mu_hex, n_hex = histogram_with_fit(all_hex, nbins, range_hex, "Hexagon diagonal (nm)")
-                fig_len, mu_len, n_len = histogram_with_fit(all_len, nbins, range_len, "Length (nm)")
-                fig_wid, mu_wid, n_wid = histogram_with_fit(all_wid, nbins, range_wid, "Width (nm)")
+                fig_hex, mu_hex, n_hex = histogram_with_fit(all_hex, nbins, range_hex, f"Hexagon diagonal ({unit_label})", unit_label)
+                fig_len, mu_len, n_len = histogram_with_fit(all_len, nbins, range_len, f"Length ({unit_label})", unit_label)
+                fig_wid, mu_wid, n_wid = histogram_with_fit(all_wid, nbins, range_wid, f"Width ({unit_label})", unit_label)
 
                 # Volume of hexagonal prism
-                width = mu_wid if abs(mu_wid - mu_hex) < abs(mu_len - mu_hex) else mu_len
-                height = mu_len if width == mu_wid else mu_wid
-                area_hex = (3 * np.sqrt(3) / 8) * mu_hex ** 2
-                volume = area_hex * height
+                if unit_label == "nm" and np.isfinite(mu_hex) and np.isfinite(mu_len) and np.isfinite(mu_wid):
+                    width = mu_wid if abs(mu_wid - mu_hex) < abs(mu_len - mu_hex) else mu_len
+                    height = mu_len if width == mu_wid else mu_wid
+                    area_hex = (3 * np.sqrt(3) / 8) * mu_hex ** 2
+                    volume = area_hex * height
+                    volume_text = f", Vol={volume:.2f} nm³"
+                else:
+                    volume_text = ""
                 n_min = int(min(n_hex, n_len, n_wid))
 
-                fig_hex.update_layout(title=f"Hexagon diagonal (nm): μ={mu_hex:.2f}, Vol={volume:.2f} nm³, n≥{n_min}")
-                fig_len.update_layout(title=f"Length (nm): μ={mu_len:.2f}, Vol={volume:.2f} nm³, n≥{n_min}")
-                fig_wid.update_layout(title=f"Width (nm): μ={mu_wid:.2f}, Vol={volume:.2f} nm³, n≥{n_min}")
+                fig_hex.update_layout(title=f"Hexagon diagonal ({unit_label}): μ={mu_hex:.2f}{volume_text}, n≥{n_min}")
+                fig_len.update_layout(title=f"Length ({unit_label}): μ={mu_len:.2f}{volume_text}, n≥{n_min}")
+                fig_wid.update_layout(title=f"Width ({unit_label}): μ={mu_wid:.2f}{volume_text}, n≥{n_min}")
 
                 st.plotly_chart(fig_hex, use_container_width=True)
                 st.plotly_chart(fig_len, use_container_width=True)
@@ -520,35 +585,39 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
             all_hgt = np.concatenate([r.get("heights_nm", []) for r in results]) if results else np.array([])
             if all_len.size and all_wid.size and all_hgt.size:
                 range_len = st.slider(
-                    "Length range (nm)",
+                    f"Length range ({unit_label})",
                     float(all_len.min()),
                     float(all_len.max()),
                     (float(all_len.min()), float(all_len.max())),
                 )
                 range_wid = st.slider(
-                    "Width range (nm)",
+                    f"Width range ({unit_label})",
                     float(all_wid.min()),
                     float(all_wid.max()),
                     (float(all_wid.min()), float(all_wid.max())),
                 )
                 range_hgt = st.slider(
-                    "Height range (nm)",
+                    f"Height range ({unit_label})",
                     float(all_hgt.min()),
                     float(all_hgt.max()),
                     (float(all_hgt.min()), float(all_hgt.max())),
                 )
                 nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
 
-                fig_len, mu_len, n_len = histogram_with_fit(all_len, nbins, range_len, "Length (nm)")
-                fig_wid, mu_wid, n_wid = histogram_with_fit(all_wid, nbins, range_wid, "Width (nm)")
-                fig_hgt, mu_hgt, n_hgt = histogram_with_fit(all_hgt, nbins, range_hgt, "Height (nm)")
+                fig_len, mu_len, n_len = histogram_with_fit(all_len, nbins, range_len, f"Length ({unit_label})", unit_label)
+                fig_wid, mu_wid, n_wid = histogram_with_fit(all_wid, nbins, range_wid, f"Width ({unit_label})", unit_label)
+                fig_hgt, mu_hgt, n_hgt = histogram_with_fit(all_hgt, nbins, range_hgt, f"Height ({unit_label})", unit_label)
 
-                volume = mu_len * mu_wid * mu_hgt
+                if unit_label == "nm" and np.isfinite(mu_len) and np.isfinite(mu_wid) and np.isfinite(mu_hgt):
+                    volume = mu_len * mu_wid * mu_hgt
+                    volume_text = f", Vol={volume:.2f} nm³"
+                else:
+                    volume_text = ""
                 n_min = int(min(n_len, n_wid, n_hgt))
 
-                fig_len.update_layout(title=f"Length (nm): μ={mu_len:.2f}, Vol={volume:.2f} nm³, n≥{n_min}")
-                fig_wid.update_layout(title=f"Width (nm): μ={mu_wid:.2f}, Vol={volume:.2f} nm³, n≥{n_min}")
-                fig_hgt.update_layout(title=f"Height (nm): μ={mu_hgt:.2f}, Vol={volume:.2f} nm³, n≥{n_min}")
+                fig_len.update_layout(title=f"Length ({unit_label}): μ={mu_len:.2f}{volume_text}, n≥{n_min}")
+                fig_wid.update_layout(title=f"Width ({unit_label}): μ={mu_wid:.2f}{volume_text}, n≥{n_min}")
+                fig_hgt.update_layout(title=f"Height ({unit_label}): μ={mu_hgt:.2f}{volume_text}, n≥{n_min}")
 
                 st.plotly_chart(fig_len, use_container_width=True)
                 st.plotly_chart(fig_wid, use_container_width=True)
