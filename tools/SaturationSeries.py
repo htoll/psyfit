@@ -166,7 +166,7 @@ def process_all_quadrants(_uploaded_files, threshold, signal):
     all_dfs = []
     for i in range(1, 5):
         quadrant = str(i)
-        processed_data_quad, _ = process_files(list(_uploaded_files), quadrant, threshold=threshold, signal=signal)
+        processed_data_quad, _ = process_files_jfs(list(_uploaded_files), quadrant, threshold=threshold, signal=signal)
 
         for filename, data in processed_data_quad.items():
             df = data.get("df")
@@ -233,7 +233,7 @@ def run():
         if st.session_state.analyze_clicked and uploaded_files:
             try:
                 # Process files for the individually selected region for the first tab
-                processed_data, _ = process_files(uploaded_files, region, threshold=threshold, signal=signal)
+                processed_data, _ = process_files_jfs(uploaded_files, region, threshold=threshold, signal=signal)
                 st.session_state.processed_data = processed_data
 
             except Exception as e:
