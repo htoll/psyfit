@@ -4,7 +4,6 @@ import io
 from utilsJFS import plot_histogram
 from utils import integrate_sif, plot_brightness
 from tools.process_files import process_files
-from tools.process_files_jfs import process_files_jfs
 from matplotlib.colors import LogNorm
 import numpy as np
 from scipy.ndimage import gaussian_filter
@@ -150,7 +149,7 @@ def plot_quadrant_histograms_for_max_current(combined_df): # Changed arguments
         
         if not quad_data.empty:
             brightness_data = quad_data['brightness_fit']
-            ax.hist(brightness_data, bins=20, color='skyblue', edgecolor='black')
+            ax.hist(brightness_data, bins=50, color='skyblue', edgecolor='black')
             ax.set_title(f"Quadrant {quadrant}")
             ax.set_xlabel("Brightness (pps)")
             ax.set_ylabel("Counts")
@@ -166,7 +165,7 @@ def process_all_quadrants(_uploaded_files, threshold, signal):
     all_dfs = []
     for i in range(1, 5):
         quadrant = str(i)
-        processed_data_quad, _ = process_files_jfs(list(_uploaded_files), quadrant, threshold=threshold, signal=signal)
+        processed_data_quad, _ = process_files(list(_uploaded_files), quadrant, threshold=threshold, signal=signal)
 
         for filename, data in processed_data_quad.items():
             df = data.get("df")
@@ -233,7 +232,7 @@ def run():
         if st.session_state.analyze_clicked and uploaded_files:
             try:
                 # Process files for the individually selected region for the first tab
-                processed_data, _ = process_files_jfs(uploaded_files, region, threshold=threshold, signal=signal)
+                processed_data, _ = process_files(uploaded_files, region, threshold=threshold, signal=signal)
                 st.session_state.processed_data = processed_data
 
             except Exception as e:
