@@ -147,8 +147,15 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
                 model = A * np.exp(-((x - x0)**2 / (2 * sx**2) + (y - y0)**2 / (2 * sy**2))) + offset
                 return model - z
 
+            region = str(region)
+            if region == '4':
+                sigma_ub = 0.8 #for wider NIR peaks
+                sig_threshold = max(sig_threshold, SIGMA_UB)  # keep post-filter consistent
+            else:
+                sigma_ub = 0.5
+
             lb = [1, x0_guess - 1, 0.0, y0_guess - 1, 0.0, 0.0]
-            ub = [2 * amp_guess, x0_guess + 1, 0.5, y0_guess + 1, 0.5, offset_guess * 1.2]
+            ub = [2 * amp_guess, x0_guess + 1, sigma_ub, y0_guess + 1, sigma_ub, offset_guess * 1.2]
 
             # Perform fit
             res = least_squares(residuals, p0, args=(x_flat, y_flat, z_flat), bounds=(lb, ub))
@@ -162,8 +169,8 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
             if brightness_integrated > 1e9 or brightness_integrated < 50:
                 print(f"Excluded peak for brightness {brightness_integrated:.2e}")
                 continue
-            if sigx_fit > sig_threshold or sigy_fit > sig_threshold:
-                print(f"Excluded peak for size {sigx_fit:.2f} um x {sigy_fit:.2f} um")
+            EPS = 1e-3
+            if sigx_fit > sig_threshold + EPS or sigy_fit > sig_threshold + EPS:
                 continue
 
             # Note: coordinates are already RELATIVE to cropped image
