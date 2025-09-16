@@ -9,7 +9,7 @@ from scipy.ndimage import gaussian_filter
 import plotly.express as px
 import plotly.graph_objects as go
 
-def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_hint=None):
+def build_brightness_heatmap(processed_data, weight_col="brightness_integrated", shape_hint=None):
     """
     Aggregates brightness by pixel location across all processed files.
     - Tries to auto-detect coordinate columns from common names.
@@ -189,7 +189,7 @@ def run():
 
                 with hist_col:
                     if not combined_df.empty:
-                        brightness_vals = combined_df['brightness_fit'].values
+                        brightness_vals = combined_df['brightness_integrated'].values
                         default_min_val = float(np.min(brightness_vals))
                         default_max_val = float(np.max(brightness_vals))
 
@@ -271,7 +271,7 @@ def run():
 
                 try:
                     shape_hint = image_data_cps.shape if isinstance(image_data_cps, np.ndarray) else None
-                    heatmap = build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_hint=shape_hint)
+                    heatmap = build_brightness_heatmap(processed_data, weight_col="brightness_integrated", shape_hint=shape_hint)
 
                     if smooth_sigma > 0:
                         if gaussian_filter is not None:
