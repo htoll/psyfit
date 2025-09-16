@@ -166,7 +166,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
             brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * roi_min
             #brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * offset_fit
 
-            if brightness_integrated > 1e9 or brightness_integrated < 50:
+            if brightness_integrated > 1e9 or brightness_integrated < 1:
                 print(f"Excluded peak for brightness {brightness_integrated:.2e}")
                 continue
             EPS = 1e-3
