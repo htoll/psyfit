@@ -100,7 +100,7 @@ def plot_all_quadrant_brightness_vs_current(combined_df):
         ax.errorbar(
             agg_data['current'],
             agg_data['mean'],
-            yerr=agg_data['std'],
+            yerr=agg_data['std']*100,
             fmt='o-',
             capsize=5,
             label=f'Quadrant {quadrant}',
