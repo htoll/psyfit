@@ -26,14 +26,13 @@ import tempfile
 import datetime as dt
 import hashlib
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 from scipy.ndimage import distance_transform_edt
-from scipy.stats import norm
 from skimage.measure import regionprops, label
 from skimage.morphology import (
     remove_small_objects,
@@ -42,6 +41,9 @@ from skimage.morphology import (
     h_maxima)
 from skimage.segmentation import watershed
 from sklearn.mixture import GaussianMixture
+
+
+SESSION_CACHE_KEY = "_tem_size_cache"
 
 # Optional import of ncempy (for reading dm3 files)
 try:  # pragma: no cover - simply a convenience check
@@ -546,44 +548,90 @@ def segment_and_measure_shapes(
 # ---------------------------------------------------------------------------
 
 
+def _gaussian_curve(x: np.ndarray, mu: float, std: float) -> np.ndarray:
+    coeff = 1.0 / (std * math.sqrt(2 * math.pi))
+    return coeff * np.exp(-0.5 * ((x - mu) / std) ** 2)
+
+
 def histogram_with_fit(
     values: np.ndarray,
     nbins: int,
     xrange: Tuple[float, float],
     title: str,
     unit_label: str,
-) -> Tuple[go.Figure, float, int]:
-    """Return a histogram figure with a Gaussian fit.
-
-    Parameters
-    ----------
-    values: ndarray
-        Data values expressed in ``unit_label`` units.
-    nbins: int
-        Number of histogram bins.
-    xrange: tuple
-        (min, max) range to include in the fit.
-    title: str
-        Base title for the figure.
-    """
+) -> Tuple[go.Figure, float, float, int]:
+    """Return a histogram figure with a Gaussian fit and dispersion metrics."""
 
     vals = values[(values >= xrange[0]) & (values <= xrange[1])]
-    n = len(vals)
+    n = int(len(vals))
     counts, edges = np.histogram(vals, bins=nbins, range=xrange)
     centers = edges[:-1] + np.diff(edges) / 2
     fig = go.Figure(data=[go.Bar(x=centers, y=counts, name=title)])
 
-    if n >= 3:
-        mu, std = norm.fit(vals)
-        xline = np.linspace(xrange[0], xrange[1], 300)
-        yline = norm.pdf(xline, mu, std) * n * (centers[1] - centers[0])
-        fig.add_trace(go.Scatter(x=xline, y=yline, mode="lines", line=dict(color="red")))
+    if n > 0:
+        mu = float(np.mean(vals))
+        std = float(np.std(vals, ddof=1)) if n > 1 else float(np.std(vals, ddof=0))
     else:
         mu = float("nan")
+        std = float("nan")
+
+    bin_width = float(edges[1] - edges[0]) if len(edges) > 1 else float(
+        (xrange[1] - xrange[0]) / max(nbins, 1)
+    )
+
+    if n > 1 and std > 0:
+        xline = np.linspace(xrange[0], xrange[1], 300)
+        yline = _gaussian_curve(xline, mu, std) * n * bin_width
+        fig.add_trace(go.Scatter(x=xline, y=yline, mode="lines", line=dict(color="red")))
 
     fig.update_layout(title=title, xaxis_title=f"Size ({unit_label})", yaxis_title="Count")
     fig.update_xaxes(range=[float(xrange[0]), float(xrange[1])])
-    return fig, float(mu), n
+    return fig, float(mu), float(std), n
+
+
+def _uncertainty_value(std: float, n: int, use_standard_error: bool) -> Optional[float]:
+    if not np.isfinite(std):
+        return None
+    if use_standard_error:
+        if n <= 0:
+            return None
+        if n <= 1:
+            return 0.0
+        return std / math.sqrt(n)
+    return std
+
+
+def summarise_stats(
+    mu: float,
+    std: float,
+    n: int,
+    use_standard_error: bool,
+    *,
+    extra_parts: Optional[Iterable[str]] = None,
+    include_sample_size: bool = True,
+) -> Tuple[str, Optional[str], Optional[float]]:
+    """Return a formatted summary string and dispersion details."""
+
+    if n <= 0 or not np.isfinite(mu):
+        return "", None, None
+
+    parts: List[str] = [f"μ={mu:.2f}"]
+    label = "SE" if use_standard_error else "σ"
+    unc_value = _uncertainty_value(std, n, use_standard_error)
+
+    if unc_value is not None and np.isfinite(unc_value):
+        parts.append(f"{label}={unc_value:.2f}")
+    if extra_parts:
+        parts.extend(list(extra_parts))
+    if include_sample_size:
+        parts.append(f"n={n}")
+
+    summary = ", ".join(parts)
+    if unc_value is None or not np.isfinite(unc_value):
+        label_out: Optional[str] = None
+    else:
+        label_out = label
+    return summary, label_out, unc_value
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +678,7 @@ def _finalize_shape_figure(
     fig.update_layout(
         showlegend=False,
         title=title,
-        margin=dict(l=0, r=0, t=40, b=0),
+        margin=dict(l=0, r=0, t=40, b=70),
         paper_bgcolor="white",
         scene=dict(
             xaxis=dict(
@@ -661,7 +709,7 @@ def _finalize_shape_figure(
     )
 
     if scale_length is not None and scale_length > 0:
-        _add_scale_bar(fig, scale_length, unit_label, x_extent, y_extent, z_extent)
+        _add_scale_bar(fig, scale_length, unit_label)
 
     return fig
 
@@ -670,46 +718,31 @@ def _add_scale_bar(
     fig: go.Figure,
     scale_length: float,
     unit_label: str,
-    x_extent: float,
-    y_extent: float,
-    z_extent: float,
 ) -> None:
-    span_x = 2 * x_extent
-    span_y = 2 * y_extent
-    span_z = 2 * z_extent
-
-    x_start = -x_extent + 0.1 * span_x
-    x_end = x_start + scale_length
-    if x_end > x_extent:
-        shift = x_end - x_extent
-        x_start -= shift
-        x_end -= shift
-
-    y_pos = -y_extent + 0.12 * span_y
-    z_pos = -z_extent + 0.12 * span_z
-
-    fig.add_trace(
-        go.Scatter3d(
-            x=[x_start, x_end],
-            y=[y_pos, y_pos],
-            z=[z_pos, z_pos],
-            mode="lines",
-            line=dict(color="black", width=8),
-            hoverinfo="skip",
-            showlegend=False,
-        )
+    fig.add_shape(
+        type="line",
+        x0=0.65,
+        x1=0.9,
+        y0=0.08,
+        y1=0.08,
+        xref="paper",
+        yref="paper",
+        line=dict(color="black", width=4),
+        layer="above",
     )
-    fig.add_trace(
-        go.Scatter3d(
-            x=[(x_start + x_end) / 2],
-            y=[y_pos],
-            z=[z_pos - 0.05 * span_z],
-            mode="text",
-            text=[f"{scale_length:g} {unit_label}"],
-            textfont=dict(color="black", size=12),
-            hoverinfo="skip",
-            showlegend=False,
-        )
+    fig.add_annotation(
+        x=0.775,
+        y=0.02,
+        xref="paper",
+        yref="paper",
+        text=f"{scale_length:g} {unit_label}",
+        showarrow=False,
+        font=dict(color="black", size=12),
+        align="center",
+        bgcolor="rgba(255, 255, 255, 0.85)",
+        bordercolor="rgba(0, 0, 0, 0.3)",
+        borderwidth=1,
+        borderpad=4,
     )
 
 
@@ -996,6 +1029,15 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
             value=4.0,
             step=0.5,
         )
+        report_standard_error = st.checkbox(
+            "Show standard error instead of standard deviation",
+            value=False,
+            help="Tick to report the standard error (σ/√n) rather than the standard deviation (σ).",
+        )
+        st.caption(
+            "Summaries below include "
+            f"{'standard error' if report_standard_error else 'standard deviation'} values."
+        )
 
     results: List[Dict[str, np.ndarray]] = []
 
@@ -1007,27 +1049,30 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
         file_payloads: Tuple[Tuple[str, bytes], ...] = tuple((f.name, f.getvalue()) for f in files)
         min_shape_size_value = float(min_shape_size_input)
         processing_key = build_processing_key(file_payloads, shape_type, min_shape_size_value)
-        previous_key = st.session_state.get("last_processing_key")
+        cache_entry = st.session_state.get(SESSION_CACHE_KEY)
 
-        if previous_key != processing_key:
+        if cache_entry and cache_entry.get("key") == processing_key:
+            results = cache_entry["results"]
+            missing_scale_files = cache_entry["missing_scale_files"]
+            threshold_messages = cache_entry["threshold_messages"]
+        else:
             with st.spinner("Processing …"):
                 results, missing_scale_files, threshold_messages = process_dm3_files(
                     file_payloads=file_payloads,
                     shape_type=shape_type,
                     min_shape_size_input=min_shape_size_value,
                 )
-            st.session_state["last_processing_key"] = processing_key
-        else:
-            results, missing_scale_files, threshold_messages = process_dm3_files(
-                file_payloads=file_payloads,
-                shape_type=shape_type,
-                min_shape_size_input=min_shape_size_value,
-            )
+            st.session_state[SESSION_CACHE_KEY] = {
+                "key": processing_key,
+                "results": results,
+                "missing_scale_files": missing_scale_files,
+                "threshold_messages": threshold_messages,
+            }
 
         for file_name, threshold_value in threshold_messages:
             st.info(f"**{file_name}**: GMM threshold = **{threshold_value:.4f}**")
     else:
-        st.session_state.pop("last_processing_key", None)
+        st.session_state.pop(SESSION_CACHE_KEY, None)
 
     # Dropdown to select image for display
     if results:
@@ -1091,13 +1136,28 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                     (float(all_d.min()), float(all_d.max())),
                 )
                 nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
-                fig, mu, n = histogram_with_fit(all_d, nbins, range_slider, f"Diameter ({unit_label})", unit_label)
+                fig, mu, std, n = histogram_with_fit(
+                    all_d,
+                    nbins,
+                    range_slider,
+                    f"Diameter ({unit_label})",
+                    unit_label,
+                )
+                volume_parts: List[str] = []
                 if unit_label == "nm" and np.isfinite(mu):
                     volume = (4 / 3) * np.pi * (mu / 2) ** 3
-                    title_suffix = f"μ={mu:.2f}, Vol={volume:.2f} nm³, n={n}"
+                    volume_parts.append(f"Vol={volume:.2f} nm³")
+                summary, _, _ = summarise_stats(
+                    mu,
+                    std,
+                    n,
+                    report_standard_error,
+                    extra_parts=volume_parts,
+                )
+                if summary:
+                    fig.update_layout(title=f"Diameter ({unit_label}): {summary}")
                 else:
-                    title_suffix = f"μ={mu:.2f}, n={n}"
-                fig.update_layout(title=f"Diameter ({unit_label}): {title_suffix}")
+                    fig.update_layout(title=f"Diameter ({unit_label})")
                 shape_fig = create_shape_figure(
                     "Sphere",
                     unit_label,
@@ -1106,6 +1166,8 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                 col_hist, col_shape = st.columns([3, 2])
                 with col_hist:
                     st.plotly_chart(fig, use_container_width=True)
+                    if summary:
+                        st.caption(f"Stats: {summary}")
                 with col_shape:
                     if shape_fig is not None:
                         st.plotly_chart(shape_fig, use_container_width=True)
@@ -1139,24 +1201,80 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                 )
                 nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
 
-                fig_hex, mu_hex, n_hex = histogram_with_fit(all_hex, nbins, range_hex, f"Hexagon diagonal ({unit_label})", unit_label)
-                fig_len, mu_len, n_len = histogram_with_fit(all_len, nbins, range_len, f"Length ({unit_label})", unit_label)
-                fig_wid, mu_wid, n_wid = histogram_with_fit(all_wid, nbins, range_wid, f"Width ({unit_label})", unit_label)
+                fig_hex, mu_hex, std_hex, n_hex = histogram_with_fit(
+                    all_hex,
+                    nbins,
+                    range_hex,
+                    f"Hexagon diagonal ({unit_label})",
+                    unit_label,
+                )
+                fig_len, mu_len, std_len, n_len = histogram_with_fit(
+                    all_len,
+                    nbins,
+                    range_len,
+                    f"Length ({unit_label})",
+                    unit_label,
+                )
+                fig_wid, mu_wid, std_wid, n_wid = histogram_with_fit(
+                    all_wid,
+                    nbins,
+                    range_wid,
+                    f"Width ({unit_label})",
+                    unit_label,
+                )
 
-                # Volume of hexagonal prism
+                volume_parts: List[str] = []
                 if unit_label == "nm" and np.isfinite(mu_hex) and np.isfinite(mu_len) and np.isfinite(mu_wid):
                     width = mu_wid if abs(mu_wid - mu_hex) < abs(mu_len - mu_hex) else mu_len
                     height = mu_len if width == mu_wid else mu_wid
                     area_hex = (3 * np.sqrt(3) / 8) * mu_hex ** 2
                     volume = area_hex * height
-                    volume_text = f", Vol={volume:.2f} nm³"
-                else:
-                    volume_text = ""
-                n_min = int(min(n_hex, n_len, n_wid))
+                    volume_parts.append(f"Vol={volume:.2f} nm³")
+                n_min = int(min(n_hex, n_len, n_wid)) if min(n_hex, n_len, n_wid) > 0 else 0
 
-                fig_hex.update_layout(title=f"Hexagon diagonal ({unit_label}): μ={mu_hex:.2f}{volume_text}, n≥{n_min}")
-                fig_len.update_layout(title=f"Length ({unit_label}): μ={mu_len:.2f}{volume_text}, n≥{n_min}")
-                fig_wid.update_layout(title=f"Width ({unit_label}): μ={mu_wid:.2f}{volume_text}, n≥{n_min}")
+                summary_hex, _, _ = summarise_stats(
+                    mu_hex,
+                    std_hex,
+                    n_hex,
+                    report_standard_error,
+                    extra_parts=volume_parts,
+                )
+                summary_len, _, _ = summarise_stats(
+                    mu_len,
+                    std_len,
+                    n_len,
+                    report_standard_error,
+                    extra_parts=volume_parts,
+                )
+                summary_wid, _, _ = summarise_stats(
+                    mu_wid,
+                    std_wid,
+                    n_wid,
+                    report_standard_error,
+                    extra_parts=volume_parts,
+                )
+
+                fig_hex.update_layout(
+                    title=(
+                        f"Hexagon diagonal ({unit_label}): {summary_hex}"
+                        if summary_hex
+                        else f"Hexagon diagonal ({unit_label})"
+                    )
+                )
+                fig_len.update_layout(
+                    title=(
+                        f"Length ({unit_label}): {summary_len}"
+                        if summary_len
+                        else f"Length ({unit_label})"
+                    )
+                )
+                fig_wid.update_layout(
+                    title=(
+                        f"Width ({unit_label}): {summary_wid}"
+                        if summary_wid
+                        else f"Width ({unit_label})"
+                    )
+                )
 
                 shape_fig = create_shape_figure(
                     "Hexagon",
@@ -1168,14 +1286,24 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                 col_hex, col_shape = st.columns([3, 2])
                 with col_hex:
                     st.plotly_chart(fig_hex, use_container_width=True)
+                    if summary_hex:
+                        st.caption(f"Stats: {summary_hex}")
                 with col_shape:
                     if shape_fig is not None:
                         st.plotly_chart(shape_fig, use_container_width=True)
+                        if volume_parts and n_min:
+                            st.caption(
+                                f"Volume estimate uses μ values above (overlap n≥{n_min})."
+                            )
                     else:
                         st.caption("Shape preview available when fits are valid.")
 
                 st.plotly_chart(fig_len, use_container_width=True)
+                if summary_len:
+                    st.caption(f"Stats: {summary_len}")
                 st.plotly_chart(fig_wid, use_container_width=True)
+                if summary_wid:
+                    st.caption(f"Stats: {summary_wid}")
             else:
                 st.info("Insufficient classified particles for histograms.")
 
@@ -1204,20 +1332,77 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                 )
                 nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
 
-                fig_len, mu_len, n_len = histogram_with_fit(all_len, nbins, range_len, f"Length ({unit_label})", unit_label)
-                fig_wid, mu_wid, n_wid = histogram_with_fit(all_wid, nbins, range_wid, f"Width ({unit_label})", unit_label)
-                fig_hgt, mu_hgt, n_hgt = histogram_with_fit(all_hgt, nbins, range_hgt, f"Height ({unit_label})", unit_label)
+                fig_len, mu_len, std_len, n_len = histogram_with_fit(
+                    all_len,
+                    nbins,
+                    range_len,
+                    f"Length ({unit_label})",
+                    unit_label,
+                )
+                fig_wid, mu_wid, std_wid, n_wid = histogram_with_fit(
+                    all_wid,
+                    nbins,
+                    range_wid,
+                    f"Width ({unit_label})",
+                    unit_label,
+                )
+                fig_hgt, mu_hgt, std_hgt, n_hgt = histogram_with_fit(
+                    all_hgt,
+                    nbins,
+                    range_hgt,
+                    f"Height ({unit_label})",
+                    unit_label,
+                )
 
+                volume_parts: List[str] = []
                 if unit_label == "nm" and np.isfinite(mu_len) and np.isfinite(mu_wid) and np.isfinite(mu_hgt):
                     volume = mu_len * mu_wid * mu_hgt
-                    volume_text = f", Vol={volume:.2f} nm³"
-                else:
-                    volume_text = ""
-                n_min = int(min(n_len, n_wid, n_hgt))
+                    volume_parts.append(f"Vol={volume:.2f} nm³")
+                n_min = int(min(n_len, n_wid, n_hgt)) if min(n_len, n_wid, n_hgt) > 0 else 0
 
-                fig_len.update_layout(title=f"Length ({unit_label}): μ={mu_len:.2f}{volume_text}, n≥{n_min}")
-                fig_wid.update_layout(title=f"Width ({unit_label}): μ={mu_wid:.2f}{volume_text}, n≥{n_min}")
-                fig_hgt.update_layout(title=f"Height ({unit_label}): μ={mu_hgt:.2f}{volume_text}, n≥{n_min}")
+                summary_len, _, _ = summarise_stats(
+                    mu_len,
+                    std_len,
+                    n_len,
+                    report_standard_error,
+                    extra_parts=volume_parts,
+                )
+                summary_wid, _, _ = summarise_stats(
+                    mu_wid,
+                    std_wid,
+                    n_wid,
+                    report_standard_error,
+                    extra_parts=volume_parts,
+                )
+                summary_hgt, _, _ = summarise_stats(
+                    mu_hgt,
+                    std_hgt,
+                    n_hgt,
+                    report_standard_error,
+                    extra_parts=volume_parts,
+                )
+
+                fig_len.update_layout(
+                    title=(
+                        f"Length ({unit_label}): {summary_len}"
+                        if summary_len
+                        else f"Length ({unit_label})"
+                    )
+                )
+                fig_wid.update_layout(
+                    title=(
+                        f"Width ({unit_label}): {summary_wid}"
+                        if summary_wid
+                        else f"Width ({unit_label})"
+                    )
+                )
+                fig_hgt.update_layout(
+                    title=(
+                        f"Height ({unit_label}): {summary_hgt}"
+                        if summary_hgt
+                        else f"Height ({unit_label})"
+                    )
+                )
 
                 shape_fig = create_shape_figure(
                     "Cube",
@@ -1229,14 +1414,24 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                 col_len, col_shape = st.columns([3, 2])
                 with col_len:
                     st.plotly_chart(fig_len, use_container_width=True)
+                    if summary_len:
+                        st.caption(f"Stats: {summary_len}")
                 with col_shape:
                     if shape_fig is not None:
                         st.plotly_chart(shape_fig, use_container_width=True)
+                        if volume_parts and n_min:
+                            st.caption(
+                                f"Volume estimate uses μ values above (overlap n≥{n_min})."
+                            )
                     else:
                         st.caption("Shape preview available when fits are valid.")
 
                 st.plotly_chart(fig_wid, use_container_width=True)
+                if summary_wid:
+                    st.caption(f"Stats: {summary_wid}")
                 st.plotly_chart(fig_hgt, use_container_width=True)
+                if summary_hgt:
+                    st.caption(f"Stats: {summary_hgt}")
             else:
                 st.info("Insufficient classified particles for histograms.")
     else:
