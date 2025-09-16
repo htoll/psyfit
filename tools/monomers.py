@@ -101,7 +101,7 @@ def plot_monomer_brightness(
             for _, row in df.iterrows():
                 x_px = row['x_pix']
                 y_px = row['y_pix']
-                brightness_pps = row['brightness_fit']
+                brightness_pps = row['brightness_integrated']
                 brightness_kpps = brightness_pps / 1000.0
 
                 radius_px = 3 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
@@ -185,7 +185,7 @@ def plot_monomer_brightness(
         xs = df['x_pix'].to_numpy()
         ys = df['y_pix'].to_numpy()
         rs = (3 * np.maximum(df['sigx_fit'].to_numpy(), df['sigy_fit'].to_numpy()) / pix_size_um).astype(float)
-        br = df['brightness_fit'].to_numpy()
+        br = df['brightness_integrated'].to_numpy()
         br_k = (br / 1000.0).astype(float)
         cats = np.where(br < t1, 'Monomers', np.where(br < t2, 'Dimers', np.where(br < t3, 'Trimers', 'Multimers')))
         colors = [CATEGORY_COLORS[c] for c in cats]
@@ -424,7 +424,7 @@ def run():
         with plot_col2:
             if not combined_df.empty:
                 # Get defaults
-                brightness_vals = combined_df['brightness_fit'].values
+                brightness_vals = combined_df['brightness_integrated'].values
                 default_min_val = float(np.min(brightness_vals))
                 default_max_val = float(np.max(brightness_vals))
                 
@@ -474,7 +474,7 @@ def run():
                             st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins_pie} bins.")
                         else:
                             categories = pd.cut(
-                                combined_df['brightness_fit'],
+                                combined_df['brightness_integrated'],
                                 bins=bins_for_pie,
                                 right=False,
                                 include_lowest=True,
