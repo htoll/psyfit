@@ -37,11 +37,9 @@ from skimage.measure import regionprops, label
 from skimage.morphology import (
     remove_small_objects,
     binary_closing,
-    disk, 
+    disk,
     h_maxima)
 from skimage.segmentation import watershed
-from streamlit_plotly_events import plotly_events
-from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 
 # Optional import of ncempy (for reading dm3 files)
@@ -352,18 +350,6 @@ def histogram_for_intensity(data: np.ndarray, nbins: Optional[int] = None) -> Tu
     return centers, counts
 
 
-def kmeans_threshold(data: np.ndarray, sample: int = 200_000) -> float:
-    flat = data.reshape(-1)
-    if len(flat) > sample:
-        idx = np.random.choice(len(flat), sample, replace=False)
-        flat = flat[idx]
-    km = KMeans(n_clusters=2, n_init="auto", random_state=42)
-    labels = km.fit_predict(flat.reshape(-1, 1))
-    c1_max = flat[labels == 0].max()
-    c2_max = flat[labels == 1].max()
-    return float(min(c1_max, c2_max))
-
-
 def gmm_threshold(data: np.ndarray, nbins: Optional[int] = None, sample: int = 200_000) -> float:
     flat = data.reshape(-1)
     if len(flat) > sample:
@@ -582,7 +568,7 @@ def histogram_with_fit(
 
     vals = values[(values >= xrange[0]) & (values <= xrange[1])]
     n = len(vals)
-    counts, edges = np.histogram(vals, bins=nbins)
+    counts, edges = np.histogram(vals, bins=nbins, range=xrange)
     centers = edges[:-1] + np.diff(edges) / 2
     fig = go.Figure(data=[go.Bar(x=centers, y=counts, name=title)])
 
@@ -595,6 +581,7 @@ def histogram_with_fit(
         mu = float("nan")
 
     fig.update_layout(title=title, xaxis_title=f"Size ({unit_label})", yaxis_title="Count")
+    fig.update_xaxes(range=[float(xrange[0]), float(xrange[1])])
     return fig, float(mu), n
 
 
@@ -611,7 +598,7 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
         return
 
     st.caption(
-        "Upload one or more `.dm3` images, choose a thresholding method and the particle shape, "
+        "Upload one or more `.dm3` images, choose the particle shape, "
         "then view size distributions."
     )
 
@@ -621,13 +608,7 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
         files = st.file_uploader("Upload .dm3 file(s)", accept_multiple_files=True, type=["dm3"])
 
     with col_right:
-        method = st.selectbox(
-            "Threshold method",
-            ["GMM", "K-means", "Manual"],
-            index=0,
-        )
         shape_type = st.selectbox("Shape type", ["Sphere", "Hexagon", "Cube"], index=0)
-        nbins_int = st.slider("Intensity histogram bins", 20, 200, 60, step=5)
         min_shape_size_input = st.number_input(
             "Minimum shape size (nm, or pixels if calibration missing)",
             min_value=0.0,
@@ -635,9 +616,6 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
             value=4.0,
             step=0.5,
         )
-
-    if "manual_threshold" not in st.session_state:
-        st.session_state.manual_threshold = None
 
     results: List[Dict[str, np.ndarray]] = []
 
@@ -659,34 +637,8 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                     missing_scale_files.append(f.name)
                     nm_per_px = float("nan")
 
-                # Threshold selection
-                if method == "Manual":
-                    fig_h = go.Figure()
-                    centers, counts = histogram_for_intensity(data, nbins_int)
-                    fig_h.add_trace(go.Bar(x=centers, y=counts))
-                    fig_h.update_layout(
-                        title="Intensity histogram (click to set threshold)",
-                        xaxis_title="Intensity",
-                        yaxis_title="Frequency",
-                    )
-                    clicked = plotly_events(fig_h, click_event=True, hover_event=False, select_event=False, key=f"click_{i}")
-                    if clicked:
-                        st.session_state.manual_threshold = float(clicked[-1]["x"])
-                    st.session_state.manual_threshold = st.number_input(
-                        "Manual threshold (intensity)",
-                        value=float(st.session_state.manual_threshold)
-                        if st.session_state.manual_threshold is not None
-                        else float(np.median(data)),
-                        format="%.6f",
-                        key=f"manual_thr_{i}",
-                    )
-                    chosen_threshold = float(st.session_state.manual_threshold)
-                elif method == "K-means":
-                    chosen_threshold = kmeans_threshold(data)
-                    st.info(f"K-means threshold = **{chosen_threshold:.4f}**")
-                else:  # GMM
-                    chosen_threshold = gmm_threshold(data, nbins_int)
-                    st.info(f"GMM threshold = **{chosen_threshold:.4f}**")
+                chosen_threshold = gmm_threshold(data)
+                st.info(f"GMM threshold = **{chosen_threshold:.4f}**")
 
                 seg = segment_and_measure_shapes(
                     data=data,
