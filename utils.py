@@ -124,6 +124,8 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
         y_idx, x_idx = np.indices(sub_img_fine.shape)
         x_coords = (x_idx + x0_idx_fine) * pix_size_um
         y_coords = (y_idx + y0_idx_fine) * pix_size_um
+        x_flat = x_coords.ravel()
+        y_flat = y_coords.ravel()
         z_flat  = sub_img_fine.ravel()
 
         # Initial guess
