@@ -29,7 +29,7 @@ tool_registry = {
     "Monomer Estimation": ("tools.monomers", "run"),
     "Process Movie": ("tools.read_movie", "run"),
     # "Plot CSVs": ("tools.plot_csv", "run"),  # commented like your original
-    "Spherical NP TEM": ("tools.spherical_tem", "run"),
+    "TEM Size Analysis": ("tools.spherical_tem", "run"),
 }
 
 show_traces = st.sidebar.toggle(
