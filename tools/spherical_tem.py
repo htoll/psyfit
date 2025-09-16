@@ -24,6 +24,7 @@ import math
 import os
 import tempfile
 import datetime as dt
+import hashlib
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional, Any
 
@@ -586,6 +587,385 @@ def histogram_with_fit(
 
 
 # ---------------------------------------------------------------------------
+# Visualization helpers
+# ---------------------------------------------------------------------------
+
+
+def nice_scale_bar_length(size: float) -> Optional[float]:
+    """Return a rounded scale-bar length (multiples of 5)."""
+
+    if not np.isfinite(size) or size <= 0:
+        return None
+
+    base_values = []
+    for exponent in range(0, 6):
+        factor = 10 ** exponent
+        for base in (5.0, 10.0, 15.0, 20.0, 25.0, 50.0, 75.0):
+            base_values.append(base * factor)
+    base_values = sorted(set(base_values))
+
+    target = size / 1.2
+    candidate = max((val for val in base_values if val <= target), default=None)
+    if candidate is None:
+        candidate = min((val for val in base_values if val >= target), default=5.0)
+    return float(candidate)
+
+
+def _finalize_shape_figure(
+    fig: go.Figure,
+    x_extent: float,
+    y_extent: float,
+    z_extent: float,
+    scale_length: Optional[float],
+    unit_label: str,
+    title: str,
+) -> go.Figure:
+    x_extent = max(x_extent, 1e-3)
+    y_extent = max(y_extent, 1e-3)
+    z_extent = max(z_extent, 1e-3)
+
+    if scale_length is not None and scale_length > 0:
+        x_extent = max(x_extent, scale_length * 0.6)
+
+    fig.update_layout(
+        showlegend=False,
+        title=title,
+        margin=dict(l=0, r=0, t=40, b=0),
+        paper_bgcolor="white",
+        scene=dict(
+            xaxis=dict(
+                range=[-x_extent, x_extent],
+                showbackground=False,
+                showgrid=False,
+                zeroline=False,
+                showticklabels=False,
+            ),
+            yaxis=dict(
+                range=[-y_extent, y_extent],
+                showbackground=False,
+                showgrid=False,
+                zeroline=False,
+                showticklabels=False,
+            ),
+            zaxis=dict(
+                range=[-z_extent, z_extent],
+                showbackground=False,
+                showgrid=False,
+                zeroline=False,
+                showticklabels=False,
+            ),
+            aspectmode="data",
+            bgcolor="white",
+            camera=dict(eye=dict(x=1.6, y=1.6, z=1.25)),
+        ),
+    )
+
+    if scale_length is not None and scale_length > 0:
+        _add_scale_bar(fig, scale_length, unit_label, x_extent, y_extent, z_extent)
+
+    return fig
+
+
+def _add_scale_bar(
+    fig: go.Figure,
+    scale_length: float,
+    unit_label: str,
+    x_extent: float,
+    y_extent: float,
+    z_extent: float,
+) -> None:
+    span_x = 2 * x_extent
+    span_y = 2 * y_extent
+    span_z = 2 * z_extent
+
+    x_start = -x_extent + 0.1 * span_x
+    x_end = x_start + scale_length
+    if x_end > x_extent:
+        shift = x_end - x_extent
+        x_start -= shift
+        x_end -= shift
+
+    y_pos = -y_extent + 0.12 * span_y
+    z_pos = -z_extent + 0.12 * span_z
+
+    fig.add_trace(
+        go.Scatter3d(
+            x=[x_start, x_end],
+            y=[y_pos, y_pos],
+            z=[z_pos, z_pos],
+            mode="lines",
+            line=dict(color="black", width=8),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    fig.add_trace(
+        go.Scatter3d(
+            x=[(x_start + x_end) / 2],
+            y=[y_pos],
+            z=[z_pos - 0.05 * span_z],
+            mode="text",
+            text=[f"{scale_length:g} {unit_label}"],
+            textfont=dict(color="black", size=12),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+
+
+def create_shape_figure(
+    shape_type: str,
+    unit_label: str,
+    *,
+    diameter: Optional[float] = None,
+    diagonal: Optional[float] = None,
+    length: Optional[float] = None,
+    width: Optional[float] = None,
+    height: Optional[float] = None,
+) -> Optional[go.Figure]:
+    """Create a minimalist 3‑D preview of the fitted shape."""
+
+    if shape_type == "Sphere":
+        if diameter is None or not np.isfinite(diameter) or diameter <= 0:
+            return None
+        radius = diameter / 2.0
+        traces: List[go.Scatter3d] = []
+        theta = np.linspace(0, 2 * np.pi, 60)
+        phi_vals = np.linspace(0, np.pi, 5)[1:-1]
+        for phi in phi_vals:
+            x = radius * np.cos(theta) * np.sin(phi)
+            y = radius * np.sin(theta) * np.sin(phi)
+            z = np.full_like(theta, radius * np.cos(phi))
+            traces.append(
+                go.Scatter3d(
+                    x=x,
+                    y=y,
+                    z=z,
+                    mode="lines",
+                    line=dict(color="black", width=2),
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+        phi = np.linspace(0, np.pi, 50)
+        theta_vals = np.linspace(0, 2 * np.pi, 8, endpoint=False)
+        for theta_val in theta_vals:
+            x = radius * np.cos(theta_val) * np.sin(phi)
+            y = radius * np.sin(theta_val) * np.sin(phi)
+            z = radius * np.cos(phi)
+            traces.append(
+                go.Scatter3d(
+                    x=x,
+                    y=y,
+                    z=z,
+                    mode="lines",
+                    line=dict(color="black", width=2),
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+        fig = go.Figure(data=traces)
+        scale_length = nice_scale_bar_length(diameter)
+        return _finalize_shape_figure(fig, radius * 1.2, radius * 1.2, radius * 1.2, scale_length, unit_label, "Sphere preview")
+
+    if shape_type == "Hexagon":
+        if (
+            diagonal is None
+            or not np.isfinite(diagonal)
+            or diagonal <= 0
+            or length is None
+            or width is None
+            or not np.isfinite(length)
+            or not np.isfinite(width)
+        ):
+            return None
+
+        radius = diagonal / 2.0
+        width_dim = width if abs(width - diagonal) < abs(length - diagonal) else length
+        height_dim = length if width_dim == width else width
+        if not np.isfinite(height_dim) or height_dim <= 0:
+            return None
+
+        theta = np.linspace(0, 2 * np.pi, 7)
+        vx = radius * np.cos(theta)
+        vy = radius * np.sin(theta)
+        hz = height_dim / 2.0
+
+        traces = [
+            go.Scatter3d(
+                x=vx,
+                y=vy,
+                z=np.full_like(vx, hz),
+                mode="lines",
+                line=dict(color="black", width=2),
+                hoverinfo="skip",
+                showlegend=False,
+            ),
+            go.Scatter3d(
+                x=vx,
+                y=vy,
+                z=np.full_like(vx, -hz),
+                mode="lines",
+                line=dict(color="black", width=2),
+                hoverinfo="skip",
+                showlegend=False,
+            ),
+        ]
+        for i in range(6):
+            traces.append(
+                go.Scatter3d(
+                    x=[vx[i], vx[i]],
+                    y=[vy[i], vy[i]],
+                    z=[-hz, hz],
+                    mode="lines",
+                    line=dict(color="black", width=2),
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+
+        fig = go.Figure(data=traces)
+        scale_length = nice_scale_bar_length(max(diagonal, height_dim))
+        return _finalize_shape_figure(
+            fig,
+            radius * 1.2,
+            radius * 1.2,
+            max(height_dim / 2.0, 1e-3) * 1.2,
+            scale_length,
+            unit_label,
+            "Hexagonal prism preview",
+        )
+
+    if shape_type == "Cube":
+        if (
+            length is None
+            or width is None
+            or height is None
+            or not np.isfinite(length)
+            or not np.isfinite(width)
+            or not np.isfinite(height)
+            or length <= 0
+            or width <= 0
+            or height <= 0
+        ):
+            return None
+
+        hx = length / 2.0
+        hy = width / 2.0
+        hz = height / 2.0
+        vertices = np.array(
+            [
+                [-hx, -hy, -hz],
+                [hx, -hy, -hz],
+                [hx, hy, -hz],
+                [-hx, hy, -hz],
+                [-hx, -hy, hz],
+                [hx, -hy, hz],
+                [hx, hy, hz],
+                [-hx, hy, hz],
+            ]
+        )
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ]
+        traces = []
+        for start, end in edges:
+            traces.append(
+                go.Scatter3d(
+                    x=vertices[[start, end], 0],
+                    y=vertices[[start, end], 1],
+                    z=vertices[[start, end], 2],
+                    mode="lines",
+                    line=dict(color="black", width=2),
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+
+        fig = go.Figure(data=traces)
+        scale_length = nice_scale_bar_length(max(length, width, height))
+        return _finalize_shape_figure(
+            fig,
+            max(hx, 1e-3) * 1.2,
+            max(hy, 1e-3) * 1.2,
+            max(hz, 1e-3) * 1.2,
+            scale_length,
+            unit_label,
+            "Rectangular prism preview",
+        )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Processing helpers
+# ---------------------------------------------------------------------------
+
+
+@st.cache_data(show_spinner=False)
+def process_dm3_files(
+    file_payloads: Tuple[Tuple[str, bytes], ...],
+    shape_type: str,
+    min_shape_size_input: float,
+) -> Tuple[List[Dict[str, np.ndarray]], List[str], List[Tuple[str, float]]]:
+    """Process uploaded files and cache segmentation results."""
+
+    results: List[Dict[str, np.ndarray]] = []
+    missing_scale_files: List[str] = []
+    thresholds: List[Tuple[str, float]] = []
+
+    for idx, (file_name, file_bytes) in enumerate(file_payloads, start=1):
+        dm3 = try_read_dm3(file_bytes)
+        data = dm3.data
+        nm_per_px = dm3.nm_per_px
+
+        if np.isfinite(nm_per_px) and nm_per_px > 0:
+            measurement_unit = "nm"
+            min_size_value = float(min_shape_size_input)
+        else:
+            measurement_unit = "px"
+            min_size_value = float(min_shape_size_input)
+            missing_scale_files.append(file_name)
+            nm_per_px = float("nan")
+
+        chosen_threshold = gmm_threshold(data)
+        thresholds.append((file_name, chosen_threshold))
+
+        seg = segment_and_measure_shapes(
+            data=data,
+            threshold=chosen_threshold,
+            nm_per_px=nm_per_px,
+            shape_type=shape_type,
+            min_size_value=min_size_value,
+            measurement_unit=measurement_unit,
+            min_area_px=5,
+        )
+        seg["name"] = file_name
+        results.append(seg)
+
+    return results, missing_scale_files, thresholds
+
+
+def build_processing_key(
+    file_payloads: Tuple[Tuple[str, bytes], ...],
+    shape_type: str,
+    min_shape_size_input: float,
+) -> str:
+    """Return a stable hash describing the current processing inputs."""
+
+    hasher = hashlib.sha256()
+    hasher.update(shape_type.encode("utf-8"))
+    hasher.update(np.float64(min_shape_size_input).tobytes())
+    for file_name, file_bytes in file_payloads:
+        hasher.update(file_name.encode("utf-8"))
+        hasher.update(len(file_bytes).to_bytes(8, "little"))
+        hasher.update(file_bytes)
+    return hasher.hexdigest()
+
+
+# ---------------------------------------------------------------------------
 # Streamlit UI
 # ---------------------------------------------------------------------------
 
@@ -621,68 +1001,65 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
 
     missing_scale_files: List[str] = []
 
+    threshold_messages: List[Tuple[str, float]] = []
+
     if files:
-        with st.spinner("Processing …"):
-            for i, f in enumerate(files, start=1):
-                dm3 = try_read_dm3(f.read())
-                data = dm3.data
-                nm_per_px = dm3.nm_per_px
+        file_payloads: Tuple[Tuple[str, bytes], ...] = tuple((f.name, f.getvalue()) for f in files)
+        min_shape_size_value = float(min_shape_size_input)
+        processing_key = build_processing_key(file_payloads, shape_type, min_shape_size_value)
+        previous_key = st.session_state.get("last_processing_key")
 
-                if np.isfinite(nm_per_px) and nm_per_px > 0:
-                    measurement_unit = "nm"
-                    min_size_value = float(min_shape_size_input)
-                else:
-                    measurement_unit = "px"
-                    min_size_value = float(min_shape_size_input)
-                    missing_scale_files.append(f.name)
-                    nm_per_px = float("nan")
-
-                chosen_threshold = gmm_threshold(data)
-                st.info(f"GMM threshold = **{chosen_threshold:.4f}**")
-
-                seg = segment_and_measure_shapes(
-                    data=data,
-                    threshold=chosen_threshold,
-                    nm_per_px=nm_per_px,
+        if previous_key != processing_key:
+            with st.spinner("Processing …"):
+                results, missing_scale_files, threshold_messages = process_dm3_files(
+                    file_payloads=file_payloads,
                     shape_type=shape_type,
-                    min_size_value=min_size_value,
-                    measurement_unit=measurement_unit,
-                    min_area_px=5,
+                    min_shape_size_input=min_shape_size_value,
                 )
-                seg["name"] = f.name
-                results.append(seg)
+            st.session_state["last_processing_key"] = processing_key
+        else:
+            results, missing_scale_files, threshold_messages = process_dm3_files(
+                file_payloads=file_payloads,
+                shape_type=shape_type,
+                min_shape_size_input=min_shape_size_value,
+            )
 
-        # Dropdown to select image for display
-        if results:
-            names = [r["name"] for r in results]
-            sel_name = st.selectbox("Select image to display", names)
-            sel = next(r for r in results if r["name"] == sel_name)
+        for file_name, threshold_value in threshold_messages:
+            st.info(f"**{file_name}**: GMM threshold = **{threshold_value:.4f}**")
+    else:
+        st.session_state.pop("last_processing_key", None)
 
-            shape = sel.get("image_shape") if isinstance(sel, dict) else None
-            if shape and len(shape) == 2:
-                try:
-                    width_px = int(shape[1])
-                except Exception:
-                    width_px = 0
-            else:
+    # Dropdown to select image for display
+    if results:
+        names = [r["name"] for r in results]
+        sel_name = st.selectbox("Select image to display", names)
+        sel = next(r for r in results if r["name"] == sel_name)
+
+        shape = sel.get("image_shape") if isinstance(sel, dict) else None
+        if shape and len(shape) == 2:
+            try:
+                width_px = int(shape[1])
+            except Exception:
                 width_px = 0
-            display_width = max(320, min(900, width_px // 2)) if width_px > 0 else 600
+        else:
+            width_px = 0
+        display_width = max(320, min(900, width_px // 2)) if width_px > 0 else 600
 
-            tab1, tab2 = st.tabs(["Annotated", "Watershed"])
-            with tab1:
-                st.image(
-                    sel["annotated_png"],
-                    caption=f"Annotated segmentation preview ({sel['unit']})",
-                    width=display_width,
-                    use_container_width=False,
-                )
-            with tab2:
-                st.image(
-                    sel["watershed_png"],
-                    caption="Watershed labels",
-                    width=display_width,
-                    use_container_width=False,
-                )
+        tab1, tab2 = st.tabs(["Annotated", "Watershed"])
+        with tab1:
+            st.image(
+                sel["annotated_png"],
+                caption=f"Annotated segmentation preview ({sel['unit']})",
+                width=display_width,
+                use_container_width=False,
+            )
+        with tab2:
+            st.image(
+                sel["watershed_png"],
+                caption="Watershed labels",
+                width=display_width,
+                use_container_width=False,
+            )
 
         if missing_scale_files:
             missing_list = "\n".join(f"• {name}" for name in sorted(set(missing_scale_files)))
@@ -721,7 +1098,19 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                 else:
                     title_suffix = f"μ={mu:.2f}, n={n}"
                 fig.update_layout(title=f"Diameter ({unit_label}): {title_suffix}")
-                st.plotly_chart(fig, use_container_width=True)
+                shape_fig = create_shape_figure(
+                    "Sphere",
+                    unit_label,
+                    diameter=mu if np.isfinite(mu) else None,
+                )
+                col_hist, col_shape = st.columns([3, 2])
+                with col_hist:
+                    st.plotly_chart(fig, use_container_width=True)
+                with col_shape:
+                    if shape_fig is not None:
+                        st.plotly_chart(shape_fig, use_container_width=True)
+                    else:
+                        st.caption("Shape preview available when μ is defined.")
             else:
                 st.info("No particles detected.")
 
@@ -769,7 +1158,22 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                 fig_len.update_layout(title=f"Length ({unit_label}): μ={mu_len:.2f}{volume_text}, n≥{n_min}")
                 fig_wid.update_layout(title=f"Width ({unit_label}): μ={mu_wid:.2f}{volume_text}, n≥{n_min}")
 
-                st.plotly_chart(fig_hex, use_container_width=True)
+                shape_fig = create_shape_figure(
+                    "Hexagon",
+                    unit_label,
+                    diagonal=mu_hex if np.isfinite(mu_hex) else None,
+                    length=mu_len if np.isfinite(mu_len) else None,
+                    width=mu_wid if np.isfinite(mu_wid) else None,
+                )
+                col_hex, col_shape = st.columns([3, 2])
+                with col_hex:
+                    st.plotly_chart(fig_hex, use_container_width=True)
+                with col_shape:
+                    if shape_fig is not None:
+                        st.plotly_chart(shape_fig, use_container_width=True)
+                    else:
+                        st.caption("Shape preview available when fits are valid.")
+
                 st.plotly_chart(fig_len, use_container_width=True)
                 st.plotly_chart(fig_wid, use_container_width=True)
             else:
@@ -815,7 +1219,22 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                 fig_wid.update_layout(title=f"Width ({unit_label}): μ={mu_wid:.2f}{volume_text}, n≥{n_min}")
                 fig_hgt.update_layout(title=f"Height ({unit_label}): μ={mu_hgt:.2f}{volume_text}, n≥{n_min}")
 
-                st.plotly_chart(fig_len, use_container_width=True)
+                shape_fig = create_shape_figure(
+                    "Cube",
+                    unit_label,
+                    length=mu_len if np.isfinite(mu_len) else None,
+                    width=mu_wid if np.isfinite(mu_wid) else None,
+                    height=mu_hgt if np.isfinite(mu_hgt) else None,
+                )
+                col_len, col_shape = st.columns([3, 2])
+                with col_len:
+                    st.plotly_chart(fig_len, use_container_width=True)
+                with col_shape:
+                    if shape_fig is not None:
+                        st.plotly_chart(shape_fig, use_container_width=True)
+                    else:
+                        st.caption("Shape preview available when fits are valid.")
+
                 st.plotly_chart(fig_wid, use_container_width=True)
                 st.plotly_chart(fig_hgt, use_container_width=True)
             else:
