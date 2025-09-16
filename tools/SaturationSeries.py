@@ -10,7 +10,13 @@ from scipy.ndimage import gaussian_filter
 import pandas as pd
 import matplotlib.pyplot as plt
 
-
+def convertToPowerDensity60x(current, sigma = 0.388): # Current in mA As of JUNE 27th 2023
+    powerOut = (0.29187857*current -17.90535715)/1000
+    sigmaPostObj = 3.3*sigma/150 #3.3 mm is the 
+    radius = 2*sigmaPostObj/10 #cm
+    area = np.pi*radius*radius
+    return powerOut/(area) #W/cm^2
+    
 def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_hint=None):
     """
     Aggregates brightness by pixel location across all processed files.
@@ -104,7 +110,7 @@ def plot_all_quadrant_brightness_vs_current(combined_df):
 
         # Step 4: Plot this quadrant's data
         ax.errorbar(
-            agg_data['current'],
+            convertToPowerDensity60x(agg_data['current']),
             agg_data['mean'],
             yerr=agg_data['std'],
             fmt='o-',
