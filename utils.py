@@ -147,12 +147,13 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
                 model = A * np.exp(-((x - x0)**2 / (2 * sx**2) + (y - y0)**2 / (2 * sy**2))) + offset
                 return model - z
 
-            region = str(region)
-            if region == '4':
-                sigma_ub = 0.8 #for wider NIR peaks
-                sig_threshold = max(sig_threshold, SIGMA_UB)  # keep post-filter consistent
-            else:
-                sigma_ub = 0.5
+            # region = str(region)
+            # if region == '4':
+            #     sigma_ub = 0.8 #for wider NIR peaks
+            #     sig_threshold = max(sig_threshold, SIGMA_UB)  # keep post-filter consistent
+            # else:
+            #     sigma_ub = 0.5
+            sigma_ub = 0.5
 
             lb = [1, x0_guess - 1, 0.0, y0_guess - 1, 0.0, 0.0]
             ub = [2 * amp_guess, x0_guess + 1, sigma_ub, y0_guess + 1, sigma_ub, offset_guess * 1.2]
