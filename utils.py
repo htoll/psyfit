@@ -121,12 +121,15 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
         # y_flat = y_coords.ravel()
         # z_flat = sub_img_interp.ravel() #∆ variable name 250604
         # switch from interp to fitting pixels 250916, noted that we were understimating brightness
-        y_idx, x_idx = np.indices(sub_img_fine.shape)
-        x_coords = (x_idx + x0_idx_fine) * pix_size_um
-        y_coords = (y_idx + y0_idx_fine) * pix_size_um
+        interp_size = 20
+        sub_img_interp = zoom(sub_img_fine, interp_size / sub_img_fine.shape[0], order=1)
+        H, W = sub_img_interp.shape
+        x_indices, y_indices = np.meshgrid(np.arange(W), np.arange(H))
+        x_coords = ((x_indices / (W-1)) * (sub_img_fine.shape[1]-1) + x0_idx_fine) * pix_size_um
+        y_coords = ((y_indices / (H-1)) * (sub_img_fine.shape[0]-1) + y0_idx_fine) * pix_size_um
         x_flat = x_coords.ravel()
         y_flat = y_coords.ravel()
-        z_flat  = sub_img_fine.ravel()
+        z_flat = sub_img_interp.ravel()
 
         # Initial guess
         amp_guess = np.max(sub_img_fine)
@@ -144,7 +147,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
                 model = A * np.exp(-((x - x0)**2 / (2 * sx**2) + (y - y0)**2 / (2 * sy**2))) + offset
                 return model - z
 
-            lb = [1, x0_guess - 1, 0.0, y0_guess - 1, 0.0, offset_guess * 0.5]
+            lb = [1, x0_guess - 1, 0.0, y0_guess - 1, 0.0, 0.0]
             ub = [2 * amp_guess, x0_guess + 1, 0.6, y0_guess + 1, 0.6, offset_guess * 1.2]
 
             # Perform fit
@@ -152,7 +155,9 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
             popt = res.x
             amp_fit, x0_fit, sigx_fit, y0_fit, sigy_fit, offset_fit = popt
             brightness_fit = 2 * np.pi * amp_fit * sigx_fit * sigy_fit / pix_size_um**2
-            brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * offset_fit
+            roi_min = np.min(sub_img_fine)
+            brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * roi_min
+            #brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * offset_fit
 
             if brightness_integrated > 1e9 or brightness_integrated < 50:
                 print(f"Excluded peak for brightness {brightness_integrated:.2e}")
