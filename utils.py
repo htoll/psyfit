@@ -148,7 +148,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
                 return model - z
 
             lb = [1, x0_guess - 1, 0.0, y0_guess - 1, 0.0, 0.0]
-            ub = [2 * amp_guess, x0_guess + 1, 0.6, y0_guess + 1, 0.6, offset_guess * 1.2]
+            ub = [2 * amp_guess, x0_guess + 1, 0.8, y0_guess + 1, 0.8, offset_guess * 1.2]
 
             # Perform fit
             res = least_squares(residuals, p0, args=(x_flat, y_flat, z_flat), bounds=(lb, ub))
