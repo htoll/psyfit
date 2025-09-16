@@ -82,26 +82,22 @@ def plot_all_quadrant_brightness_vs_current(combined_df):
 
     # Group by quadrant and process each one
     for quadrant, quad_df in combined_df.groupby('quadrant'):
-        # Step 1: Calculate the mean brightness for each individual image (FOV).
-        image_means = quad_df.groupby('filename')['brightness_fit'].mean().reset_index()
-        image_means.rename(columns={'brightness_fit': 'mean_brightness'}, inplace=True)
-
-        # Step 2: Extract the current from the filename.
-        # Check if 'current' column already exists from a previous step
-        if 'current' not in image_means.columns:
-             image_means['current'] = image_means['filename'].str.extract(r'^(\d+)').astype(int)
-
-        # Step 3: Group by current to get the mean and std of the image means.
-        agg_data = image_means.groupby('current')['mean_brightness'].agg(['mean', 'std']).reset_index()
+        # Group all particles in the quadrant directly by their current value.
+        # Then, calculate the mean and standard deviation of the 'brightness_fit' for all particles in that group.
+        agg_data = quad_df.groupby('current')['brightness_fit'].agg(['mean', 'std']).reset_index()
+        
+        # Sort by current for proper line plotting.
         agg_data = agg_data.sort_values('current')
-        agg_data['std'] = agg_data['std'].fillna(0) # Fill NaN for single-FOV currents
+        
+        # If a current has only one particle, its std will be NaN. Set this to 0.
+        agg_data['std'] = agg_data['std'].fillna(0)
 
         # Step 4: Plot this quadrant's data
         ax.errorbar(
             agg_data['current'],
             agg_data['mean'],
-            yerr=agg_data['std']*100,
-            fmt='s-',
+            yerr=agg_data['std'],
+            fmt='o-',
             capsize=5,
             label=f'Quadrant {quadrant}',
             color=colors.get(str(quadrant), 'gray') # Use gray for unexpected quadrants
