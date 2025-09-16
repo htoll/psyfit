@@ -120,6 +120,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
         # x_flat = x_coords.ravel()
         # y_flat = y_coords.ravel()
         # z_flat = sub_img_interp.ravel() #∆ variable name 250604
+        # switch from interp to fitting pixels 250916, noted that we were understimating brightness
         y_idx, x_idx = np.indices(sub_img_fine.shape)
         x_coords = (x_idx + x0_idx_fine) * pix_size_um
         y_coords = (y_idx + y0_idx_fine) * pix_size_um
