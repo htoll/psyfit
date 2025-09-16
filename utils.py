@@ -55,7 +55,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
     # Normalize counts → photons
     image_data_cps = image_data * (5.0 / gainDAC) / exposure_time / accumulate_cycles
 
-    radius_um_fine = 0.3
+    radius_um_fine = 0.4
     radius_pix_fine = int(radius_um_fine / pix_size_um)
 
     # --- Crop image if region specified ---
