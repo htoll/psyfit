@@ -89,7 +89,7 @@ def plot_all_quadrant_brightness_vs_current(combined_df):
         # Step 2: Extract the current from the filename.
         # Check if 'current' column already exists from a previous step
         if 'current' not in image_means.columns:
-             image_means['current'] = image_means['filename'].str.extract(r'^(\d+)_').astype(int)
+             image_means['current'] = image_means['filename'].str.extract(r'^(\d+)').astype(int)
 
         # Step 3: Group by current to get the mean and std of the image means.
         agg_data = image_means.groupby('current')['mean_brightness'].agg(['mean', 'std']).reset_index()
@@ -134,7 +134,7 @@ def plot_quadrant_histograms_for_max_current(combined_df): # Changed arguments
     # This part is now simplified as the df is passed in
     # This line will now execute successfully
     if 'current' not in combined_df.columns:
-        combined_df['current'] = combined_df['filename'].str.extract(r'^(\d+)_').astype(int)
+        combined_df['current'] = combined_df['filename'].str.extract(r'^(\d+)').astype(int)
     
     max_current = combined_df['current'].max()
 
@@ -196,7 +196,7 @@ def process_all_quadrants(_uploaded_files, threshold, signal):
         return pd.DataFrame()
 
     combined_df = pd.concat(all_dfs, ignore_index=True)
-    combined_df['current'] = combined_df['filename'].str.extract(r'^(\d+)_').astype(int)
+    combined_df['current'] = combined_df['filename'].str.extract(r'^(\d+)').astype(int)
     return combined_df
 # --- Keep your build_brightness_heatmap function here ---
 # --- Add the new plot_brightness_vs_current function here ---
