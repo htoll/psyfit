@@ -147,8 +147,8 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
             brightness_fit = 2 * np.pi * amp_fit * sigx_fit * sigy_fit / pix_size_um**2
             brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * offset_fit
 
-            if brightness_fit > 1e9 or brightness_fit < 50:
-                print(f"Excluded peak for brightness {brightness_fit:.2e}")
+            if brightness_integrated > 1e9 or brightness_integrated < 50:
+                print(f"Excluded peak for brightness {brightness_integrated:.2e}")
                 continue
             if sigx_fit > sig_threshold or sigy_fit > sig_threshold:
                 print(f"Excluded peak for size {sigx_fit:.2f} um x {sigy_fit:.2f} um")
@@ -176,42 +176,6 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
-# def plot_brightness(image_data_cps, df, show_fits = True, plot_brightness_histogram = False, normalization = False, pix_size_um = 0.1, cmap = 'magma'):
-
-#     fig_width, fig_height = 5, 5
-    
-#     scale = fig_width / 5  
-
-#     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-#     if normalization:
-#         normalization = LogNorm()
-#     else:
-#         normalization = None
-#     im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=normalization, origin='lower') 
-#     ax.tick_params(axis='both',length=0, labelleft=False, labelright=False, labeltop=False, labelbottom=False)
-
-#     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-#     cbar.ax.tick_params(labelsize = 10*scale)
-#     cbar.set_label('pps', fontsize=10*scale)  
-
-#     if show_fits:
-#         for _, row in df.iterrows():
-#             x_px = row['x_pix']
-#             y_px = row['y_pix']
-#             brightness_kpps = row['brightness_fit'] / 1000
-#             radius_px = 2 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
-    
-#             circle = Circle((x_px, y_px), radius_px, color='white', fill=False, linewidth=1*scale, alpha=0.7)
-#             ax.add_patch(circle)
-    
-#             ax.text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
-#                     color='white', fontsize=7*scale, ha='center', va='center')
-
-#     #ax.set_xlabel('x (px)', fontsize = 10*scale)
-#     #ax.set_ylabel('y (px)', fontsize = 10*scale)
-#     plt.tight_layout()
-#     HWT_aesthetic()
-#     return fig #replaced 250912
 
 
 def plot_brightness(
@@ -253,7 +217,7 @@ def plot_brightness(
             for _, row in df.iterrows():
                 x_px = row['x_pix']
                 y_px = row['y_pix']
-                brightness_kpps = row['brightness_fit'] / 1000.0
+                brightness_kpps = row['brightness_integrated'] / 1000.0
                 radius_px = 2 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
 
                 circle = Circle((x_px, y_px), radius_px, color='white',
@@ -318,7 +282,7 @@ def plot_brightness(
         xs = df["x_pix"].to_numpy()
         ys = df["y_pix"].to_numpy()
         rs = (2 * np.maximum(df["sigx_fit"].to_numpy(), df["sigy_fit"].to_numpy()) / pix_size_um).astype(float)
-        br = (df["brightness_fit"].to_numpy() / 1000.0).astype(float)
+        br = (df["brightness_integrated"].to_numpy() / 1000.0).astype(float)
 
         custom = np.stack([br], axis=1)
         fig.add_trace(go.Scatter(
@@ -378,7 +342,7 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     scale = fig_width / 5
 
-    brightness_vals = df['brightness_fit'].values
+    brightness_vals = df['brightness_integrated'].values
 
     # Apply min/max filtering if specified
     if min_val is not None and max_val is not None:
@@ -505,7 +469,7 @@ def coloc_subplots(ucnp_file, dye_file, df_dict, colocalization_radius=2, show_f
     ucnp_df, ucnp_img = df_dict[ucnp_file.name]
     dye_df, dye_img = df_dict[dye_file.name]
 
-    required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
+    required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_integrated']
     ucnp_has_fit = all(col in ucnp_df.columns for col in required_cols)
     dye_has_fit = all(col in dye_df.columns for col in required_cols)
 
@@ -536,10 +500,10 @@ def coloc_subplots(ucnp_file, dye_file, df_dict, colocalization_radius=2, show_f
                     'source_dye_file': dye_file.name,
                     'ucnp_x': x_ucnp,
                     'ucnp_y': y_ucnp,
-                    'ucnp_brightness': row_ucnp['brightness_fit'],
+                    'ucnp_brightness': row_ucnp['brightness_integrated'],
                     'dye_x': dye_df.loc[best_idx]['x_pix'],
                     'dye_y': dye_df.loc[best_idx]['y_pix'],
-                    'dye_brightness': dye_df.loc[best_idx]['brightness_fit'],
+                    'dye_brightness': dye_df.loc[best_idx]['brightness_integrated'],
                     'distance': distances[best_idx],
                 })
 
@@ -588,7 +552,7 @@ def gaussian2d(xy, amp, x0, sigma_x, y0, sigma_y, offset):
 
 
 def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, normalization=None, save_format = 'SVG', univ_minmax=False, cmap = 'grey'):
-    required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
+    required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_integrated']
     all_matched_pairs = []
 
     n_files = len(sif_files)
@@ -634,10 +598,10 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
                     colocalized[idx] = True
                     closest_idx = distances.idxmin()
                     all_matched_pairs.append({
-                        'x': x, 'y': y, 'brightness': row['brightness_fit'],
+                        'x': x, 'y': y, 'brightness': row['brightness_integrated'],
                         'closest_x': df.at[closest_idx, 'x_pix'],
                         'closest_y': df.at[closest_idx, 'y_pix'],
-                        'closest_brightness': df.at[closest_idx, 'brightness_fit'],
+                        'closest_brightness': df.at[closest_idx, 'brightness_integrated'],
                         'distance': distances[closest_idx]
                     })
 
@@ -659,7 +623,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
                 circle = Circle((row['x_pix'], row['y_pix']), radius_px, color=color, fill=False, linewidth=1, alpha=0.7)
                 ax.add_patch(circle)
                 ax.text(row['x_pix'] + 7.5, row['y_pix'] + 7.5,
-                        f"{row['brightness_fit']/1000:.1f} kpps",
+                        f"{row['brightness_integrated']/1000:.1f} kpps",
                         color=color, fontsize=7, ha='center', va='center')
 
         wrapped_basename = "\n".join(textwrap.wrap(basename, width=25))
