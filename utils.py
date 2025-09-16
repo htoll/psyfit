@@ -103,23 +103,27 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
         sub_img_fine, x0_idx_fine, y0_idx_fine = extract_subregion(
             image_data_cps, center_x_refined, center_y_refined, radius_pix_fine
         )
-        # Interpolate to 20x20 grid (like MATLAB)
-        interp_size = 20
-        zoom_factor = interp_size / sub_img_fine.shape[0]
-        sub_img_interp = zoom(sub_img_fine, zoom_factor, order=1)  # bilinear interpolation
+        # # Interpolate to 20x20 grid (like MATLAB)
+        # interp_size = 20
+        # zoom_factor = interp_size / sub_img_fine.shape[0]
+        # sub_img_interp = zoom(sub_img_fine, zoom_factor, order=1)  # bilinear interpolation
 
-        # Prepare grid
-        # y_indices, x_indices = np.indices(sub_img_fine.shape)
-        # x_coords = (x_indices + x0_idx_fine) * pix_size_um
-        # y_coords = (y_indices + y0_idx_fine) * pix_size_um
-        interp_shape = sub_img_interp.shape
-        y_indices, x_indices = np.indices(interp_shape)
-        x_coords = (x_indices / interp_shape[1] * sub_img_fine.shape[1] + x0_idx_fine) * pix_size_um
-        y_coords = (y_indices / interp_shape[0] * sub_img_fine.shape[0] + y0_idx_fine) * pix_size_um
+        # # Prepare grid
+        # # y_indices, x_indices = np.indices(sub_img_fine.shape)
+        # # x_coords = (x_indices + x0_idx_fine) * pix_size_um
+        # # y_coords = (y_indices + y0_idx_fine) * pix_size_um
+        # interp_shape = sub_img_interp.shape
+        # y_indices, x_indices = np.indices(interp_shape)
+        # x_coords = (x_indices / interp_shape[1] * sub_img_fine.shape[1] + x0_idx_fine) * pix_size_um
+        # y_coords = (y_indices / interp_shape[0] * sub_img_fine.shape[0] + y0_idx_fine) * pix_size_um
 
-        x_flat = x_coords.ravel()
-        y_flat = y_coords.ravel()
-        z_flat = sub_img_interp.ravel() #∆ variable name 250604
+        # x_flat = x_coords.ravel()
+        # y_flat = y_coords.ravel()
+        # z_flat = sub_img_interp.ravel() #∆ variable name 250604
+        y_idx, x_idx = np.indices(sub_img_fine.shape)
+        x_coords = (x_idx + x0_idx_fine) * pix_size_um
+        y_coords = (y_idx + y0_idx_fine) * pix_size_um
+        z_flat  = sub_img_fine.ravel()
 
         # Initial guess
         amp_guess = np.max(sub_img_fine)
