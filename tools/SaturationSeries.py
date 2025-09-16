@@ -17,7 +17,7 @@ def convertToPowerDensity60x(current, sigma = 0.388): # Current in mA As of JUNE
     area = np.pi*radius*radius
     return powerOut/(area) #W/cm^2
     
-def build_brightness_heatmap(processed_data, weight_col="brightness_fit", shape_hint=None):
+def build_brightness_heatmap(processed_data, weight_col="brightness_integrated", shape_hint=None):
     """
     Aggregates brightness by pixel location across all processed files.
     - Tries to auto-detect coordinate columns from common names.
@@ -92,17 +92,17 @@ def plot_all_quadrant_brightness_vs_current(combined_df):
         cut = 2
         # Step 1: Calculate the mean and std for each current group using transform.
         # This creates new columns aligned with the original quad_df.
-        group_stats = quad_df.groupby('current')['brightness_fit']
+        group_stats = quad_df.groupby('current')['brightness_integrated']
         group_mean = group_stats.transform('mean')
         group_std = group_stats.transform('std')
         # Step 2: Define the cutoff for each particle based on its group's statistics.
         cutoff_value = group_mean + cut * group_std
         # Step 3: Filter the DataFrame, keeping only particles below the cutoff.
         # We also handle cases where std is 0 by keeping those points.
-        is_outlier = (quad_df['brightness_fit'] > cutoff_value) & (group_std > 0)
+        is_outlier = (quad_df['brightness_integrated'] > cutoff_value) & (group_std > 0)
         df_filtered = quad_df[~is_outlier]
         # Step 4: Now, calculate the final aggregate stats on the cleaned data.
-        agg_data = df_filtered.groupby('current')['brightness_fit'].agg(['mean', 'std']).reset_index()
+        agg_data = df_filtered.groupby('current')['brightness_integrated'].agg(['mean', 'std']).reset_index()
         # Sort by current for proper line plotting.
         agg_data = agg_data.sort_values('current')
         # If a group has only one particle, its std will be NaN. Set this to 0.
@@ -160,7 +160,7 @@ def plot_quadrant_histograms_for_max_current(combined_df): # Changed arguments
         quad_data = combined_df[(combined_df['quadrant'] == quadrant) & (combined_df['current'] == max_current)]
         
         if not quad_data.empty:
-            brightness_data = quad_data['brightness_fit']
+            brightness_data = quad_data['brightness_integrated']
             ax.hist(brightness_data, bins=50, color='skyblue', edgecolor='black')
             ax.set_title(f"Quadrant {quadrant}")
             ax.set_xlabel("Brightness (pps)")
@@ -315,7 +315,7 @@ def run():
                     with plot_col2:
                         st.markdown("#### Brightness Histogram")
                         if df_for_file is not None and not df_for_file.empty:
-                            brightness_vals = df_for_file['brightness_fit'].values
+                            brightness_vals = df_for_file['brightness_integrated'].values
                             min_val, max_val = st.slider(
                                 "Select brightness range (pps):", 
                                 float(0), float(np.max(brightness_vals)), 
