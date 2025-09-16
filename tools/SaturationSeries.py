@@ -89,7 +89,7 @@ def plot_all_quadrant_brightness_vs_current(combined_df):
     # Group by quadrant and process each one
     for quadrant, quad_df in combined_df.groupby('quadrant'):
         # Set the cut parameter for outlier removal.
-        cut = 2
+        cut = 2.96
         # Step 1: Calculate the mean and std for each current group using transform.
         # This creates new columns aligned with the original quad_df.
         group_stats = quad_df.groupby('current')['brightness_integrated']
