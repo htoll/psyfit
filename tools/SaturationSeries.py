@@ -270,7 +270,19 @@ def run():
                 if selected_file:
                     plot_col1, plot_col2 = st.columns(2)
                     data_for_file = processed_data[selected_file]
-                    df_for_file = data_for_file.get("df")
+                    unfiltered_df = data_for_file.get("df")
+                
+                    # Create a default empty dataframe
+                    df_for_file = pd.DataFrame() 
+                    
+                    # Check if the unfiltered dataframe is valid before filtering
+                    if unfiltered_df is not None and not unfiltered_df.empty:
+                        bound = 64
+                        # Apply the central square filter
+                        df_for_file = unfiltered_df[
+                            (unfiltered_df['x_pix'] >= bound) & (unfiltered_df['x_pix'] <= 256 - bound) &
+                            (unfiltered_df['y_pix'] >= bound) & (unfiltered_df['y_pix'] <= 256 - bound)
+                        ].copy() # Use .copy() to prevent pandas warnings
 
                     with plot_col1:
                         st.markdown("#### Image Display")
