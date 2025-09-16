@@ -104,7 +104,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
             image_data_cps, center_x_refined, center_y_refined, radius_pix_fine
         )
         # Interpolate to 20x20 grid (like MATLAB)
-        interp_size = 10
+        interp_size = 20
         zoom_factor = interp_size / sub_img_fine.shape[0]
         sub_img_interp = zoom(sub_img_fine, zoom_factor, order=1)  # bilinear interpolation
 
