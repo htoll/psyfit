@@ -120,9 +120,9 @@ def plot_all_quadrant_brightness_vs_current(combined_df):
         )
 
     ax.set_yscale('log')
-    ax.set_xlabel("Current (mA)")
-    ax.set_ylabel("Mean of Image Means (pps)")
-    ax.set_title("Mean Particle Brightness vs. Current by Quadrant")
+    ax.set_xlabel("Power Density (W/cm2)")
+    ax.set_ylabel("Brightness (pps)")
+    ax.set_title("Mean Particle Brightness vs. Power Density by Channel")
     ax.grid(True, which="both", ls="--", linewidth=0.5)
     ax.legend()
     fig.tight_layout()
