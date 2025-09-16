@@ -101,7 +101,7 @@ def plot_all_quadrant_brightness_vs_current(combined_df):
             agg_data['current'],
             agg_data['mean'],
             yerr=agg_data['std']*100,
-            fmt='o-',
+            fmt='s-',
             capsize=5,
             label=f'Quadrant {quadrant}',
             color=colors.get(str(quadrant), 'gray') # Use gray for unexpected quadrants
