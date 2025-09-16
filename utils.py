@@ -126,7 +126,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
         offset_guess = np.min(sub_img_fine)
         x0_guess = center_x_refined * pix_size_um
         y0_guess = center_y_refined * pix_size_um
-        sigma_guess = 0.15
+        sigma_guess = 0.3
         p0 = [amp_guess, x0_guess, sigma_guess, y0_guess, sigma_guess, offset_guess]
 
         # Fit
@@ -138,7 +138,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
                 return model - z
 
             lb = [1, x0_guess - 1, 0.0, y0_guess - 1, 0.0, offset_guess * 0.5]
-            ub = [2 * amp_guess, x0_guess + 1, 0.175, y0_guess + 1, 0.175, offset_guess * 1.2]
+            ub = [2 * amp_guess, x0_guess + 1, 0.6, y0_guess + 1, 0.6, offset_guess * 1.2]
 
             # Perform fit
             res = least_squares(residuals, p0, args=(x_flat, y_flat, z_flat), bounds=(lb, ub))
