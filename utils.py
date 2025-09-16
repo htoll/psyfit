@@ -75,7 +75,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 
     # --- Detect peaks ---
     smoothed_image = gaussian_filter(image_data_cps, sigma=1)
-    threshold_abs = np.mean(smoothed_image) + threshold * np.std(smoothed_image)
+    threshold_abs = np.mean(smoothed_image) + threshold * np.std(smoothed_image)*0.1
 
     if signal == 'UCNP':
         coords = peak_local_max(smoothed_image, min_distance=5, threshold_abs=threshold_abs)
