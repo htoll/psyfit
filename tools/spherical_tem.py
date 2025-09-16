@@ -25,7 +25,7 @@ import os
 import tempfile
 import datetime as dt
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -63,6 +63,214 @@ class DM3Image:
 
 
 # ---------------------------------------------------------------------------
+# Metadata helpers
+# ---------------------------------------------------------------------------
+
+
+UNIT_TO_NM: Dict[str, float] = {
+    "m": 1e9,
+    "meter": 1e9,
+    "metre": 1e9,
+    "mm": 1e6,
+    "millimeter": 1e6,
+    "millimetre": 1e6,
+    "um": 1e3,
+    "micrometer": 1e3,
+    "micrometre": 1e3,
+    "micron": 1e3,
+    "µm": 1e3,
+    "pm": 1e-3,
+    "picometer": 1e-3,
+    "picometre": 1e-3,
+    "nm": 1.0,
+    "nanometer": 1.0,
+    "nanometre": 1.0,
+    "angstrom": 0.1,
+    "angstroem": 0.1,
+    "ang": 0.1,
+    "a": 0.1,
+}
+
+
+def _normalize_unit(unit: Any) -> Optional[str]:
+    """Normalize unit strings for lookup in :data:`UNIT_TO_NM`."""
+
+    if unit is None:
+        return None
+    if isinstance(unit, bytes):
+        try:
+            unit = unit.decode("utf-8")
+        except Exception:  # pragma: no cover - best effort decoding
+            unit = unit.decode("latin1", errors="ignore")
+    unit_str = str(unit).strip().lower()
+    if not unit_str:
+        return None
+    replacements = (
+        ("µ", "u"),
+        ("μ", "u"),
+        ("ångström", "angstrom"),
+        ("angström", "angstrom"),
+        ("meters", "meter"),
+        ("metres", "metre"),
+        ("nanometers", "nanometer"),
+        ("nanometres", "nanometre"),
+        ("micrometers", "micrometer"),
+        ("micrometres", "micrometre"),
+        ("millimeters", "millimeter"),
+        ("millimetres", "millimetre"),
+        ("microns", "micron"),
+    )
+    for old, new in replacements:
+        unit_str = unit_str.replace(old, new)
+    for suffix in ("/pixel", " per pixel", "per pixel", "/px", " perpix", "perpix"):
+        if suffix in unit_str:
+            unit_str = unit_str.replace(suffix, "")
+    unit_str = unit_str.replace("pixel", "")
+    unit_str = unit_str.replace(" per", "")
+    unit_str = unit_str.strip()
+    if unit_str.endswith("s") and unit_str not in {"ms"}:
+        unit_str = unit_str[:-1]
+    return unit_str or None
+
+
+def _factor_from_unit(unit: Any) -> Optional[float]:
+    cleaned = _normalize_unit(unit)
+    if not cleaned or "/" in cleaned:
+        return None
+    return UNIT_TO_NM.get(cleaned)
+
+
+def _convert_scale_value(value: Any, unit: Any = None, default_factor: Optional[float] = None) -> Optional[float]:
+    """Convert calibration values to nm/pixel if possible."""
+
+    if isinstance(value, dict):
+        unit_candidates = [
+            value.get("unit"),
+            value.get("units"),
+            value.get("Unit"),
+            value.get("Units"),
+        ]
+        unit_pref = next((u for u in unit_candidates if u is not None), unit)
+        value_candidates = [
+            value.get("value"),
+            value.get("Value"),
+            value.get("scale"),
+            value.get("Scale"),
+        ]
+        for candidate in value_candidates:
+            nm = _convert_scale_value(candidate, unit=unit_pref, default_factor=default_factor)
+            if nm is not None:
+                return nm
+        for sub_value in value.values():
+            nm = _convert_scale_value(sub_value, unit=unit, default_factor=default_factor)
+            if nm is not None:
+                return nm
+        return None
+
+    if hasattr(value, "value"):
+        attr_unit = getattr(value, "unit", None) or getattr(value, "units", None)
+        nm = _convert_scale_value(value.value, unit=attr_unit or unit, default_factor=default_factor)
+        if nm is not None:
+            return nm
+
+    if isinstance(value, (list, tuple, np.ndarray)):
+        arr = np.array(value, dtype=object).ravel()
+        for item in arr:
+            nm = _convert_scale_value(item, unit=unit, default_factor=default_factor)
+            if nm is not None:
+                return nm
+        return None
+
+    try:
+        val_float = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(val_float) or val_float <= 0:
+        return None
+
+    factor = _factor_from_unit(unit)
+    if factor is None:
+        factor = default_factor
+    if factor is None:
+        return None
+    return val_float * factor
+
+
+def _flatten_to_list(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    if isinstance(value, (list, tuple)):
+        out: List[Any] = []
+        for item in value:
+            out.extend(_flatten_to_list(item))
+        return out
+    return [value]
+
+
+def _extract_from_pixel_info(pixel_size: Any, pixel_unit: Any) -> Optional[float]:
+    sizes = _flatten_to_list(pixel_size)
+    if not sizes:
+        return None
+    units = _flatten_to_list(pixel_unit)
+    for idx, size in enumerate(sizes):
+        unit = units[idx] if idx < len(units) else (units[-1] if units else None)
+        nm = _convert_scale_value(size, unit=unit)
+        if nm is not None:
+            return nm
+    return None
+
+
+def _get_nested(metadata: Dict[str, Any], path: str) -> Any:
+    current: Any = metadata
+    for part in path.split("."):
+        if isinstance(current, dict):
+            if part in current:
+                current = current[part]
+                continue
+            if part.isdigit():
+                idx = int(part)
+                if idx in current:
+                    current = current[idx]
+                    continue
+            return None
+        elif isinstance(current, (list, tuple)):
+            if not part.isdigit():
+                return None
+            idx = int(part)
+            if idx >= len(current):
+                return None
+            current = current[idx]
+        else:
+            return None
+    return current
+
+
+def _search_scale_in_metadata(metadata: Any) -> Optional[float]:
+    tokens = ("pixel", "scale", "calibration", "dimension", "step", "size")
+
+    if isinstance(metadata, dict):
+        for key, value in metadata.items():
+            key_lower = str(key).lower()
+            default_factor = 1e9 if any(tok in key_lower for tok in ("scale", "calibration", "dimension")) else None
+            if any(tok in key_lower for tok in tokens):
+                nm = _convert_scale_value(value, default_factor=default_factor)
+                if nm is not None:
+                    return nm
+            nm = _search_scale_in_metadata(value)
+            if nm is not None:
+                return nm
+    elif isinstance(metadata, (list, tuple)):
+        for item in metadata:
+            nm = _search_scale_in_metadata(item)
+            if nm is not None:
+                return nm
+    return None
+
+
+# ---------------------------------------------------------------------------
 # File handling utilities
 # ---------------------------------------------------------------------------
 
@@ -83,27 +291,38 @@ def try_read_dm3(file_bytes: bytes) -> DM3Image:
             im = rdr.getDataset(0)
             data = np.array(im["data"], dtype=np.float32)
 
-            nm_per_px = np.nan
+            nm_per_px = float("nan")
             md = rdr.allTags
-            candidates = [
-                ("ImageList.1.ImageData.Calibrations.Dimension.0.Scale", 1e9),
-                ("ImageList.1.ImageData.Calibrations.Dimension.1.Scale", 1e9),
-                ("pixelSize.x", 1e9),
-                ("pixelSize", 1e9),
-                ("xscale", 1e9),
-                ("ImageList.2.ImageData.Calibrations.Dimension.0.Scale", 1e9),
-                ("ImageList.2.ImageData.Calibrations.Dimension.1.Scale", 1e9),
-            ]
-            for key, factor in candidates:
-                try:
-                    val = md
-                    for k in key.split("."):
-                        val = val[k]
-                    if isinstance(val, (int, float)):
-                        nm_per_px = float(val) * factor
+
+            nm_from_dataset = _extract_from_pixel_info(im.get("pixelSize"), im.get("pixelUnit"))
+            if nm_from_dataset is not None:
+                nm_per_px = nm_from_dataset
+
+            if not np.isfinite(nm_per_px):
+                candidates = [
+                    "ImageList.1.ImageData.Calibrations.Dimension.0.Scale",
+                    "ImageList.1.ImageData.Calibrations.Dimension.1.Scale",
+                    "ImageList.0.ImageData.Calibrations.Dimension.0.Scale",
+                    "ImageList.0.ImageData.Calibrations.Dimension.1.Scale",
+                    "ImageList.2.ImageData.Calibrations.Dimension.0.Scale",
+                    "ImageList.2.ImageData.Calibrations.Dimension.1.Scale",
+                    "pixelSize.x",
+                    "pixelSize",
+                    "xscale",
+                ]
+                for key in candidates:
+                    raw_val = _get_nested(md, key)
+                    if raw_val is None:
+                        continue
+                    nm_candidate = _convert_scale_value(raw_val, default_factor=1e9)
+                    if nm_candidate is not None:
+                        nm_per_px = nm_candidate
                         break
-                except Exception:
-                    continue
+
+            if not np.isfinite(nm_per_px):
+                nm_meta = _search_scale_in_metadata(md)
+                if nm_meta is not None:
+                    nm_per_px = nm_meta
 
         return DM3Image(data=data, nm_per_px=nm_per_px)
     finally:  # pragma: no cover - best effort cleanup
@@ -229,8 +448,12 @@ def segment_and_measure_shapes(
         exclusion_zone_px = 0.0
     img_h, img_w = data.shape
 
-    fig, ax = plt.subplots()
-    ax.imshow(data, cmap="gray")
+    aspect_ratio = img_w / img_h if img_h else 1.0
+    base_height = 4.0
+    fig_width = float(np.clip(base_height * aspect_ratio, 3.0, 7.5))
+
+    fig, ax = plt.subplots(figsize=(fig_width, base_height), dpi=200)
+    ax.imshow(data, cmap="gray", interpolation="nearest")
     ax.axis("off")
 
     for p in regionprops(labels_ws):
@@ -301,14 +524,14 @@ def segment_and_measure_shapes(
                     ax.add_patch(circ_patch)
 
     buf_ann = io.BytesIO()
-    fig.savefig(buf_ann, format="png", bbox_inches="tight", pad_inches=0)
+    fig.savefig(buf_ann, format="png", bbox_inches="tight", pad_inches=0, dpi=200)
     plt.close(fig)
 
-    fig_ws, ax_ws = plt.subplots()
-    ax_ws.imshow(labels_ws, cmap="gray")
+    fig_ws, ax_ws = plt.subplots(figsize=(fig_width, base_height), dpi=200)
+    ax_ws.imshow(labels_ws, cmap="gray", interpolation="nearest")
     ax_ws.axis("off")
     buf_ws = io.BytesIO()
-    fig_ws.savefig(buf_ws, format="png", bbox_inches="tight", pad_inches=0)
+    fig_ws.savefig(buf_ws, format="png", bbox_inches="tight", pad_inches=0, dpi=200)
     plt.close(fig_ws)
 
     out: Dict[str, np.ndarray] = {
@@ -318,6 +541,7 @@ def segment_and_measure_shapes(
         "widths_nm": np.array(widths_nm, dtype=np.float32),
         "annotated_png": buf_ann.getvalue(),
         "watershed_png": buf_ws.getvalue(),
+        "image_shape": (int(img_h), int(img_w)),
     }
 
     # For cubic particles we treat height equal to width (2‑D approximation)
@@ -482,11 +706,31 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
             sel_name = st.selectbox("Select image to display", names)
             sel = next(r for r in results if r["name"] == sel_name)
 
+            shape = sel.get("image_shape") if isinstance(sel, dict) else None
+            if shape and len(shape) == 2:
+                try:
+                    width_px = int(shape[1])
+                except Exception:
+                    width_px = 0
+            else:
+                width_px = 0
+            display_width = max(320, min(900, width_px // 2)) if width_px > 0 else 600
+
             tab1, tab2 = st.tabs(["Annotated", "Watershed"])
             with tab1:
-                st.image(sel["annotated_png"], caption=f"Annotated segmentation preview ({sel['unit']})", use_column_width=True)
+                st.image(
+                    sel["annotated_png"],
+                    caption=f"Annotated segmentation preview ({sel['unit']})",
+                    width=display_width,
+                    use_container_width=False,
+                )
             with tab2:
-                st.image(sel["watershed_png"], caption="Watershed labels", use_column_width=True)
+                st.image(
+                    sel["watershed_png"],
+                    caption="Watershed labels",
+                    width=display_width,
+                    use_container_width=False,
+                )
 
         if missing_scale_files:
             missing_list = "\n".join(f"• {name}" for name in sorted(set(missing_scale_files)))
