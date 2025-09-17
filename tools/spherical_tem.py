@@ -601,6 +601,8 @@ def segment_and_measure_shapes(
     im_bi = data < threshold
     im_bi = morph.binary_closing(im_bi, morph.disk(3))
     im_bi = morph.remove_small_objects(im_bi, min_size=max(min_area_px, 32))
+    hole_area = max(int(min_area_px * 4), 16)
+
 
     if np.any(im_bi):
         distance_map = ndi.distance_transform_edt(im_bi)
