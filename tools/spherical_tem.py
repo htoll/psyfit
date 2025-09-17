@@ -618,7 +618,7 @@ def segment_and_measure_shapes(
         im_bi_split[labels_ws == 0] = False
         im_bi_filtered = morph.remove_small_objects(
             im_bi_split,
-            min_size=max(min_area_px, 5000),
+            min_size=min_area_px,
         )
         im_bi_filtered = morph.remove_small_holes(
             im_bi_filtered,
