@@ -45,6 +45,7 @@ from skimage import segmentation as seg
 from skimage.measure import label
 from skimage.filters import gaussian
 from scipy.ndimage import distance_transform_edt
+from skimage.feature import peak_local_max
 
 
 
