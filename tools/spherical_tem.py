@@ -47,6 +47,10 @@ from skimage.feature import peak_local_max
 from skimage.measure import label, regionprops
 from skimage.segmentation import watershed
 from sklearn.mixture import GaussianMixture
+from scipy import ndimage as ndi
+from skimage import morphology as morph
+from skimage import segmentation as seg
+from skimage.measure import label
 
 
 SESSION_CACHE_KEY = "_tem_size_cache"
@@ -592,16 +596,37 @@ def segment_and_measure_shapes(
 
     # Binary image and watershed segmentation
     smoothed = gaussian(data.astype(np.float32), sigma=0.8, preserve_range=True)
-    im_bi = smoothed < threshold
-    im_bi = binary_closing(im_bi, disk(2))
-    im_bi = binary_opening(im_bi, disk(1))
-    hole_area = max(int(min_area_px * 4), 16)
-    im_bi = remove_small_holes(im_bi, area_threshold=hole_area)
-    im_bi = im_bi.astype(bool)
+    # im_bi = smoothed < threshold
+    # im_bi = binary_closing(im_bi, disk(2))
+    # im_bi = binary_opening(im_bi, disk(1))
+    # hole_area = max(int(min_area_px * 4), 16)
+    # im_bi = remove_small_holes(im_bi, area_threshold=hole_area)
+    # im_bi = im_bi.astype(bool)
+
+    im_bi = (data < threshold)
+    im_bi = morph.binary_closing(im_bi, morph.disk(3))
+    im_bi = morph.remove_small_objects(im_bi, min_size=max(min_area_px, 32))
+
+
+
+
+    
 
     if np.any(im_bi):
         dist = distance_transform_edt(im_bi)
         smoothed_dist = gaussian(dist, sigma=1.0, preserve_range=True)
+        h_val = 2  # try 1–3; increase if over-seg, decrease if under-seg
+        markers_bin = morph.h_maxima(smoothed_dist, h=h_val)
+        markers = label(markers_bin)
+        labels_ws = seg.watershed(-smoothed_dist, markers=markers, mask=im_bi)
+        im_bi_split = im_bi.copy()
+        im_bi_split[labels_ws == 0] = False
+        im_bi_filtered = morph.remove_small_objects(im_bi_split, min_size=max(min_area_px, 5000))
+        im_bi_filtered = morph.remove_small_holes(im_bi_filtered, area_threshold=max(4*min_area_px, 256))
+        labels_ws = label(im_bi_filtered)
+
+
+        
         component_labels = label(im_bi)
         local_max = peak_local_max(
             smoothed_dist,
@@ -640,7 +665,6 @@ def segment_and_measure_shapes(
                         current_max += 1
                         markers[rows[max_idx], cols[max_idx]] = current_max
 
-        labels_ws = watershed(-smoothed_dist, markers=markers, mask=im_bi)
         refined_mask = labels_ws > 0
         refined_mask = remove_small_objects(refined_mask, min_size=max(min_area_px, 3))
         refined_mask = remove_small_holes(refined_mask, area_threshold=hole_area)
