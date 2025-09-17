@@ -39,6 +39,7 @@ from skimage import morphology as morph
 from skimage import segmentation as seg
 from skimage.measure import label, regionprops
 from sklearn.mixture import GaussianMixture
+
 from scipy import ndimage as ndi
 from skimage import morphology as morph
 from skimage import segmentation as seg
@@ -597,6 +598,48 @@ def segment_and_measure_shapes(
     Dict with measurement arrays and PNG overlays.
     """
 
+    if measurement_unit == "nm" and np.isfinite(nm_per_px) and nm_per_px > 0:
+        scale_factor = nm_per_px
+        exclusion_zone_px = 2.0 / nm_per_px
+    else:
+        scale_factor = 1.0
+        exclusion_zone_px = 0.0
+
+    area_keep_threshold = max(int(min_area_px), 3)
+    hole_area_threshold = max(int(4 * min_area_px), 32)
+
+    # Binary image and watershed segmentation following the MATLAB reference
+    im_bi = data < threshold
+    im_bi = morph.binary_closing(im_bi, morph.disk(3))
+    im_bi = morph.remove_small_holes(im_bi, area_threshold=hole_area_threshold)
+
+    if np.any(im_bi):
+        data_float = data.astype(np.float32)
+        data_min = float(np.min(data_float))
+        data_max = float(np.max(data_float))
+        if data_max > data_min:
+            im_norm = (data_float - data_min) / (data_max - data_min)
+        else:
+            im_norm = np.zeros_like(data_float)
+        im_complement = 1.0 - im_norm
+        im_complement = ndi.gaussian_filter(im_complement, sigma=1.0)
+
+        watershed_labels = seg.watershed(im_complement)
+        ridge_mask = watershed_labels == 0
+
+        im_split = im_bi.copy()
+        im_split[ridge_mask] = False
+        im_split = morph.remove_small_objects(
+            im_split,
+            min_size=area_keep_threshold,
+        )
+        im_split = morph.remove_small_holes(
+            im_split,
+            area_threshold=hole_area_threshold,
+        )
+        labels_ws = label(im_split)
+        im_bi = im_split
+
     # Binary image and watershed segmentation
     im_bi = data < threshold
     im_bi = morph.binary_closing(im_bi, morph.disk(3))
@@ -710,13 +753,6 @@ def segment_and_measure_shapes(
     lengths_nm: List[float] = []
     widths_nm: List[float] = []
 
-    # Determine scaling and exclusion zone based on available calibration
-    if measurement_unit == "nm" and np.isfinite(nm_per_px) and nm_per_px > 0:
-        scale_factor = nm_per_px
-        exclusion_zone_px = 2 / nm_per_px
-    else:
-        scale_factor = 1.0
-        exclusion_zone_px = 0.0
     img_h, img_w = data.shape
 
     aspect_ratio = img_w / img_h if img_h else 1.0
