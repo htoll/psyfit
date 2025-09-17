@@ -33,7 +33,7 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 from scipy.ndimage import distance_transform_edt
-from skimage.measure import regionprops, label, find_contours, approximate_polygon
+
 from skimage.morphology import (
     remove_small_objects,
     binary_closing,
@@ -44,22 +44,6 @@ from sklearn.mixture import GaussianMixture
 
 
 SESSION_CACHE_KEY = "_tem_size_cache"
-BASE_CACHE_KEY = "_tem_gmm_base_cache"
-
-PLOTLY_SHAPE_CONFIG = {
-    "displaylogo": False,
-    "scrollZoom": False,
-    "modeBarButtonsToRemove": [
-        "zoom3d",
-        "pan3d",
-        "resetCameraDefault3d",
-        "resetCameraLastSave3d",
-        "zoomIn3d",
-        "zoomOut3d",
-        "hoverClosest3d",
-        "hoverCompare3d",
-    ],
-}
 
 # Optional import of ncempy (for reading dm3 files)
 try:  # pragma: no cover - simply a convenience check
@@ -1242,31 +1226,24 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
 
         records: List[PreprocessedImage] = base_cache["records"]
         min_shape_size_value = float(min_shape_size_input)
-        processing_key = build_processing_key(file_key, shape_type, min_shape_size_value)
-        cache_entry = st.session_state.get(SESSION_CACHE_KEY)
+
 
         if cache_entry and cache_entry.get("key") == processing_key:
             results = cache_entry["results"]
-        else:
-            with st.spinner("Classifying shapes …"):
-                results = process_dm3_files(
-                    records,
+
                     shape_type=shape_type,
                     min_shape_size_input=min_shape_size_value,
                 )
             st.session_state[SESSION_CACHE_KEY] = {
                 "key": processing_key,
                 "results": results,
-            }
 
-        missing_scale_files = list(base_cache["missing_scale_files"])
-        threshold_messages = list(base_cache["threshold_messages"])
 
         for file_name, threshold_value in threshold_messages:
             st.info(f"**{file_name}**: GMM threshold = **{threshold_value:.4f}**")
     else:
         st.session_state.pop(SESSION_CACHE_KEY, None)
-        st.session_state.pop(BASE_CACHE_KEY, None)
+
 
     # Dropdown to select image for display
     if results:
@@ -1488,11 +1465,7 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                         st.caption(f"Stats: {summary_hex}")
                 with col_shape:
                     if shape_fig is not None:
-                        st.plotly_chart(
-                            shape_fig,
-                            use_container_width=True,
-                            config=PLOTLY_SHAPE_CONFIG,
-                        )
+
                         if volume_parts and n_min:
                             st.caption(
                                 f"Volume estimate uses μ values above (overlap n≥{n_min})."
@@ -1620,11 +1593,7 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                         st.caption(f"Stats: {summary_len}")
                 with col_shape:
                     if shape_fig is not None:
-                        st.plotly_chart(
-                            shape_fig,
-                            use_container_width=True,
-                            config=PLOTLY_SHAPE_CONFIG,
-                        )
+
                         if volume_parts and n_min:
                             st.caption(
                                 f"Volume estimate uses μ values above (overlap n≥{n_min})."
