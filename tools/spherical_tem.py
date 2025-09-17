@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional, Any, Iterable
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
@@ -36,14 +37,21 @@ from scipy.ndimage import distance_transform_edt
 
 from skimage.morphology import (
     remove_small_objects,
+    remove_small_holes,
     binary_closing,
+    binary_opening,
     disk,
-    h_minima)
+)
+from skimage.filters import gaussian
+from skimage.feature import peak_local_max
+from skimage.measure import label, regionprops
 from skimage.segmentation import watershed
 from sklearn.mixture import GaussianMixture
 
 
 SESSION_CACHE_KEY = "_tem_size_cache"
+
+PLOTLY_SHAPE_CONFIG = {"displaylogo": False}
 
 # Optional import of ncempy (for reading dm3 files)
 try:  # pragma: no cover - simply a convenience check
@@ -362,6 +370,59 @@ def histogram_for_intensity(data: np.ndarray, nbins: Optional[int] = None) -> Tu
     return centers, counts
 
 
+def _gmm_intersection_point(
+    means: np.ndarray, covariances: np.ndarray, weights: np.ndarray
+) -> Optional[float]:
+    """Return the intensity where two 1-D Gaussians intersect."""
+
+    if means.size != 2 or weights.size != 2:
+        return None
+
+    order = np.argsort(means)
+    mu1, mu2 = float(means[order[0]]), float(means[order[1]])
+    w1, w2 = float(weights[order[0]]), float(weights[order[1]])
+
+    covs = np.asarray(covariances)
+
+    def _variance(idx: int) -> float:
+        cov = covs[order[idx]]
+        arr = np.asarray(cov, dtype=float)
+        if arr.size == 1:
+            return float(arr.reshape(()))
+        return float(arr.flat[0])
+
+    var1 = max(_variance(0), 1e-12)
+    var2 = max(_variance(1), 1e-12)
+    std1 = math.sqrt(var1)
+    std2 = math.sqrt(var2)
+
+    log_ratio = math.log((w2 / std2) / (w1 / std1))
+    a = (1.0 / (2.0 * var2)) - (1.0 / (2.0 * var1))
+    b = (mu1 / var1) - (mu2 / var2)
+    c = (mu2 ** 2) / (2.0 * var2) - (mu1 ** 2) / (2.0 * var1) - log_ratio
+
+    if abs(a) < 1e-12:
+        if abs(b) < 1e-12:
+            return float((mu1 + mu2) / 2.0)
+        root = -c / b
+        return float(root)
+
+    disc = b ** 2 - 4 * a * c
+    if disc < 0:
+        disc = 0.0
+    sqrt_disc = math.sqrt(disc)
+    roots = [(-b + sqrt_disc) / (2 * a), (-b - sqrt_disc) / (2 * a)]
+
+    lower, upper = sorted((mu1, mu2))
+    candidates = [r for r in roots if lower - 5 * std1 <= r <= upper + 5 * std2]
+    between = [r for r in candidates if lower <= r <= upper]
+    if between:
+        return float(between[0])
+    if candidates:
+        return float(min(candidates, key=lambda r: abs(r - (mu1 + mu2) / 2.0)))
+    return float((mu1 + mu2) / 2.0)
+
+
 def gmm_threshold(data: np.ndarray, nbins: Optional[int] = None, sample: int = 200_000) -> float:
     flat = data.reshape(-1)
     if len(flat) > sample:
@@ -369,6 +430,13 @@ def gmm_threshold(data: np.ndarray, nbins: Optional[int] = None, sample: int = 2
         flat = flat[idx]
     gm = GaussianMixture(n_components=2, random_state=42)
     gm.fit(flat.reshape(-1, 1))
+    threshold = _gmm_intersection_point(
+        gm.means_.flatten(), gm.covariances_, gm.weights_.flatten()
+    )
+
+    if threshold is not None and np.isfinite(threshold):
+        return float(threshold)
+
     mu = np.sort(gm.means_.flatten())
     left_mu, right_mu = mu[0], mu[1]
     centers, counts = histogram_for_intensity(flat, nbins)
@@ -522,19 +590,37 @@ def segment_and_measure_shapes(
     """
 
     # Binary image and watershed segmentation
-    im_bi = data < threshold
-    im_bi = binary_closing(im_bi, disk(3))
+    smoothed = gaussian(data.astype(np.float32), sigma=0.8, preserve_range=True)
+    im_bi = smoothed < threshold
+    im_bi = binary_closing(im_bi, disk(2))
+    im_bi = binary_opening(im_bi, disk(1))
+    hole_area = max(int(min_area_px * 4), 16)
+    im_bi = remove_small_holes(im_bi, area_threshold=hole_area)
     im_bi = im_bi.astype(bool)
 
-    dist = distance_transform_edt(im_bi)
-    dist_neg = -dist
-    dist_neg[~im_bi] = np.inf
-    minima = h_minima(dist_neg, 2)
-    markers = label(minima)
-    labels_ws = watershed(dist_neg, markers=markers, mask=im_bi)
-    im_bi[labels_ws == 0] = 0
-    im_bi = remove_small_objects(im_bi, min_size=min_area_px)
-    labels_ws = label(im_bi)
+    if np.any(im_bi):
+        dist = distance_transform_edt(im_bi)
+        smoothed_dist = gaussian(dist, sigma=1.0, preserve_range=True)
+        local_max = peak_local_max(
+            smoothed_dist,
+            footprint=np.ones((3, 3), dtype=bool),
+            labels=im_bi,
+            threshold_abs=0.0,
+        )
+        if local_max.size == 0:
+            markers = label(im_bi)
+        else:
+            marker_mask = np.zeros_like(im_bi, dtype=bool)
+            marker_mask[tuple(local_max.T)] = True
+            markers = label(marker_mask)
+        labels_ws = watershed(-smoothed_dist, markers=markers, mask=im_bi)
+        refined_mask = labels_ws > 0
+        refined_mask = remove_small_objects(refined_mask, min_size=max(min_area_px, 3))
+        refined_mask = remove_small_holes(refined_mask, area_threshold=hole_area)
+        labels_ws = label(refined_mask)
+        im_bi = refined_mask
+    else:
+        labels_ws = np.zeros_like(data, dtype=np.int32)
 
     # Prepare measurement containers
     diameters_nm: List[float] = []
@@ -641,9 +727,57 @@ def segment_and_measure_shapes(
         else:
             _draw_debug_circle(ax, cx, cy, max(maj, minr_axis) / 2, "b")
 
+    if shape_type == "Hexagon":
+        legend_elements = [
+            Line2D([0], [0], color="yellow", lw=2, label="Hexagon"),
+            Line2D([0], [0], color="red", lw=2, label="Rectangle"),
+            Line2D([0], [0], color="blue", lw=2, label="Other"),
+        ]
+        ax.legend(
+            handles=legend_elements,
+            loc="lower left",
+            frameon=True,
+            facecolor="white",
+            framealpha=0.85,
+            fontsize=8,
+        )
+
     buf_ann = io.BytesIO()
     fig.savefig(buf_ann, format="png", bbox_inches="tight", pad_inches=0, dpi=200)
     plt.close(fig)
+
+    hist_vals = robust_percentile_cut(data, 99.5)
+    counts, edges = np.histogram(hist_vals, bins=128)
+    centers = edges[:-1] + np.diff(edges) / 2 if len(edges) > 1 else np.array([])
+    bar_width = float(edges[1] - edges[0]) if len(edges) > 1 else 1.0
+
+    fig_hist, ax_hist = plt.subplots(figsize=(fig_width, base_height), dpi=200)
+    if centers.size:
+        ax_hist.bar(
+            centers,
+            counts,
+            width=bar_width,
+            align="center",
+            color="#888888",
+            edgecolor="#444444",
+        )
+    ax_hist.axvline(
+        threshold,
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"GMM threshold = {threshold:.3f}",
+    )
+    ax_hist.set_xlabel("Intensity (a.u.)")
+    ax_hist.set_ylabel("Pixel count")
+    ax_hist.set_title("Intensity histogram")
+    ax_hist.legend(loc="upper right", frameon=True, facecolor="white", framealpha=0.85)
+    ax_hist.spines["top"].set_visible(False)
+    ax_hist.spines["right"].set_visible(False)
+    buf_hist = io.BytesIO()
+    fig_hist.tight_layout()
+    fig_hist.savefig(buf_hist, format="png", bbox_inches="tight", pad_inches=0.1, dpi=200)
+    plt.close(fig_hist)
 
     fig_ws, ax_ws = plt.subplots(figsize=(fig_width, base_height), dpi=200)
     ax_ws.imshow(labels_ws, cmap="gray", interpolation="nearest")
@@ -659,6 +793,8 @@ def segment_and_measure_shapes(
         "widths_nm": np.array(widths_nm, dtype=np.float32),
         "annotated_png": buf_ann.getvalue(),
         "watershed_png": buf_ws.getvalue(),
+        "intensity_hist_png": buf_hist.getvalue(),
+        "gmm_threshold": float(threshold),
         "image_shape": (int(img_h), int(img_w)),
     }
 
@@ -1228,16 +1364,26 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
         min_shape_size_value = float(min_shape_size_input)
 
 
+        processing_key = build_processing_key(
+            file_key=file_key,
+            shape_type=shape_type,
+            min_shape_size_input=min_shape_size_value,
+        )
+        cache_entry = st.session_state.get(SESSION_CACHE_KEY)
+
         if cache_entry and cache_entry.get("key") == processing_key:
             results = cache_entry["results"]
-
+        else:
+            with st.spinner("Segmenting shapes …"):
+                results = process_dm3_files(
+                    records=records,
                     shape_type=shape_type,
                     min_shape_size_input=min_shape_size_value,
                 )
             st.session_state[SESSION_CACHE_KEY] = {
                 "key": processing_key,
                 "results": results,
-
+            }
 
         for file_name, threshold_value in threshold_messages:
             st.info(f"**{file_name}**: GMM threshold = **{threshold_value:.4f}**")
@@ -1270,12 +1416,24 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                 use_container_width=False,
             )
         with tab2:
-            st.image(
-                sel["watershed_png"],
-                caption="Watershed labels",
-                width=display_width,
-                use_container_width=False,
-            )
+            hist_png = sel.get("intensity_hist_png")
+            ws_png = sel.get("watershed_png")
+            threshold_value = sel.get("gmm_threshold")
+            col_hist, col_ws = st.columns(2)
+            with col_hist:
+                if hist_png:
+                    if threshold_value is not None and np.isfinite(threshold_value):
+                        caption = f"Intensity histogram (threshold={threshold_value:.4f})"
+                    else:
+                        caption = "Intensity histogram"
+                    st.image(hist_png, caption=caption, use_column_width=True)
+                else:
+                    st.caption("Intensity histogram unavailable.")
+            with col_ws:
+                if ws_png:
+                    st.image(ws_png, caption="Watershed labels", use_column_width=True)
+                else:
+                    st.caption("Watershed labels unavailable.")
 
         if missing_scale_files:
             missing_list = "\n".join(f"• {name}" for name in sorted(set(missing_scale_files)))
@@ -1356,25 +1514,34 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
             all_len = np.concatenate([r["lengths_nm"] for r in results]) if results else np.array([])
             all_wid = np.concatenate([r["widths_nm"] for r in results]) if results else np.array([])
             if all_hex.size and all_len.size and all_wid.size:
-                range_hex = st.slider(
-                    f"Hexagon diagonal range ({unit_label})",
-                    float(all_hex.min()),
-                    float(all_hex.max()),
-                    (float(all_hex.min()), float(all_hex.max())),
-                )
-                range_len = st.slider(
-                    f"Length range ({unit_label})",
-                    float(all_len.min()),
-                    float(all_len.max()),
-                    (float(all_len.min()), float(all_len.max())),
-                )
-                range_wid = st.slider(
-                    f"Width range ({unit_label})",
-                    float(all_wid.min()),
-                    float(all_wid.max()),
-                    (float(all_wid.min()), float(all_wid.max())),
-                )
                 nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
+
+                diag_fig_col, diag_ctrl_col, shape_preview_col = st.columns([4, 1, 2])
+                with diag_ctrl_col:
+                    range_hex = st.slider(
+                        f"Hexagon diagonal range ({unit_label})",
+                        float(all_hex.min()),
+                        float(all_hex.max()),
+                        (float(all_hex.min()), float(all_hex.max())),
+                    )
+
+                len_fig_col, len_ctrl_col = st.columns([4, 1])
+                with len_ctrl_col:
+                    range_len = st.slider(
+                        f"Length range ({unit_label})",
+                        float(all_len.min()),
+                        float(all_len.max()),
+                        (float(all_len.min()), float(all_len.max())),
+                    )
+
+                wid_fig_col, wid_ctrl_col = st.columns([4, 1])
+                with wid_ctrl_col:
+                    range_wid = st.slider(
+                        f"Width range ({unit_label})",
+                        float(all_wid.min()),
+                        float(all_wid.max()),
+                        (float(all_wid.min()), float(all_wid.max())),
+                    )
 
                 fig_hex, mu_hex, std_hex, n_hex = histogram_with_fit(
                     all_hex,
@@ -1399,7 +1566,12 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                 )
 
                 volume_parts: List[str] = []
-                if unit_label == "nm" and np.isfinite(mu_hex) and np.isfinite(mu_len) and np.isfinite(mu_wid):
+                if (
+                    unit_label == "nm"
+                    and np.isfinite(mu_hex)
+                    and np.isfinite(mu_len)
+                    and np.isfinite(mu_wid)
+                ):
                     width = mu_wid if abs(mu_wid - mu_hex) < abs(mu_len - mu_hex) else mu_len
                     height = mu_len if width == mu_wid else mu_wid
                     area_hex = (3 * np.sqrt(3) / 8) * mu_hex ** 2
@@ -1451,6 +1623,21 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                     )
                 )
 
+                with diag_fig_col:
+                    st.plotly_chart(fig_hex, use_container_width=True)
+                    if summary_hex:
+                        st.caption(f"Stats: {summary_hex}")
+
+                with len_fig_col:
+                    st.plotly_chart(fig_len, use_container_width=True)
+                    if summary_len:
+                        st.caption(f"Stats: {summary_len}")
+
+                with wid_fig_col:
+                    st.plotly_chart(fig_wid, use_container_width=True)
+                    if summary_wid:
+                        st.caption(f"Stats: {summary_wid}")
+
                 shape_fig = create_shape_figure(
                     "Hexagon",
                     unit_label,
@@ -1458,27 +1645,20 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                     length=mu_len if np.isfinite(mu_len) else None,
                     width=mu_wid if np.isfinite(mu_wid) else None,
                 )
-                col_hex, col_shape = st.columns([3, 2])
-                with col_hex:
-                    st.plotly_chart(fig_hex, use_container_width=True)
-                    if summary_hex:
-                        st.caption(f"Stats: {summary_hex}")
-                with col_shape:
-                    if shape_fig is not None:
 
+                with shape_preview_col:
+                    if shape_fig is not None:
+                        st.plotly_chart(
+                            shape_fig,
+                            use_container_width=True,
+                            config=PLOTLY_SHAPE_CONFIG,
+                        )
                         if volume_parts and n_min:
                             st.caption(
                                 f"Volume estimate uses μ values above (overlap n≥{n_min})."
                             )
                     else:
                         st.caption("Shape preview available when fits are valid.")
-
-                st.plotly_chart(fig_len, use_container_width=True)
-                if summary_len:
-                    st.caption(f"Stats: {summary_len}")
-                st.plotly_chart(fig_wid, use_container_width=True)
-                if summary_wid:
-                    st.caption(f"Stats: {summary_wid}")
             else:
                 st.info("Insufficient classified particles for histograms.")
 
