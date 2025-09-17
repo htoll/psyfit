@@ -37,6 +37,9 @@ from scipy import ndimage as ndi
 
 from skimage import morphology as morph
 from skimage import segmentation as seg
+from skimage.feature import peak_local_max
+from skimage.measure import label, regionprops
+from sklearn.mixture import GaussianMixture
 from skimage.measure import label, regionprops
 from sklearn.mixture import GaussianMixture
 from scipy import ndimage as ndi
@@ -597,10 +600,68 @@ def segment_and_measure_shapes(
     Dict with measurement arrays and PNG overlays.
     """
 
+    if measurement_unit == "nm" and np.isfinite(nm_per_px) and nm_per_px > 0:
+        scale_factor = nm_per_px
+        exclusion_zone_px = 2.0 / nm_per_px
+        min_linear_px = max(min_size_value / nm_per_px, 1.0)
+    else:
+        scale_factor = 1.0
+        exclusion_zone_px = 0.0
+        min_linear_px = max(min_size_value, 1.0)
+
+    approx_min_area = math.pi * (min_linear_px / 2.0) ** 2 if min_linear_px > 0 else float(min_area_px)
+    if not math.isfinite(approx_min_area) or approx_min_area <= 0:
+        approx_min_area = float(min_area_px)
+    area_keep_threshold = max(int(math.ceil(approx_min_area)), int(min_area_px))
+    hole_area_threshold = max(int(math.ceil(approx_min_area * 0.5)), int(4 * min_area_px))
+
     # Binary image and watershed segmentation
     im_bi = data < threshold
     im_bi = morph.binary_closing(im_bi, morph.disk(3))
     im_bi = morph.remove_small_objects(im_bi, min_size=max(min_area_px, 32))
+
+    if np.any(im_bi):
+        distance_map = ndi.distance_transform_edt(im_bi)
+        distance_smooth = ndi.gaussian_filter(distance_map, sigma=0.8)
+        dt_vals = distance_smooth[im_bi]
+        if dt_vals.size:
+            h_candidate = float(np.percentile(dt_vals, 90) * 0.2)
+            h_val = float(np.clip(h_candidate, 0.6, 3.0))
+        else:
+            h_val = 0.8
+        markers_bin = morph.h_maxima(distance_smooth, h=h_val)
+        markers = label(markers_bin)
+
+        if markers.max() <= 1:
+            min_distance = max(int(round(min_linear_px / 2.5)), 1)
+            peak_coords = peak_local_max(
+                distance_smooth,
+                min_distance=min_distance,
+                labels=im_bi,
+                exclude_border=False,
+            )
+            marker_mask = np.zeros_like(distance_smooth, dtype=bool)
+            if peak_coords.size:
+                marker_mask[tuple(peak_coords.T)] = True
+            fallback_markers = label(marker_mask)
+            if fallback_markers.max() > 1:
+                markers = fallback_markers
+            elif fallback_markers.max() == 0:
+                markers = label(im_bi)
+
+        labels_ws = seg.watershed(-distance_smooth, markers=markers, mask=im_bi)
+        im_bi_split = im_bi.copy()
+        im_bi_split[labels_ws == 0] = False
+        im_bi_filtered = morph.remove_small_objects(
+            im_bi_split,
+            min_size=area_keep_threshold,
+        )
+        im_bi_filtered = morph.remove_small_holes(
+            im_bi_filtered,
+            area_threshold=hole_area_threshold,
+        )
+        labels_ws = label(im_bi_filtered)
+        im_bi = im_bi_filtered
     hole_area = max(int(min_area_px * 4), 16)
 
 
@@ -710,13 +771,6 @@ def segment_and_measure_shapes(
     lengths_nm: List[float] = []
     widths_nm: List[float] = []
 
-    # Determine scaling and exclusion zone based on available calibration
-    if measurement_unit == "nm" and np.isfinite(nm_per_px) and nm_per_px > 0:
-        scale_factor = nm_per_px
-        exclusion_zone_px = 2 / nm_per_px
-    else:
-        scale_factor = 1.0
-        exclusion_zone_px = 0.0
     img_h, img_w = data.shape
 
     aspect_ratio = img_w / img_h if img_h else 1.0
