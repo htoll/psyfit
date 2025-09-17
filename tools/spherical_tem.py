@@ -44,6 +44,7 @@ from skimage import morphology as morph
 from skimage import segmentation as seg
 from skimage.measure import label
 from skimage.filters import gaussian
+from scipy.ndimage import distance_transform_edt
 
 
 
