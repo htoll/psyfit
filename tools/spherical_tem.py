@@ -33,19 +33,11 @@ from matplotlib.lines import Line2D
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
-from scipy.ndimage import distance_transform_edt
+from scipy import ndimage as ndi
 
-from skimage.morphology import (
-    remove_small_objects,
-    remove_small_holes,
-    binary_closing,
-    binary_opening,
-    disk,
-)
-from skimage.filters import gaussian
-from skimage.feature import peak_local_max
+from skimage import morphology as morph
+from skimage import segmentation as seg
 from skimage.measure import label, regionprops
-from skimage.segmentation import watershed
 from sklearn.mixture import GaussianMixture
 from scipy import ndimage as ndi
 from skimage import morphology as morph
@@ -595,6 +587,32 @@ def segment_and_measure_shapes(
     """
 
     # Binary image and watershed segmentation
+    im_bi = data < threshold
+    im_bi = morph.binary_closing(im_bi, morph.disk(3))
+    im_bi = morph.remove_small_objects(im_bi, min_size=max(min_area_px, 32))
+
+    if np.any(im_bi):
+        distance_map = ndi.distance_transform_edt(im_bi)
+        distance_smooth = ndi.gaussian_filter(distance_map, sigma=1.0)
+        h_val = 2
+        markers_bin = morph.h_maxima(distance_smooth, h=h_val)
+        markers = label(markers_bin)
+        if markers.max() == 0:
+            markers = label(im_bi)
+
+        labels_ws = seg.watershed(-distance_smooth, markers=markers, mask=im_bi)
+        im_bi_split = im_bi.copy()
+        im_bi_split[labels_ws == 0] = False
+        im_bi_filtered = morph.remove_small_objects(
+            im_bi_split,
+            min_size=max(min_area_px, 5000),
+        )
+        im_bi_filtered = morph.remove_small_holes(
+            im_bi_filtered,
+            area_threshold=max(4 * min_area_px, 256),
+        )
+        labels_ws = label(im_bi_filtered)
+        im_bi = im_bi_filtered
     smoothed = gaussian(data.astype(np.float32), sigma=0.8, preserve_range=True)
     # im_bi = smoothed < threshold
     # im_bi = binary_closing(im_bi, disk(2))
