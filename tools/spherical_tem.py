@@ -33,19 +33,11 @@ from matplotlib.lines import Line2D
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
-from scipy.ndimage import distance_transform_edt
+from scipy import ndimage as ndi
 
-from skimage.morphology import (
-    remove_small_objects,
-    remove_small_holes,
-    binary_closing,
-    binary_opening,
-    disk,
-)
-from skimage.filters import gaussian
-from skimage.feature import peak_local_max
+from skimage import morphology as morph
+from skimage import segmentation as seg
 from skimage.measure import label, regionprops
-from skimage.segmentation import watershed
 from sklearn.mixture import GaussianMixture
 
 
@@ -591,35 +583,32 @@ def segment_and_measure_shapes(
     """
 
     # Binary image and watershed segmentation
-    smoothed = gaussian(data.astype(np.float32), sigma=0.8, preserve_range=True)
-    im_bi = smoothed < threshold
-    im_bi = binary_closing(im_bi, disk(2))
-    im_bi = binary_opening(im_bi, disk(1))
-    hole_area = max(int(min_area_px * 4), 16)
-    im_bi = remove_small_holes(im_bi, area_threshold=hole_area)
-    im_bi = im_bi.astype(bool)
+    im_bi = data < threshold
+    im_bi = morph.binary_closing(im_bi, morph.disk(3))
+    im_bi = morph.remove_small_objects(im_bi, min_size=max(min_area_px, 32))
 
     if np.any(im_bi):
-        dist = distance_transform_edt(im_bi)
-        smoothed_dist = gaussian(dist, sigma=1.0, preserve_range=True)
-        local_max = peak_local_max(
-            smoothed_dist,
-            footprint=np.ones((3, 3), dtype=bool),
-            labels=im_bi,
-            threshold_abs=0.0,
-        )
-        if local_max.size == 0:
+        distance_map = ndi.distance_transform_edt(im_bi)
+        distance_smooth = ndi.gaussian_filter(distance_map, sigma=1.0)
+        h_val = 2
+        markers_bin = morph.h_maxima(distance_smooth, h=h_val)
+        markers = label(markers_bin)
+        if markers.max() == 0:
             markers = label(im_bi)
-        else:
-            marker_mask = np.zeros_like(im_bi, dtype=bool)
-            marker_mask[tuple(local_max.T)] = True
-            markers = label(marker_mask)
-        labels_ws = watershed(-smoothed_dist, markers=markers, mask=im_bi)
-        refined_mask = labels_ws > 0
-        refined_mask = remove_small_objects(refined_mask, min_size=max(min_area_px, 3))
-        refined_mask = remove_small_holes(refined_mask, area_threshold=hole_area)
-        labels_ws = label(refined_mask)
-        im_bi = refined_mask
+
+        labels_ws = seg.watershed(-distance_smooth, markers=markers, mask=im_bi)
+        im_bi_split = im_bi.copy()
+        im_bi_split[labels_ws == 0] = False
+        im_bi_filtered = morph.remove_small_objects(
+            im_bi_split,
+            min_size=max(min_area_px, 5000),
+        )
+        im_bi_filtered = morph.remove_small_holes(
+            im_bi_filtered,
+            area_threshold=max(4 * min_area_px, 256),
+        )
+        labels_ws = label(im_bi_filtered)
+        im_bi = im_bi_filtered
     else:
         labels_ws = np.zeros_like(data, dtype=np.int32)
 
@@ -1427,12 +1416,12 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                         caption = f"Intensity histogram (threshold={threshold_value:.4f})"
                     else:
                         caption = "Intensity histogram"
-                    st.image(hist_png, caption=caption, use_column_width=True)
+                    st.image(hist_png, caption=caption, use_container_width=True)
                 else:
                     st.caption("Intensity histogram unavailable.")
             with col_ws:
                 if ws_png:
-                    st.image(ws_png, caption="Watershed labels", use_column_width=True)
+                    st.image(ws_png, caption="Watershed labels", use_container_width=True)
                 else:
                     st.caption("Watershed labels unavailable.")
 
