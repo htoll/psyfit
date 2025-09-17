@@ -47,6 +47,13 @@ from skimage.filters import gaussian
 from scipy.ndimage import distance_transform_edt
 from skimage.feature import peak_local_max
 
+from skimage.morphology import (
+    remove_small_objects,
+    remove_small_holes,
+    binary_closing,
+    binary_opening,
+    disk,
+)
 
 
 SESSION_CACHE_KEY = "_tem_size_cache"
