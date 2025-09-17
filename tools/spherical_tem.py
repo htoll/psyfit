@@ -40,6 +40,23 @@ from skimage import segmentation as seg
 from skimage.feature import peak_local_max
 from skimage.measure import label, regionprops
 from sklearn.mixture import GaussianMixture
+from skimage.measure import label, regionprops
+from sklearn.mixture import GaussianMixture
+from scipy import ndimage as ndi
+from skimage import morphology as morph
+from skimage import segmentation as seg
+from skimage.measure import label
+from skimage.filters import gaussian
+from scipy.ndimage import distance_transform_edt
+from skimage.feature import peak_local_max
+
+from skimage.morphology import (
+    remove_small_objects,
+    remove_small_holes,
+    binary_closing,
+    binary_opening,
+    disk,
+)
 
 
 SESSION_CACHE_KEY = "_tem_size_cache"
@@ -645,6 +662,106 @@ def segment_and_measure_shapes(
         )
         labels_ws = label(im_bi_filtered)
         im_bi = im_bi_filtered
+    hole_area = max(int(min_area_px * 4), 16)
+
+
+    if np.any(im_bi):
+        distance_map = ndi.distance_transform_edt(im_bi)
+        distance_smooth = ndi.gaussian_filter(distance_map, sigma=1.0)
+        h_val = 2
+        markers_bin = morph.h_maxima(distance_smooth, h=h_val)
+        markers = label(markers_bin)
+        if markers.max() == 0:
+            markers = label(im_bi)
+
+        labels_ws = seg.watershed(-distance_smooth, markers=markers, mask=im_bi)
+        im_bi_split = im_bi.copy()
+        im_bi_split[labels_ws == 0] = False
+        im_bi_filtered = morph.remove_small_objects(
+            im_bi_split,
+            min_size=min_area_px,
+        )
+        im_bi_filtered = morph.remove_small_holes(
+            im_bi_filtered,
+            area_threshold=max(4 * min_area_px, 256),
+        )
+        labels_ws = label(im_bi_filtered)
+        im_bi = im_bi_filtered
+    smoothed = gaussian(data.astype(np.float32), sigma=0.8, preserve_range=True)
+    # im_bi = smoothed < threshold
+    # im_bi = binary_closing(im_bi, disk(2))
+    # im_bi = binary_opening(im_bi, disk(1))
+    # hole_area = max(int(min_area_px * 4), 16)
+    # im_bi = remove_small_holes(im_bi, area_threshold=hole_area)
+    # im_bi = im_bi.astype(bool)
+
+    im_bi = (data < threshold)
+    im_bi = morph.binary_closing(im_bi, morph.disk(3))
+    im_bi = morph.remove_small_objects(im_bi, min_size=max(min_area_px, 32))
+
+
+
+
+    
+
+    if np.any(im_bi):
+        dist = distance_transform_edt(im_bi)
+        smoothed_dist = gaussian(dist, sigma=1.0, preserve_range=True)
+        h_val = 2  # try 1–3; increase if over-seg, decrease if under-seg
+        markers_bin = morph.h_maxima(smoothed_dist, h=h_val)
+        markers = label(markers_bin)
+        labels_ws = seg.watershed(-smoothed_dist, markers=markers, mask=im_bi)
+        im_bi_split = im_bi.copy()
+        im_bi_split[labels_ws == 0] = False
+        im_bi_filtered = morph.remove_small_objects(im_bi_split, min_size=max(min_area_px, 5000))
+        im_bi_filtered = morph.remove_small_holes(im_bi_filtered, area_threshold=max(4*min_area_px, 256))
+        labels_ws = label(im_bi_filtered)
+
+
+        
+        component_labels = label(im_bi)
+        local_max = peak_local_max(
+            smoothed_dist,
+            footprint=np.ones((3, 3), dtype=bool),
+            labels=im_bi,
+            threshold_abs=0.0,
+            exclude_border=False,
+        )
+        if local_max.size == 0:
+            markers = component_labels
+        else:
+            marker_mask = np.zeros_like(im_bi, dtype=bool)
+            marker_mask[tuple(local_max.T)] = True
+            markers = label(marker_mask)
+
+            component_count = int(component_labels.max())
+            if component_count > 0:
+                has_marker = np.zeros(component_count + 1, dtype=bool)
+                if np.any(marker_mask):
+                    has_marker[component_labels[marker_mask]] = True
+                missing_components = np.where(~has_marker)[0]
+                missing_components = missing_components[missing_components > 0]
+                if missing_components.size:
+                    current_max = int(markers.max())
+                    for comp_id in missing_components:
+                        comp_mask = component_labels == comp_id
+                        if not np.any(comp_mask):
+                            continue
+                        rows, cols = np.where(comp_mask)
+                        if rows.size == 0:
+                            continue
+                        comp_dist = dist[comp_mask]
+                        if comp_dist.size == 0:
+                            continue
+                        max_idx = int(np.argmax(comp_dist))
+                        current_max += 1
+                        markers[rows[max_idx], cols[max_idx]] = current_max
+
+        refined_mask = labels_ws > 0
+        refined_mask = remove_small_objects(refined_mask, min_size=max(min_area_px, 3))
+        refined_mask = remove_small_holes(refined_mask, area_threshold=hole_area)
+        labels_ws = label(refined_mask)
+        im_bi = refined_mask
     else:
         labels_ws = np.zeros_like(data, dtype=np.int32)
 
