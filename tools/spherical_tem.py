@@ -43,6 +43,8 @@ from scipy import ndimage as ndi
 from skimage import morphology as morph
 from skimage import segmentation as seg
 from skimage.measure import label
+from skimage.filters import gaussian
+
 
 
 SESSION_CACHE_KEY = "_tem_size_cache"
