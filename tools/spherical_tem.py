@@ -602,18 +602,44 @@ def segment_and_measure_shapes(
     if np.any(im_bi):
         dist = distance_transform_edt(im_bi)
         smoothed_dist = gaussian(dist, sigma=1.0, preserve_range=True)
+        component_labels = label(im_bi)
         local_max = peak_local_max(
             smoothed_dist,
             footprint=np.ones((3, 3), dtype=bool),
             labels=im_bi,
             threshold_abs=0.0,
+            exclude_border=False,
         )
         if local_max.size == 0:
-            markers = label(im_bi)
+            markers = component_labels
         else:
             marker_mask = np.zeros_like(im_bi, dtype=bool)
             marker_mask[tuple(local_max.T)] = True
             markers = label(marker_mask)
+
+            component_count = int(component_labels.max())
+            if component_count > 0:
+                has_marker = np.zeros(component_count + 1, dtype=bool)
+                if np.any(marker_mask):
+                    has_marker[component_labels[marker_mask]] = True
+                missing_components = np.where(~has_marker)[0]
+                missing_components = missing_components[missing_components > 0]
+                if missing_components.size:
+                    current_max = int(markers.max())
+                    for comp_id in missing_components:
+                        comp_mask = component_labels == comp_id
+                        if not np.any(comp_mask):
+                            continue
+                        rows, cols = np.where(comp_mask)
+                        if rows.size == 0:
+                            continue
+                        comp_dist = dist[comp_mask]
+                        if comp_dist.size == 0:
+                            continue
+                        max_idx = int(np.argmax(comp_dist))
+                        current_max += 1
+                        markers[rows[max_idx], cols[max_idx]] = current_max
+
         labels_ws = watershed(-smoothed_dist, markers=markers, mask=im_bi)
         refined_mask = labels_ws > 0
         refined_mask = remove_small_objects(refined_mask, min_size=max(min_area_px, 3))
@@ -1427,12 +1453,12 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                         caption = f"Intensity histogram (threshold={threshold_value:.4f})"
                     else:
                         caption = "Intensity histogram"
-                    st.image(hist_png, caption=caption, use_column_width=True)
+                    st.image(hist_png, caption=caption, use_container_width=True)
                 else:
                     st.caption("Intensity histogram unavailable.")
             with col_ws:
                 if ws_png:
-                    st.image(ws_png, caption="Watershed labels", use_column_width=True)
+                    st.image(ws_png, caption="Watershed labels", use_container_width=True)
                 else:
                     st.caption("Watershed labels unavailable.")
 
