@@ -145,13 +145,6 @@ def safe_run_tool(modpath: str, funcname: str, label: str):
             return run_fn()
         except Exception as e:
             render_error_context(f"{label} crashed while running", e)
-            with st.expander("Quick things to check"):
-                st.markdown(
-                    "- Are the input files/paths valid?\n"
-                    "- Did package versions change (e.g., scikit-image, scipy, sklearn)?\n"
-                    "- Any GPU/driver issues for heavy operations?\n"
-                    "- Toggle 'Show error tracebacks' above to see details."
-                )
             return
 
 if tool_label in label_to_key:
