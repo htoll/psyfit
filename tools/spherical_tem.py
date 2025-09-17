@@ -33,12 +33,12 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 from scipy.ndimage import distance_transform_edt
-from skimage.measure import regionprops, label
+
 from skimage.morphology import (
     remove_small_objects,
     binary_closing,
     disk,
-    h_maxima)
+    h_minima)
 from skimage.segmentation import watershed
 from sklearn.mixture import GaussianMixture
 
@@ -61,6 +61,15 @@ except Exception:  # pragma: no cover
 class DM3Image:
     data: np.ndarray
     nm_per_px: float
+
+
+@dataclass
+class PreprocessedImage:
+    name: str
+    data: np.ndarray
+    threshold: float
+    nm_per_px: float
+    measurement_unit: str
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +385,109 @@ def gmm_threshold(data: np.ndarray, nbins: Optional[int] = None, sample: int = 2
 # ---------------------------------------------------------------------------
 
 
+def _approximate_region_vertices(region: Any) -> Tuple[np.ndarray, int]:
+    """Return approximated polygon vertices for a region."""
+
+    image = np.asarray(getattr(region, "image", None))
+    if image is None or image.size == 0 or not np.any(image):
+        return np.empty((0, 2), dtype=np.float32), 0
+
+    try:
+        contours = find_contours(image.astype(float), 0.5)
+    except Exception:
+        return np.empty((0, 2), dtype=np.float32), 0
+
+    if not contours:
+        return np.empty((0, 2), dtype=np.float32), 0
+
+    contour = max(contours, key=len)
+    diag = math.hypot(image.shape[0], image.shape[1])
+    tolerance = max(0.5, 0.02 * diag)
+    approx = approximate_polygon(contour, tolerance)
+    if approx.shape[0] <= 2:
+        return np.empty((0, 2), dtype=np.float32), 0
+
+    if np.allclose(approx[0], approx[-1]):
+        approx = approx[:-1]
+
+    if approx.size == 0:
+        return np.empty((0, 2), dtype=np.float32), 0
+
+    approx = approx.astype(np.float32)
+    minr, minc, _, _ = region.bbox
+    approx[:, 0] += float(minr)
+    approx[:, 1] += float(minc)
+    vertices = np.column_stack((approx[:, 1], approx[:, 0])).astype(np.float32)
+    return vertices, vertices.shape[0]
+
+
+def _draw_polygon(ax: Any, vertices: np.ndarray, bbox: Tuple[float, float, float, float], *, color: str) -> None:
+    if vertices.shape[0] >= 3:
+        ax.add_patch(
+            plt.Polygon(vertices, closed=True, fill=False, edgecolor=color, linewidth=1)
+        )
+    else:
+        minc, minr, maxc, maxr = bbox
+        ax.add_patch(
+            plt.Rectangle(
+                (minc, minr),
+                maxc - minc,
+                maxr - minr,
+                fill=False,
+                edgecolor=color,
+                linewidth=1,
+            )
+        )
+
+
+def _draw_debug_circle(ax: Any, cx: float, cy: float, radius: float, color: str) -> None:
+    if radius <= 0:
+        radius = 1.0
+    ax.add_patch(plt.Circle((cx, cy), radius, fill=False, color=color, linewidth=1))
+
+
+def _is_hexagon(vertex_count: int, aspect: float, solidity: float, circularity: float, extent: float) -> bool:
+    if vertex_count >= 5 and vertex_count <= 8:
+        if (
+            solidity >= 0.85
+            and circularity >= 0.7
+            and 0.6 <= aspect <= 1.7
+            and 0.55 <= extent <= 0.95
+        ):
+            return True
+    if (
+        solidity >= 0.9
+        and circularity >= 0.82
+        and 0.7 <= aspect <= 1.5
+        and extent <= 0.95
+    ):
+        return True
+    return False
+
+
+def _is_rectangle(
+    vertex_count: int,
+    aspect: float,
+    solidity: float,
+    circularity: float,
+    extent: float,
+    *,
+    allow_square: bool,
+) -> bool:
+    if vertex_count in {4, 5} and solidity >= 0.75 and extent >= 0.6:
+        if allow_square:
+            return aspect >= 0.9
+        return aspect >= 1.2
+    if (
+        aspect >= (1.15 if allow_square else 1.3)
+        and solidity >= 0.75
+        and circularity <= 0.85
+        and extent >= 0.55
+    ):
+        return True
+    return False
+
+
 def segment_and_measure_shapes(
     data: np.ndarray,
     threshold: float,
@@ -412,12 +524,14 @@ def segment_and_measure_shapes(
     # Binary image and watershed segmentation
     im_bi = data < threshold
     im_bi = binary_closing(im_bi, disk(3))
+    im_bi = im_bi.astype(bool)
 
     dist = distance_transform_edt(im_bi)
-    # Use h-maxima transform to mimic MATLAB's imextendedmin
-    hmax = h_maxima(dist, 2)
-    markers = label(hmax)
-    labels_ws = watershed(-dist, markers=markers, mask=im_bi)
+    dist_neg = -dist
+    dist_neg[~im_bi] = np.inf
+    minima = h_minima(dist_neg, 2)
+    markers = label(minima)
+    labels_ws = watershed(dist_neg, markers=markers, mask=im_bi)
     im_bi[labels_ws == 0] = 0
     im_bi = remove_small_objects(im_bi, min_size=min_area_px)
     labels_ws = label(im_bi)
@@ -466,51 +580,66 @@ def segment_and_measure_shapes(
         cy, cx = p.centroid  # note: regionprops returns (row, col)
 
         if shape_type == "Sphere":
-
             diam_px = (maj + minr_axis) / 2
             d_val = diam_px * scale_factor
             if d_val < min_size_value:
                 continue
             diameters_nm.append(d_val)
-            circ_patch = plt.Circle((cx, cy), diam_px / 2, fill=False, color="r", linewidth=1)
-            ax.add_patch(circ_patch)
-        else:  # Hexagon or Cube (rectangular)
-            if 1.2 < aspect < 1.8 and solidity > 0.8:
-                # Rectangle
-                length_val = maj * scale_factor
-                width_val = minr_axis * scale_factor
-                if length_val < min_size_value or width_val < min_size_value:
-                    continue
+            _draw_debug_circle(ax, cx, cy, diam_px / 2, "r")
+            continue
+
+        vertices, vertex_count = _approximate_region_vertices(p)
+        length_val = maj * scale_factor
+        width_val = minr_axis * scale_factor
+        bbox_tuple = (float(minc), float(minr), float(maxc), float(maxr))
+        circularity = circ
+
+        if shape_type == "Hexagon":
+            diag_px = math.sqrt((8.0 * area) / (3.0 * math.sqrt(3.0))) if area > 0 else 0.0
+            diag_val = diag_px * scale_factor
+            if (
+                diag_val < min_size_value
+                or length_val < min_size_value
+                or width_val < min_size_value
+            ):
+                continue
+
+            if _is_hexagon(vertex_count, aspect, solidity, circularity, extent):
+                hex_axes_nm.append(diag_val)
                 lengths_nm.append(length_val)
                 widths_nm.append(width_val)
-                rect = plt.Rectangle(
-                    (minc, minr),
-                    maxc - minc,
-                    maxr - minr,
-                    fill=False,
-                    color="r",
-                    linewidth=1,
-                )
-                ax.add_patch(rect)
-            elif solidity > 0.85 and extent > 0.6:
-                # Potential hexagon
-                d = (maj + minr_axis) / 2
-                d_val = d * scale_factor
-                if d_val < min_size_value:
-                    continue
-                hex_axes_nm.append(d_val)
-                radius = d / 2
-                theta = np.linspace(0, 2 * np.pi, 7)
-                x = cx + radius * np.cos(theta)
-                y = cy + radius * np.sin(theta)
-                ax.plot(x, y, "y-", linewidth=1)
+                _draw_polygon(ax, vertices, bbox_tuple, color="y")
             else:
-                # Mark other shapes lightly for visual debugging
-                diam_px = (maj + minr_axis) / 2
-                d_val = diam_px * scale_factor
-                if d_val >= min_size_value:
-                    circ_patch = plt.Circle((cx, cy), diam_px / 2, fill=False, color="b", linewidth=1)
-                    ax.add_patch(circ_patch)
+                if _is_rectangle(
+                    vertex_count,
+                    aspect,
+                    solidity,
+                    circularity,
+                    extent,
+                    allow_square=False,
+                ):
+                    _draw_polygon(ax, vertices, bbox_tuple, color="r")
+                else:
+                    _draw_debug_circle(ax, cx, cy, max(diag_px, maj, minr_axis) / 2, "b")
+            continue
+
+        # Cube / rectangular case
+        if length_val < min_size_value or width_val < min_size_value:
+            continue
+
+        if _is_rectangle(
+            vertex_count,
+            aspect,
+            solidity,
+            circularity,
+            extent,
+            allow_square=True,
+        ):
+            lengths_nm.append(length_val)
+            widths_nm.append(width_val)
+            _draw_polygon(ax, vertices, bbox_tuple, color="r")
+        else:
+            _draw_debug_circle(ax, cx, cy, max(maj, minr_axis) / 2, "b")
 
     buf_ann = io.BytesIO()
     fig.savefig(buf_ann, format="png", bbox_inches="tight", pad_inches=0, dpi=200)
@@ -704,7 +833,11 @@ def _finalize_shape_figure(
             ),
             aspectmode="data",
             bgcolor="white",
-            camera=dict(eye=dict(x=1.6, y=1.6, z=1.25)),
+            dragmode="orbit",
+            camera=dict(
+                eye=dict(x=1.6, y=1.6, z=1.25),
+                projection=dict(type="orthographic"),
+            ),
         ),
     )
 
@@ -938,63 +1071,90 @@ def create_shape_figure(
 
 
 @st.cache_data(show_spinner=False)
-def process_dm3_files(
+def preprocess_dm3_payloads(
     file_payloads: Tuple[Tuple[str, bytes], ...],
-    shape_type: str,
-    min_shape_size_input: float,
-) -> Tuple[List[Dict[str, np.ndarray]], List[str], List[Tuple[str, float]]]:
-    """Process uploaded files and cache segmentation results."""
+) -> Tuple[List[PreprocessedImage], List[str], List[Tuple[str, float]]]:
+    """Return raw data, measurement metadata and GMM thresholds per file."""
 
-    results: List[Dict[str, np.ndarray]] = []
+    records: List[PreprocessedImage] = []
     missing_scale_files: List[str] = []
     thresholds: List[Tuple[str, float]] = []
 
-    for idx, (file_name, file_bytes) in enumerate(file_payloads, start=1):
+    for file_name, file_bytes in file_payloads:
         dm3 = try_read_dm3(file_bytes)
-        data = dm3.data
-        nm_per_px = dm3.nm_per_px
+        data = np.asarray(dm3.data)
+        nm_per_px = float(dm3.nm_per_px)
 
         if np.isfinite(nm_per_px) and nm_per_px > 0:
             measurement_unit = "nm"
-            min_size_value = float(min_shape_size_input)
         else:
             measurement_unit = "px"
-            min_size_value = float(min_shape_size_input)
             missing_scale_files.append(file_name)
             nm_per_px = float("nan")
 
         chosen_threshold = gmm_threshold(data)
         thresholds.append((file_name, chosen_threshold))
+        records.append(
+            PreprocessedImage(
+                name=file_name,
+                data=data,
+                threshold=chosen_threshold,
+                nm_per_px=nm_per_px,
+                measurement_unit=measurement_unit,
+            )
+        )
 
+    return records, missing_scale_files, thresholds
+
+
+def process_dm3_files(
+    records: List[PreprocessedImage],
+    shape_type: str,
+    min_shape_size_input: float,
+) -> List[Dict[str, np.ndarray]]:
+    """Segment cached payloads using stored GMM thresholds."""
+
+    results: List[Dict[str, np.ndarray]] = []
+    min_shape_size_value = float(min_shape_size_input)
+
+    for record in records:
         seg = segment_and_measure_shapes(
-            data=data,
-            threshold=chosen_threshold,
-            nm_per_px=nm_per_px,
+            data=record.data,
+            threshold=record.threshold,
+            nm_per_px=record.nm_per_px,
             shape_type=shape_type,
-            min_size_value=min_size_value,
-            measurement_unit=measurement_unit,
+            min_size_value=min_shape_size_value,
+            measurement_unit=record.measurement_unit,
             min_area_px=5,
         )
-        seg["name"] = file_name
+        seg["name"] = record.name
         results.append(seg)
 
-    return results, missing_scale_files, thresholds
+    return results
+
+
+def build_file_payload_key(file_payloads: Tuple[Tuple[str, bytes], ...]) -> str:
+    """Return a hash that uniquely represents uploaded files."""
+
+    hasher = hashlib.sha256()
+    for file_name, file_bytes in file_payloads:
+        hasher.update(file_name.encode("utf-8"))
+        hasher.update(len(file_bytes).to_bytes(8, "little"))
+        hasher.update(file_bytes)
+    return hasher.hexdigest()
 
 
 def build_processing_key(
-    file_payloads: Tuple[Tuple[str, bytes], ...],
+    file_key: str,
     shape_type: str,
     min_shape_size_input: float,
 ) -> str:
     """Return a stable hash describing the current processing inputs."""
 
     hasher = hashlib.sha256()
+    hasher.update(file_key.encode("utf-8"))
     hasher.update(shape_type.encode("utf-8"))
     hasher.update(np.float64(min_shape_size_input).tobytes())
-    for file_name, file_bytes in file_payloads:
-        hasher.update(file_name.encode("utf-8"))
-        hasher.update(len(file_bytes).to_bytes(8, "little"))
-        hasher.update(file_bytes)
     return hasher.hexdigest()
 
 
@@ -1047,32 +1207,43 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
 
     if files:
         file_payloads: Tuple[Tuple[str, bytes], ...] = tuple((f.name, f.getvalue()) for f in files)
+        file_key = build_file_payload_key(file_payloads)
+
+        base_entry = st.session_state.get(BASE_CACHE_KEY)
+        if base_entry and base_entry.get("key") == file_key:
+            base_cache = base_entry
+        else:
+            with st.spinner("Estimating thresholds …"):
+                records, missing_scale_files, threshold_messages = preprocess_dm3_payloads(file_payloads)
+            base_cache = {
+                "key": file_key,
+                "records": records,
+                "missing_scale_files": missing_scale_files,
+                "threshold_messages": threshold_messages,
+            }
+            st.session_state[BASE_CACHE_KEY] = base_cache
+            st.session_state.pop(SESSION_CACHE_KEY, None)
+
+        records: List[PreprocessedImage] = base_cache["records"]
         min_shape_size_value = float(min_shape_size_input)
-        processing_key = build_processing_key(file_payloads, shape_type, min_shape_size_value)
-        cache_entry = st.session_state.get(SESSION_CACHE_KEY)
+
 
         if cache_entry and cache_entry.get("key") == processing_key:
             results = cache_entry["results"]
-            missing_scale_files = cache_entry["missing_scale_files"]
-            threshold_messages = cache_entry["threshold_messages"]
-        else:
-            with st.spinner("Processing …"):
-                results, missing_scale_files, threshold_messages = process_dm3_files(
-                    file_payloads=file_payloads,
+
                     shape_type=shape_type,
                     min_shape_size_input=min_shape_size_value,
                 )
             st.session_state[SESSION_CACHE_KEY] = {
                 "key": processing_key,
                 "results": results,
-                "missing_scale_files": missing_scale_files,
-                "threshold_messages": threshold_messages,
-            }
+
 
         for file_name, threshold_value in threshold_messages:
             st.info(f"**{file_name}**: GMM threshold = **{threshold_value:.4f}**")
     else:
         st.session_state.pop(SESSION_CACHE_KEY, None)
+
 
     # Dropdown to select image for display
     if results:
@@ -1170,7 +1341,11 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                         st.caption(f"Stats: {summary}")
                 with col_shape:
                     if shape_fig is not None:
-                        st.plotly_chart(shape_fig, use_container_width=True)
+                        st.plotly_chart(
+                            shape_fig,
+                            use_container_width=True,
+                            config=PLOTLY_SHAPE_CONFIG,
+                        )
                     else:
                         st.caption("Shape preview available when μ is defined.")
             else:
@@ -1290,7 +1465,7 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                         st.caption(f"Stats: {summary_hex}")
                 with col_shape:
                     if shape_fig is not None:
-                        st.plotly_chart(shape_fig, use_container_width=True)
+
                         if volume_parts and n_min:
                             st.caption(
                                 f"Volume estimate uses μ values above (overlap n≥{n_min})."
@@ -1418,7 +1593,7 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                         st.caption(f"Stats: {summary_len}")
                 with col_shape:
                     if shape_fig is not None:
-                        st.plotly_chart(shape_fig, use_container_width=True)
+
                         if volume_parts and n_min:
                             st.caption(
                                 f"Volume estimate uses μ values above (overlap n≥{n_min})."
