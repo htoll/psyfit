@@ -33,19 +33,11 @@ from matplotlib.lines import Line2D
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
-from scipy.ndimage import distance_transform_edt
+from scipy import ndimage as ndi
 
-from skimage.morphology import (
-    remove_small_objects,
-    remove_small_holes,
-    binary_closing,
-    binary_opening,
-    disk,
-)
-from skimage.filters import gaussian
-from skimage.feature import peak_local_max
+from skimage import morphology as morph
+from skimage import segmentation as seg
 from skimage.measure import label, regionprops
-from skimage.segmentation import watershed
 from sklearn.mixture import GaussianMixture
 
 
@@ -590,36 +582,47 @@ def segment_and_measure_shapes(
     Dict with measurement arrays and PNG overlays.
     """
 
-    # Binary image and watershed segmentation
-    smoothed = gaussian(data.astype(np.float32), sigma=0.8, preserve_range=True)
-    im_bi = smoothed < threshold
-    im_bi = binary_closing(im_bi, disk(2))
-    im_bi = binary_opening(im_bi, disk(1))
-    hole_area = max(int(min_area_px * 4), 16)
-    im_bi = remove_small_holes(im_bi, area_threshold=hole_area)
-    im_bi = im_bi.astype(bool)
+    if measurement_unit == "nm" and np.isfinite(nm_per_px) and nm_per_px > 0:
+        scale_factor = nm_per_px
+        exclusion_zone_px = 2.0 / nm_per_px
+    else:
+        scale_factor = 1.0
+        exclusion_zone_px = 0.0
+
+    area_keep_threshold = max(int(min_area_px), 3)
+    hole_area_threshold = max(int(4 * min_area_px), 32)
+
+    # Binary image and watershed segmentation following the MATLAB reference
+    im_bi = data < threshold
+    im_bi = morph.binary_closing(im_bi, morph.disk(3))
+    im_bi = morph.remove_small_holes(im_bi, area_threshold=hole_area_threshold)
 
     if np.any(im_bi):
-        dist = distance_transform_edt(im_bi)
-        smoothed_dist = gaussian(dist, sigma=1.0, preserve_range=True)
-        local_max = peak_local_max(
-            smoothed_dist,
-            footprint=np.ones((3, 3), dtype=bool),
-            labels=im_bi,
-            threshold_abs=0.0,
-        )
-        if local_max.size == 0:
-            markers = label(im_bi)
+        data_float = data.astype(np.float32)
+        data_min = float(np.min(data_float))
+        data_max = float(np.max(data_float))
+        if data_max > data_min:
+            im_norm = (data_float - data_min) / (data_max - data_min)
         else:
-            marker_mask = np.zeros_like(im_bi, dtype=bool)
-            marker_mask[tuple(local_max.T)] = True
-            markers = label(marker_mask)
-        labels_ws = watershed(-smoothed_dist, markers=markers, mask=im_bi)
-        refined_mask = labels_ws > 0
-        refined_mask = remove_small_objects(refined_mask, min_size=max(min_area_px, 3))
-        refined_mask = remove_small_holes(refined_mask, area_threshold=hole_area)
-        labels_ws = label(refined_mask)
-        im_bi = refined_mask
+            im_norm = np.zeros_like(data_float)
+        im_complement = 1.0 - im_norm
+        im_complement = ndi.gaussian_filter(im_complement, sigma=1.0)
+
+        watershed_labels = seg.watershed(im_complement)
+        ridge_mask = watershed_labels == 0
+
+        im_split = im_bi.copy()
+        im_split[ridge_mask] = False
+        im_split = morph.remove_small_objects(
+            im_split,
+            min_size=area_keep_threshold,
+        )
+        im_split = morph.remove_small_holes(
+            im_split,
+            area_threshold=hole_area_threshold,
+        )
+        labels_ws = label(im_split)
+        im_bi = im_split
     else:
         labels_ws = np.zeros_like(data, dtype=np.int32)
 
@@ -629,13 +632,6 @@ def segment_and_measure_shapes(
     lengths_nm: List[float] = []
     widths_nm: List[float] = []
 
-    # Determine scaling and exclusion zone based on available calibration
-    if measurement_unit == "nm" and np.isfinite(nm_per_px) and nm_per_px > 0:
-        scale_factor = nm_per_px
-        exclusion_zone_px = 2 / nm_per_px
-    else:
-        scale_factor = 1.0
-        exclusion_zone_px = 0.0
     img_h, img_w = data.shape
 
     aspect_ratio = img_w / img_h if img_h else 1.0
@@ -1427,12 +1423,12 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                         caption = f"Intensity histogram (threshold={threshold_value:.4f})"
                     else:
                         caption = "Intensity histogram"
-                    st.image(hist_png, caption=caption, use_column_width=True)
+                    st.image(hist_png, caption=caption, use_container_width=True)
                 else:
                     st.caption("Intensity histogram unavailable.")
             with col_ws:
                 if ws_png:
-                    st.image(ws_png, caption="Watershed labels", use_column_width=True)
+                    st.image(ws_png, caption="Watershed labels", use_container_width=True)
                 else:
                     st.caption("Watershed labels unavailable.")
 
