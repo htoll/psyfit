@@ -592,7 +592,7 @@ def segment_and_measure_shapes(
 
     # Binary image and watershed segmentation
     smoothed = gaussian(data.astype(np.float32), sigma=0.8, preserve_range=True)
-    soft_threshold = threshold + 200 #trial bias to soften
+    soft_threshold = threshold - 200 #trial bias to soften
     im_bi = smoothed < soft_threshold
     im_bi = binary_closing(im_bi, disk(2))
     im_bi = binary_opening(im_bi, disk(1))
