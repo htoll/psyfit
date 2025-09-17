@@ -50,6 +50,7 @@ from sklearn.mixture import GaussianMixture
 
 
 SESSION_CACHE_KEY = "_tem_size_cache"
+BASE_CACHE_KEY = "_tem_gmm_base_cache"
 
 PLOTLY_SHAPE_CONFIG = {"displaylogo": False}
 
