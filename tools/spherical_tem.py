@@ -624,7 +624,7 @@ def segment_and_measure_shapes(
         im_complement = 1.0 - im_norm
         im_complement = ndi.gaussian_filter(im_complement, sigma=1.0)
 
-        watershed_labels = seg.watershed(im_complement)
+        watershed_labels = seg.watershed(im_complement, watershed_line=True)
         ridge_mask = watershed_labels == 0
 
         im_split = im_bi.copy()
