@@ -89,11 +89,11 @@ def run():
         -Dye signal sets sensitivity of blob detection
         ''')
         diagram = """ Splits sif into quadrants (256x256 px):
-        ┌─┬─┐
-        │ 1 │ 2 │
-        ├─┼─┤
-        │ 3 │ 4 │
-        └─┴─┘
+        ┌─┬─┐  
+        │ 1 │ 2 │  
+        ├─┼─┤  
+        │ 3 │ 4 │  
+        └─┴─┘  
         """
         region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
 
