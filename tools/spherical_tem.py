@@ -759,8 +759,67 @@ def segment_and_measure_shapes(
     base_height = 4.0
     fig_width = float(np.clip(base_height * aspect_ratio, 3.0, 7.5))
 
+    display_vmin: Optional[float] = None
+    display_vmax: Optional[float] = None
+
+    finite_vals = data[np.isfinite(data)]
+    if finite_vals.size:
+        finite_vals = finite_vals.astype(np.float32, copy=False)
+        data_min = float(finite_vals.min())
+        data_max = float(finite_vals.max())
+
+        if np.isfinite(threshold):
+            thr = float(threshold)
+            lower = thr * 0.5
+            upper = thr * 1.5
+            if lower > upper:
+                lower, upper = upper, lower
+            lower = float(np.clip(lower, data_min, data_max))
+            upper = float(np.clip(upper, data_min, data_max))
+            if upper > lower:
+                display_vmin = lower
+                display_vmax = upper
+
+        contrast_floor = max(
+            1e-6,
+            1e-3
+            * max(
+                abs(display_vmin) if display_vmin is not None else 0.0,
+                abs(display_vmax) if display_vmax is not None else 0.0,
+                1.0,
+            ),
+        )
+
+        if (
+            display_vmin is None
+            or display_vmax is None
+            or (display_vmax - display_vmin) <= contrast_floor
+        ):
+            if data_max > data_min:
+                p_low, p_high = np.percentile(finite_vals, [2.0, 98.0])
+                if np.isfinite(p_low) and np.isfinite(p_high) and p_high > p_low:
+                    display_vmin = float(p_low)
+                    display_vmax = float(p_high)
+            if (
+                display_vmin is None
+                or display_vmax is None
+                or (display_vmax - display_vmin) <= contrast_floor
+            ):
+                display_vmin = data_min
+                display_vmax = data_max
+
+        if display_vmax <= display_vmin:
+            epsilon = max(1e-6, 1e-3 * max(abs(display_vmin), abs(display_vmax), 1.0))
+            display_vmax = display_vmin + epsilon
+
     fig, ax = plt.subplots(figsize=(fig_width, base_height), dpi=200)
-    ax.imshow(data, cmap="gray", interpolation="nearest")
+    ax.imshow(
+        data,
+        cmap="gray",
+        interpolation="nearest",
+        vmin=display_vmin,
+        vmax=display_vmax,
+    )
     ax.axis("off")
 
     for p in regionprops(labels_ws):
@@ -1023,23 +1082,35 @@ def summarise_stats(
 
 
 def nice_scale_bar_length(size: float) -> Optional[float]:
-    """Return a rounded scale-bar length (multiples of 5)."""
+    """Return a rounded scale-bar length using a 1-2-5 progression."""
 
     if not np.isfinite(size) or size <= 0:
         return None
 
-    base_values = []
-    for exponent in range(0, 6):
-        factor = 10 ** exponent
-        for base in (5.0, 10.0, 15.0, 20.0, 25.0, 50.0, 75.0):
-            base_values.append(base * factor)
-    base_values = sorted(set(base_values))
+    target = float(size) / 1.2
+    if target <= 0:
+        return float(size)
 
-    target = size / 1.2
-    candidate = max((val for val in base_values if val <= target), default=None)
+    nice_bases = (1.0, 2.0, 2.5, 5.0, 10.0)
+    exponent = int(math.floor(math.log10(target))) if target > 0 else 0
+    scale = target / (10 ** exponent) if target > 0 else 1.0
+
+    candidate: Optional[float] = None
+    for base in nice_bases:
+        if base <= scale:
+            candidate = base
+        else:
+            break
+
     if candidate is None:
-        candidate = min((val for val in base_values if val >= target), default=5.0)
-    return float(candidate)
+        candidate = nice_bases[0]
+        exponent -= 1
+
+    length = candidate * (10 ** exponent)
+    length = min(length, float(size))
+    if length <= 0:
+        length = float(size)
+    return float(length)
 
 
 def _finalize_shape_figure(
