@@ -280,6 +280,7 @@ def run():
                 selected_file = st.selectbox("Select SIF to display:", options=file_options, key="file_select")
                 
                 if selected_file:
+                    selected_file_base = os.path.splitext(selected_file)[0]
                     plot_col1, plot_col2 = st.columns(2)
                     data_for_file = processed_data[selected_file]
                     unfiltered_df = data_for_file.get("df")
@@ -310,7 +311,11 @@ def run():
                         st.pyplot(fig_image)
                         svg_buffer_img = io.StringIO()
                         fig_image.savefig(svg_buffer_img, format='svg')
-                        st.download_button("Download Image (SVG)", svg_buffer_img.getvalue(), f"{selected_file}.svg")
+                        st.download_button(
+                            "Download Image (SVG)",
+                            svg_buffer_img.getvalue(),
+                            f"{selected_file_base}.svg"
+                        )
 
                     with plot_col2:
                         st.markdown("#### Brightness Histogram")
@@ -329,10 +334,18 @@ def run():
                             
                             svg_buffer_hist = io.StringIO()
                             fig_hist.savefig(svg_buffer_hist, format='svg')
-                            st.download_button("Download Histogram (SVG)", svg_buffer_hist.getvalue(), f"{selected_file}_histogram.svg")
-                            
+                            st.download_button(
+                                "Download Histogram (SVG)",
+                                svg_buffer_hist.getvalue(),
+                                f"{selected_file_base}_histogram.svg"
+                            )
+
                             csv_bytes = df_to_csv_bytes(df_for_file)
-                            st.download_button("Download Data (CSV)", csv_bytes, f"{selected_file}_data.csv")
+                            st.download_button(
+                                "Download Data (CSV)",
+                                csv_bytes,
+                                f"{selected_file_base}_data.csv"
+                            )
                         else:
                             st.info(f"No particles were detected in '{selected_file}'.")
 

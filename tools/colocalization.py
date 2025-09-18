@@ -251,6 +251,16 @@ def run():
     pairs = _match_ucnp_dye_files(u_names, d_names)
     st.caption(f"Matched {len(pairs)} UCNP↔Dye pairs.")
 
+    if pairs:
+        first_u, first_d = pairs[0]
+        base_u = os.path.splitext(os.path.basename(first_u))[0]
+        base_d = os.path.splitext(os.path.basename(first_d))[0]
+        extra_suffix = f"_plus{len(pairs) - 1}" if len(pairs) > 1 else ""
+        selected_file_name = f"{base_u}_{base_d}{extra_suffix}.pair"
+    else:
+        selected_file_name = "colocalization.pair"
+    selected_file_base = os.path.splitext(selected_file_name)[0]
+
     # Prepare Matplotlib
     import matplotlib.pyplot as plt
     from matplotlib.colors import LogNorm
@@ -376,7 +386,7 @@ def run():
         st.download_button(
             "Download colocalized pairs (CSV)",
             data=matched_df.to_csv(index=False).encode("utf-8"),
-            file_name="colocalized_pairs.csv",
+            file_name=f"{selected_file_base}_colocalized_pairs.csv",
             mime="text/csv",
         )
 
@@ -457,7 +467,7 @@ def run():
                 st.download_button(
                     "Download thresholded results (CSV)",
                     data=thresholded_df.to_csv(index=False).encode("utf-8"),
-                    file_name="thresholded_results.csv",
+                    file_name=f"{selected_file_base}_thresholded_results.csv",
                     mime="text/csv",
                 )
 if __name__ == "__main__":

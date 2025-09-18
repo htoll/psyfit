@@ -127,6 +127,7 @@ def run():
                 selected_file_name = uploaded_files[0].name
 
             if selected_file_name in processed_data:
+                selected_file_base = os.path.splitext(selected_file_name)[0]
                 data_to_plot = processed_data[selected_file_name]
                 df_selected = data_to_plot["df"]
                 image_data_cps = data_to_plot["image"]
@@ -151,7 +152,7 @@ def run():
                         st.download_button(
                             label=f"Download PSFs ({save_format})",
                             data=buffer.getvalue(),
-                            file_name=f"{selected_file_name}.{save_format}",
+                            file_name=f"{selected_file_base}.{save_format}",
                             mime=mime_map[save_format],
                         )
                     else:
@@ -172,7 +173,7 @@ def run():
                         st.download_button(
                             label="Download PSFs (HTML)",
                             data=html_bytes,
-                            file_name=f"{selected_file_name}.html",
+                            file_name=f"{selected_file_base}.html",
                             mime="text/html",
                         )
 
@@ -219,7 +220,7 @@ def run():
                                 st.download_button(
                                     label=f"Download histogram ({save_format})",
                                     data=hist_buffer.getvalue(),
-                                    file_name=f"combined_histogram.{save_format}",
+                                    file_name=f"{selected_file_base}_histogram.{save_format}",
                                     mime=mime_map[save_format],
                                 )
                             else:
@@ -239,7 +240,7 @@ def run():
                                 st.download_button(
                                     label="Download histogram (HTML)",
                                     data=fig_hist.to_html().encode("utf-8"),
-                                    file_name="combined_histogram.html",
+                                    file_name=f"{selected_file_base}_histogram.html",
                                     mime="text/html",
                                 )
                         else:
@@ -301,10 +302,15 @@ def run():
 
                     hm_svg_buf = io.StringIO()
                     fig_hm.savefig(hm_svg_buf, format="svg")
+                    heatmap_base = (
+                        os.path.splitext(selected_file_name)[0]
+                        if "selected_file_name" in locals() and selected_file_name
+                        else "brightness_heatmap"
+                    )
                     st.download_button(
                         label="Download heatmap",
                         data=hm_svg_buf.getvalue(),
-                        file_name="brightness_heatmap.svg",
+                        file_name=f"{heatmap_base}_heatmap.svg",
                         mime="image/svg+xml",
                     )
 
