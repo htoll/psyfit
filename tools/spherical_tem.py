@@ -20,12 +20,13 @@ Streamlit workflow.
 from __future__ import annotations
 
 import io
+import json
 import math
 import os
 import tempfile
 import datetime as dt
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Dict, List, Tuple, Optional, Any, Iterable
 
 import matplotlib.pyplot as plt
@@ -40,27 +41,22 @@ from skimage import segmentation as seg
 from skimage.measure import label, regionprops
 from sklearn.mixture import GaussianMixture
 
-from scipy import ndimage as ndi
-from skimage import morphology as morph
-from skimage import segmentation as seg
-from skimage.measure import label
-from skimage.filters import gaussian
-from scipy.ndimage import distance_transform_edt
-from skimage.feature import peak_local_max
-
-from skimage.morphology import (
-    remove_small_objects,
-    remove_small_holes,
-    binary_closing,
-    binary_opening,
-    disk,
-)
-
 
 SESSION_CACHE_KEY = "_tem_size_cache"
 BASE_CACHE_KEY = "_tem_gmm_base_cache"
 
-PLOTLY_SHAPE_CONFIG = {"displaylogo": False}
+PLOTLY_SHAPE_CONFIG = {
+    "displaylogo": False,
+    "scrollZoom": False,
+    "modeBarButtonsToRemove": [
+        "zoom3d",
+        "pan3d",
+        "resetCameraDefault3d",
+        "resetCameraLastSave3d",
+        "zoomIn3d",
+        "zoomOut3d",
+    ],
+}
 
 # Optional import of ncempy (for reading dm3 files)
 try:  # pragma: no cover - simply a convenience check
@@ -87,6 +83,23 @@ class PreprocessedImage:
     threshold: float
     nm_per_px: float
     measurement_unit: str
+
+
+@dataclass(frozen=True)
+class SegmentationTuning:
+    threshold_scale: float = 1.0
+    threshold_offset: float = 0.0
+    closing_radius: int = 3
+    opening_radius: int = 0
+    pre_min_area_px: int = 32
+    pre_hole_area_px: int = 256
+    post_min_area_px: int = 32
+    post_hole_area_px: int = 512
+    distance_sigma: float = 1.0
+    h_maxima: float = 2.0
+    background_sigma: float = 0.0
+    background_strength: float = 1.0
+    watershed_gradient_sigma: float = 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -565,6 +578,31 @@ def _is_rectangle(
     return False
 
 
+
+
+def prepare_watershed_display(labels: np.ndarray, sigma: float) -> np.ndarray:
+    ws_float = np.asarray(labels, dtype=np.float32)
+    if ws_float.size == 0:
+        return ws_float
+
+    if sigma > 0.0:
+        ws_float = ws_float - ndi.gaussian_filter(ws_float, sigma=float(sigma))
+
+    min_val = float(ws_float.min())
+    ws_float = ws_float - min_val
+    max_val = float(ws_float.max())
+    if max_val > 0:
+        ws_float = ws_float / max_val
+    else:
+        ws_float.fill(0.0)
+
+    boundaries = seg.find_boundaries(labels, mode="outer")
+    if np.any(boundaries):
+        ws_float[boundaries] = 1.0
+
+    return ws_float
+
+
 def segment_and_measure_shapes(
     data: np.ndarray,
     threshold: float,
@@ -573,6 +611,7 @@ def segment_and_measure_shapes(
     min_size_value: float,
     measurement_unit: str,
     min_area_px: int = 5,
+    tuning: Optional[SegmentationTuning] = None,
 ) -> Dict[str, np.ndarray]:
     """Segment particles and measure their dimensions.
 
@@ -581,7 +620,7 @@ def segment_and_measure_shapes(
     data: ndarray
         The image data.
     threshold: float
-        Threshold value for creating a binary mask.
+        Baseline threshold value for creating a binary mask.
     nm_per_px: float
         Pixel to nanometre scaling.
     shape_type: str
@@ -592,11 +631,16 @@ def segment_and_measure_shapes(
         Unit label for size measurements (``"nm"`` or ``"px"``).
     min_area_px: int
         Minimum area (in pixels) for removing small objects.
+    tuning: SegmentationTuning, optional
+        Interactive tuning parameters selected by the user.
 
     Returns
     -------
     Dict with measurement arrays and PNG overlays.
     """
+
+    if tuning is None:
+        tuning = SegmentationTuning()
 
     if measurement_unit == "nm" and np.isfinite(nm_per_px) and nm_per_px > 0:
         scale_factor = nm_per_px
@@ -605,149 +649,92 @@ def segment_and_measure_shapes(
         scale_factor = 1.0
         exclusion_zone_px = 0.0
 
-    area_keep_threshold = max(int(min_area_px), 3)
-    hole_area_threshold = max(int(4 * min_area_px), 32)
+    data_float = np.asarray(data, dtype=np.float32)
+    seg_data = np.array(data_float, copy=True)
 
-    # Binary image and watershed segmentation following the MATLAB reference
-    im_bi = data < threshold
-    im_bi = morph.binary_closing(im_bi, morph.disk(3))
-    im_bi = morph.remove_small_holes(im_bi, area_threshold=hole_area_threshold)
-
-    if np.any(im_bi):
-        data_float = data.astype(np.float32)
-        data_min = float(np.min(data_float))
-        data_max = float(np.max(data_float))
-        if data_max > data_min:
-            im_norm = (data_float - data_min) / (data_max - data_min)
-        else:
-            im_norm = np.zeros_like(data_float)
-        im_complement = 1.0 - im_norm
-        im_complement = ndi.gaussian_filter(im_complement, sigma=1.0)
-
-        watershed_labels = seg.watershed(im_complement, watershed_line=True)
-        ridge_mask = watershed_labels == 0
-
-        im_split = im_bi.copy()
-        im_split[ridge_mask] = False
-        im_split = morph.remove_small_objects(
-            im_split,
-            min_size=area_keep_threshold,
+    if tuning.background_sigma > 0.0 and tuning.background_strength != 0.0:
+        seg_data = seg_data - float(tuning.background_strength) * ndi.gaussian_filter(
+            seg_data, sigma=float(tuning.background_sigma)
         )
-        im_split = morph.remove_small_holes(
-            im_split,
-            area_threshold=hole_area_threshold,
-        )
-        labels_ws = label(im_split)
-        im_bi = im_split
 
-    # Binary image and watershed segmentation
-    im_bi = data < threshold
-    im_bi = morph.binary_closing(im_bi, morph.disk(3))
-    im_bi = morph.remove_small_objects(im_bi, min_size=max(min_area_px, 32))
-    hole_area = max(int(min_area_px * 4), 16)
+    threshold_used = float(threshold) if np.isfinite(threshold) else 0.0
+    threshold_used = threshold_used * float(tuning.threshold_scale) + float(tuning.threshold_offset)
 
+    finite_seg = seg_data[np.isfinite(seg_data)]
+    offset = float(finite_seg.min()) if finite_seg.size else 0.0
+    seg_data = seg_data - offset
+    threshold_used -= offset
 
-    if np.any(im_bi):
-        distance_map = ndi.distance_transform_edt(im_bi)
-        distance_smooth = ndi.gaussian_filter(distance_map, sigma=1.0)
-        h_val = 2
-        markers_bin = morph.h_maxima(distance_smooth, h=h_val)
-        markers = label(markers_bin)
-        if markers.max() == 0:
-            markers = label(im_bi)
+    base_threshold_adj = (float(threshold) - offset) if np.isfinite(threshold) else float("nan")
 
-        labels_ws = seg.watershed(-distance_smooth, markers=markers, mask=im_bi)
-        im_bi_split = im_bi.copy()
-        im_bi_split[labels_ws == 0] = False
-        im_bi_filtered = morph.remove_small_objects(
-            im_bi_split,
-            min_size=min_area_px,
-        )
-        im_bi_filtered = morph.remove_small_holes(
-            im_bi_filtered,
-            area_threshold=max(4 * min_area_px, 256),
-        )
-        labels_ws = label(im_bi_filtered)
-        im_bi = im_bi_filtered
-    smoothed = gaussian(data.astype(np.float32), sigma=0.8, preserve_range=True)
-    # im_bi = smoothed < threshold
-    # im_bi = binary_closing(im_bi, disk(2))
-    # im_bi = binary_opening(im_bi, disk(1))
-    # hole_area = max(int(min_area_px * 4), 16)
-    # im_bi = remove_small_holes(im_bi, area_threshold=hole_area)
-    # im_bi = im_bi.astype(bool)
-
-    im_bi = (data < threshold)
-    im_bi = morph.binary_closing(im_bi, morph.disk(3))
-    im_bi = morph.remove_small_objects(im_bi, min_size=max(min_area_px, 32))
-
-
-
-
-    
-
-    if np.any(im_bi):
-        dist = distance_transform_edt(im_bi)
-        smoothed_dist = gaussian(dist, sigma=1.0, preserve_range=True)
-        h_val = 2  # try 1–3; increase if over-seg, decrease if under-seg
-        markers_bin = morph.h_maxima(smoothed_dist, h=h_val)
-        markers = label(markers_bin)
-        labels_ws = seg.watershed(-smoothed_dist, markers=markers, mask=im_bi)
-        im_bi_split = im_bi.copy()
-        im_bi_split[labels_ws == 0] = False
-        im_bi_filtered = morph.remove_small_objects(im_bi_split, min_size=max(min_area_px, 5000))
-        im_bi_filtered = morph.remove_small_holes(im_bi_filtered, area_threshold=max(4*min_area_px, 256))
-        labels_ws = label(im_bi_filtered)
-
-
-        
-        component_labels = label(im_bi)
-        local_max = peak_local_max(
-            smoothed_dist,
-            footprint=np.ones((3, 3), dtype=bool),
-            labels=im_bi,
-            threshold_abs=0.0,
-            exclude_border=False,
-        )
-        if local_max.size == 0:
-            markers = component_labels
-        else:
-            marker_mask = np.zeros_like(im_bi, dtype=bool)
-            marker_mask[tuple(local_max.T)] = True
-            markers = label(marker_mask)
-
-            component_count = int(component_labels.max())
-            if component_count > 0:
-                has_marker = np.zeros(component_count + 1, dtype=bool)
-                if np.any(marker_mask):
-                    has_marker[component_labels[marker_mask]] = True
-                missing_components = np.where(~has_marker)[0]
-                missing_components = missing_components[missing_components > 0]
-                if missing_components.size:
-                    current_max = int(markers.max())
-                    for comp_id in missing_components:
-                        comp_mask = component_labels == comp_id
-                        if not np.any(comp_mask):
-                            continue
-                        rows, cols = np.where(comp_mask)
-                        if rows.size == 0:
-                            continue
-                        comp_dist = dist[comp_mask]
-                        if comp_dist.size == 0:
-                            continue
-                        max_idx = int(np.argmax(comp_dist))
-                        current_max += 1
-                        markers[rows[max_idx], cols[max_idx]] = current_max
-
-        refined_mask = labels_ws > 0
-        refined_mask = remove_small_objects(refined_mask, min_size=max(min_area_px, 3))
-        refined_mask = remove_small_holes(refined_mask, area_threshold=hole_area)
-        labels_ws = label(refined_mask)
-        im_bi = refined_mask
+    finite_seg = seg_data[np.isfinite(seg_data)]
+    if finite_seg.size:
+        seg_min = float(finite_seg.min())
+        seg_max = float(finite_seg.max())
     else:
-        labels_ws = np.zeros_like(data, dtype=np.int32)
+        seg_min = 0.0
+        seg_max = 0.0
 
-    # Prepare measurement containers
+    if seg_max > seg_min:
+        threshold_used = float(np.clip(threshold_used, seg_min, seg_max))
+    else:
+        threshold_used = float(seg_min)
+
+    mask = seg_data < threshold_used
+    mask = np.asarray(mask, dtype=bool)
+
+    closing_radius = max(int(tuning.closing_radius), 0)
+    if closing_radius > 0:
+        mask = morph.binary_closing(mask, morph.disk(closing_radius))
+
+    opening_radius = max(int(tuning.opening_radius), 0)
+    if opening_radius > 0:
+        mask = morph.binary_opening(mask, morph.disk(opening_radius))
+
+    base_min_area = max(int(min_area_px), 1)
+    pre_min_area = max(int(tuning.pre_min_area_px), base_min_area)
+    if pre_min_area > 1:
+        mask = morph.remove_small_objects(mask, min_size=pre_min_area)
+
+    pre_hole_area = max(int(tuning.pre_hole_area_px), 1)
+    if pre_hole_area > 0:
+        mask = morph.remove_small_holes(mask, area_threshold=pre_hole_area)
+
+    labels_ws = np.zeros_like(mask, dtype=np.int32)
+    refined_mask = mask.copy()
+
+    if np.any(mask):
+        distance_map = ndi.distance_transform_edt(mask)
+        if tuning.distance_sigma > 0.0:
+            distance_smooth = ndi.gaussian_filter(distance_map, sigma=float(tuning.distance_sigma))
+        else:
+            distance_smooth = distance_map
+
+        markers = None
+        if tuning.h_maxima > 0.0:
+            markers_bin = morph.h_maxima(distance_smooth, h=float(tuning.h_maxima))
+            if np.any(markers_bin):
+                markers = label(markers_bin)
+
+        if markers is None or markers.max() == 0:
+            markers = label(mask)
+
+        labels_ws = seg.watershed(-distance_smooth, markers=markers, mask=mask)
+        refined_mask = labels_ws > 0
+
+        post_min_area = max(int(tuning.post_min_area_px), base_min_area)
+        if post_min_area > 1:
+            refined_mask = morph.remove_small_objects(refined_mask, min_size=post_min_area)
+
+        post_hole_area = max(int(tuning.post_hole_area_px), 1)
+        if post_hole_area > 0:
+            refined_mask = morph.remove_small_holes(refined_mask, area_threshold=post_hole_area)
+
+        labels_ws = label(refined_mask)
+    else:
+        refined_mask = mask.astype(bool, copy=False)
+        labels_ws = np.zeros_like(mask, dtype=np.int32)
+
     diameters_nm: List[float] = []
     hex_axes_nm: List[float] = []
     lengths_nm: List[float] = []
@@ -759,8 +746,67 @@ def segment_and_measure_shapes(
     base_height = 4.0
     fig_width = float(np.clip(base_height * aspect_ratio, 3.0, 7.5))
 
+    display_vmin: Optional[float] = None
+    display_vmax: Optional[float] = None
+
+    finite_vals = data[np.isfinite(data)]
+    if finite_vals.size:
+        finite_vals = finite_vals.astype(np.float32, copy=False)
+        data_min = float(finite_vals.min())
+        data_max = float(finite_vals.max())
+
+        if np.isfinite(threshold):
+            thr = float(threshold)
+            lower = thr * 0.5
+            upper = thr * 1.5
+            if lower > upper:
+                lower, upper = upper, lower
+            lower = float(np.clip(lower, data_min, data_max))
+            upper = float(np.clip(upper, data_min, data_max))
+            if upper > lower:
+                display_vmin = lower
+                display_vmax = upper
+
+        contrast_floor = max(
+            1e-6,
+            1e-3
+            * max(
+                abs(display_vmin) if display_vmin is not None else 0.0,
+                abs(display_vmax) if display_vmax is not None else 0.0,
+                1.0,
+            ),
+        )
+
+        if (
+            display_vmin is None
+            or display_vmax is None
+            or (display_vmax - display_vmin) <= contrast_floor
+        ):
+            if data_max > data_min:
+                p_low, p_high = np.percentile(finite_vals, [2.0, 98.0])
+                if np.isfinite(p_low) and np.isfinite(p_high) and p_high > p_low:
+                    display_vmin = float(p_low)
+                    display_vmax = float(p_high)
+            if (
+                display_vmin is None
+                or display_vmax is None
+                or (display_vmax - display_vmin) <= contrast_floor
+            ):
+                display_vmin = data_min
+                display_vmax = data_max
+
+        if display_vmax <= display_vmin:
+            epsilon = max(1e-6, 1e-3 * max(abs(display_vmin), abs(display_vmax), 1.0))
+            display_vmax = display_vmin + epsilon
+
     fig, ax = plt.subplots(figsize=(fig_width, base_height), dpi=200)
-    ax.imshow(data, cmap="gray", interpolation="nearest")
+    ax.imshow(
+        data,
+        cmap="gray",
+        interpolation="nearest",
+        vmin=display_vmin,
+        vmax=display_vmax,
+    )
     ax.axis("off")
 
     for p in regionprops(labels_ws):
@@ -781,7 +827,7 @@ def segment_and_measure_shapes(
         aspect = maj / minr_axis if minr_axis > 0 else 0.0
         extent = area / ((maxr - minr) * (maxc - minc)) if (maxr - minr) * (maxc - minc) > 0 else 0.0
         solidity = getattr(p, "solidity", 0.0)
-        cy, cx = p.centroid  # note: regionprops returns (row, col)
+        cy, cx = p.centroid
 
         if shape_type == "Sphere":
             diam_px = (maj + minr_axis) / 2
@@ -827,7 +873,6 @@ def segment_and_measure_shapes(
                     _draw_debug_circle(ax, cx, cy, max(diag_px, maj, minr_axis) / 2, "b")
             continue
 
-        # Cube / rectangular case
         if length_val < min_size_value or width_val < min_size_value:
             continue
 
@@ -864,7 +909,8 @@ def segment_and_measure_shapes(
     fig.savefig(buf_ann, format="png", bbox_inches="tight", pad_inches=0, dpi=200)
     plt.close(fig)
 
-    hist_vals = robust_percentile_cut(data, 99.5)
+    hist_source = np.asarray(seg_data, dtype=np.float32)
+    hist_vals = robust_percentile_cut(hist_source, 99.5)
     counts, edges = np.histogram(hist_vals, bins=128)
     centers = edges[:-1] + np.diff(edges) / 2 if len(edges) > 1 else np.array([])
     bar_width = float(edges[1] - edges[0]) if len(edges) > 1 else 1.0
@@ -879,12 +925,17 @@ def segment_and_measure_shapes(
             color="#888888",
             edgecolor="#444444",
         )
+    label_parts = [f"threshold={threshold_used:.3f}"]
+    if np.isfinite(base_threshold_adj) and not math.isclose(
+        base_threshold_adj, threshold_used, rel_tol=1e-6, abs_tol=1e-6
+    ):
+        label_parts.append(f"base={base_threshold_adj:.3f}")
     ax_hist.axvline(
-        threshold,
+        threshold_used,
         color="red",
         linestyle="--",
         linewidth=1.5,
-        label=f"GMM threshold = {threshold:.3f}",
+        label="Segmentation " + ", ".join(label_parts),
     )
     ax_hist.set_xlabel("Intensity (a.u.)")
     ax_hist.set_ylabel("Pixel count")
@@ -898,7 +949,8 @@ def segment_and_measure_shapes(
     plt.close(fig_hist)
 
     fig_ws, ax_ws = plt.subplots(figsize=(fig_width, base_height), dpi=200)
-    ax_ws.imshow(labels_ws, cmap="gray", interpolation="nearest")
+    ws_display = prepare_watershed_display(labels_ws, float(tuning.watershed_gradient_sigma))
+    ax_ws.imshow(ws_display, cmap="gray", interpolation="nearest")
     ax_ws.axis("off")
     buf_ws = io.BytesIO()
     fig_ws.savefig(buf_ws, format="png", bbox_inches="tight", pad_inches=0, dpi=200)
@@ -912,11 +964,15 @@ def segment_and_measure_shapes(
         "annotated_png": buf_ann.getvalue(),
         "watershed_png": buf_ws.getvalue(),
         "intensity_hist_png": buf_hist.getvalue(),
-        "gmm_threshold": float(threshold),
+        "gmm_threshold": float(threshold_used),
+        "base_threshold": float(threshold) if np.isfinite(threshold) else float("nan"),
+        "base_threshold_adjusted": float(base_threshold_adj)
+        if np.isfinite(base_threshold_adj)
+        else float("nan"),
         "image_shape": (int(img_h), int(img_w)),
+        "tuning": asdict(tuning),
     }
 
-    # For cubic particles we treat height equal to width (2‑D approximation)
     if shape_type == "Cube":
         out["heights_nm"] = np.array(widths_nm, dtype=np.float32)
 
@@ -1023,23 +1079,35 @@ def summarise_stats(
 
 
 def nice_scale_bar_length(size: float) -> Optional[float]:
-    """Return a rounded scale-bar length (multiples of 5)."""
+    """Return a rounded scale-bar length using a 1-2-5 progression."""
 
     if not np.isfinite(size) or size <= 0:
         return None
 
-    base_values = []
-    for exponent in range(0, 6):
-        factor = 10 ** exponent
-        for base in (5.0, 10.0, 15.0, 20.0, 25.0, 50.0, 75.0):
-            base_values.append(base * factor)
-    base_values = sorted(set(base_values))
+    target = float(size) / 1.2
+    if target <= 0:
+        return float(size)
 
-    target = size / 1.2
-    candidate = max((val for val in base_values if val <= target), default=None)
+    nice_bases = (1.0, 2.0, 2.5, 5.0, 10.0)
+    exponent = int(math.floor(math.log10(target))) if target > 0 else 0
+    scale = target / (10 ** exponent) if target > 0 else 1.0
+
+    candidate: Optional[float] = None
+    for base in nice_bases:
+        if base <= scale:
+            candidate = base
+        else:
+            break
+
     if candidate is None:
-        candidate = min((val for val in base_values if val >= target), default=5.0)
-    return float(candidate)
+        candidate = nice_bases[0]
+        exponent -= 1
+
+    length = candidate * (10 ** exponent)
+    length = min(length, float(size))
+    if length <= 0:
+        length = float(size)
+    return float(length)
 
 
 def _finalize_shape_figure(
@@ -1365,8 +1433,11 @@ def process_dm3_files(
     records: List[PreprocessedImage],
     shape_type: str,
     min_shape_size_input: float,
+    tuning: SegmentationTuning,
 ) -> List[Dict[str, np.ndarray]]:
-    """Segment cached payloads using stored GMM thresholds."""
+    """Segment cached payloads using stored GMM thresholds and tuning."""
+
+
 
     results: List[Dict[str, np.ndarray]] = []
     min_shape_size_value = float(min_shape_size_input)
@@ -1380,6 +1451,7 @@ def process_dm3_files(
             min_size_value=min_shape_size_value,
             measurement_unit=record.measurement_unit,
             min_area_px=5,
+            tuning=tuning,
         )
         seg["name"] = record.name
         results.append(seg)
@@ -1402,6 +1474,7 @@ def build_processing_key(
     file_key: str,
     shape_type: str,
     min_shape_size_input: float,
+    tuning: SegmentationTuning,
 ) -> str:
     """Return a stable hash describing the current processing inputs."""
 
@@ -1409,6 +1482,9 @@ def build_processing_key(
     hasher.update(file_key.encode("utf-8"))
     hasher.update(shape_type.encode("utf-8"))
     hasher.update(np.float64(min_shape_size_input).tobytes())
+    tuning_blob = json.dumps(asdict(tuning), sort_keys=True).encode("utf-8")
+    hasher.update(len(tuning_blob).to_bytes(8, "little"))
+    hasher.update(tuning_blob)
     return hasher.hexdigest()
 
 
@@ -1453,6 +1529,108 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
             f"{'standard error' if report_standard_error else 'standard deviation'} values."
         )
 
+
+    with st.expander("Advanced tuning controls", expanded=False):
+        st.caption(
+            "Temporary controls for experimenting with segmentation and watershed tuning."
+        )
+        col_tune_a, col_tune_b, col_tune_c = st.columns(3)
+        with col_tune_a:
+            threshold_scale = st.slider(
+                "Threshold scale", 0.1, 3.0, 1.0, 0.05, help="Multiply the GMM threshold."
+            )
+            threshold_offset = st.slider(
+                "Threshold offset", -0.5, 0.5, 0.0, 0.01, help="Additive adjustment to the threshold."
+            )
+            background_sigma = st.slider(
+                "Background sigma", 0.0, 200.0, 0.0, 5.0, help="Gaussian blur radius for background removal."
+            )
+            background_strength = st.slider(
+                "Background strength", 0.0, 2.0, 1.0, 0.05, help="Multiplier for the subtracted background."
+            )
+            ws_gradient_sigma = st.slider(
+                "Watershed gradient sigma",
+                0.0,
+                50.0,
+                15.0,
+                1.0,
+                help="High-pass filtering strength applied to the watershed preview.",
+            )
+        with col_tune_b:
+            closing_radius = st.slider(
+                "Closing radius (px)", 0, 10, 3, 1, help="Binary closing radius before watershed."
+            )
+            opening_radius = st.slider(
+                "Opening radius (px)", 0, 10, 0, 1, help="Binary opening radius before watershed."
+            )
+            distance_sigma = st.slider(
+                "Distance smoothing sigma",
+                0.0,
+                5.0,
+                1.0,
+                0.1,
+                help="Gaussian smoothing applied to the distance transform.",
+            )
+            h_maxima = st.slider(
+                "H-maxima prominence",
+                0.0,
+                10.0,
+                2.0,
+                0.1,
+                help="Controls marker extraction for watershed via h-maxima suppression.",
+            )
+        with col_tune_c:
+            pre_min_area = st.number_input(
+                "Pre-watershed min area (px)",
+                min_value=1,
+                max_value=50_000,
+                value=32,
+                step=1,
+                format="%d",
+            )
+            pre_hole_area = st.number_input(
+                "Pre-watershed hole area (px)",
+                min_value=1,
+                max_value=100_000,
+                value=256,
+                step=1,
+                format="%d",
+            )
+            post_min_area = st.number_input(
+                "Post-watershed min area (px)",
+                min_value=1,
+                max_value=50_000,
+                value=32,
+                step=1,
+                format="%d",
+            )
+            post_hole_area = st.number_input(
+                "Post-watershed hole area (px)",
+                min_value=1,
+                max_value=100_000,
+                value=512,
+                step=1,
+                format="%d",
+            )
+
+        tuning = SegmentationTuning(
+            threshold_scale=float(threshold_scale),
+            threshold_offset=float(threshold_offset),
+            closing_radius=int(closing_radius),
+            opening_radius=int(opening_radius),
+            pre_min_area_px=int(pre_min_area),
+            pre_hole_area_px=int(pre_hole_area),
+            post_min_area_px=int(post_min_area),
+            post_hole_area_px=int(post_hole_area),
+            distance_sigma=float(distance_sigma),
+            h_maxima=float(h_maxima),
+            background_sigma=float(background_sigma),
+            background_strength=float(background_strength),
+            watershed_gradient_sigma=float(ws_gradient_sigma),
+        )
+
+
+
     results: List[Dict[str, np.ndarray]] = []
 
     missing_scale_files: List[str] = []
@@ -1486,6 +1664,7 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
             file_key=file_key,
             shape_type=shape_type,
             min_shape_size_input=min_shape_size_value,
+            tuning=tuning,
         )
         cache_entry = st.session_state.get(SESSION_CACHE_KEY)
 
@@ -1497,6 +1676,7 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                     records=records,
                     shape_type=shape_type,
                     min_shape_size_input=min_shape_size_value,
+                    tuning=tuning,
                 )
             st.session_state[SESSION_CACHE_KEY] = {
                 "key": processing_key,
@@ -1540,8 +1720,14 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
             col_hist, col_ws = st.columns(2)
             with col_hist:
                 if hist_png:
+                    caption_parts: List[str] = []
                     if threshold_value is not None and np.isfinite(threshold_value):
-                        caption = f"Intensity histogram (threshold={threshold_value:.4f})"
+                        caption_parts.append(f"applied={float(threshold_value):.4f}")
+                    base_threshold_value = sel.get("base_threshold")
+                    if base_threshold_value is not None and np.isfinite(base_threshold_value):
+                        caption_parts.append(f"base={float(base_threshold_value):.4f}")
+                    if caption_parts:
+                        caption = f"Intensity histogram ({', '.join(caption_parts)})"
                     else:
                         caption = "Intensity histogram"
                     st.image(hist_png, caption=caption, use_container_width=True)
