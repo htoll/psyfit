@@ -31,6 +31,36 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 
+_PEAK_FOOTPRINT = np.ones((3, 3), dtype=int)
+_INTERP_GRID_CACHE = {}
+_SKIP_RESULT = object()
+
+
+def _gaussian_residuals(params, x, y, z):
+    A, x0, sx, y0, sy, offset = params
+    model = A * np.exp(-((x - x0) ** 2 / (2 * sx ** 2) + (y - y0) ** 2 / (2 * sy ** 2))) + offset
+    return model - z
+
+
+def _get_interp_grids(orig_shape, interp_shape):
+    key = (orig_shape[0], orig_shape[1], interp_shape[0], interp_shape[1])
+    cached = _INTERP_GRID_CACHE.get(key)
+    if cached is None:
+        H, W = interp_shape
+        if W > 1:
+            x_lin = np.linspace(0, orig_shape[1] - 1, W, dtype=np.float64)
+        else:
+            x_lin = np.zeros(W, dtype=np.float64)
+        if H > 1:
+            y_lin = np.linspace(0, orig_shape[0] - 1, H, dtype=np.float64)
+        else:
+            y_lin = np.zeros(H, dtype=np.float64)
+        grid_x, grid_y = np.meshgrid(x_lin, y_lin)
+        cached = (grid_x.ravel(), grid_y.ravel())
+        _INTERP_GRID_CACHE[key] = cached
+    return cached
+
+
 def HWT_aesthetic():
     sns.set_style("ticks")
     sns.set_context("notebook", font_scale=1.5,
@@ -42,7 +72,7 @@ def HWT_aesthetic():
     sns.despine()
     return palette 
 
-def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3):
+def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um=0.1, sig_threshold=0.3):
     image_data, metadata = sif_parser.np_open(sif, ignore_corrupt=True)
     image_data = image_data[0]  # (H, W)
 
@@ -57,6 +87,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 
     radius_um_fine = 0.5
     radius_pix_fine = int(radius_um_fine / pix_size_um)
+    pix_size_um_sq = pix_size_um ** 2
 
     # --- Crop image if region specified ---
     region = str(region)
@@ -80,9 +111,9 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
     threshold_abs = np.mean(smoothed_image) + threshold * np.std(smoothed_image)*0.1
 
     if signal == 'UCNP':
-        coords = peak_local_max(smoothed_image, min_distance=suppression_radius, 
-                                threshold_abs=threshold_abs,         
-                                footprint=np.ones((3, 3))      # tighter NMS 
+        coords = peak_local_max(smoothed_image, min_distance=suppression_radius,
+                                threshold_abs=threshold_abs,
+                                footprint=_PEAK_FOOTPRINT      # tighter NMS
                                )
     else:
         blobs = blob_log(smoothed_image, min_sigma=0.8, max_sigma=3, num_sigma=5, threshold=5 * threshold)
@@ -90,7 +121,6 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 
     #print(f"{os.path.basename(sif)}: Found {len(coords)} peaks in region {region}")
     coords = [tuple(c) for c in coords]  # list of (y, x)
-    results = []
     seen = set()  # to avoid infinite loops on duplicates
 
     i = 0
@@ -128,6 +158,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 
 
     results = []
+    fit_cache = {}
     for center_y, center_x in coords:
         # Extract subregion
         sub_img, x0_idx, y0_idx = extract_subregion(image_data_cps, center_x, center_y, radius_pix_fine)
@@ -140,6 +171,14 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
         local_y, local_x = local_peak[0]
         center_x_refined = x0_idx + local_x
         center_y_refined = y0_idx + local_y
+
+        cache_key = (int(center_y_refined), int(center_x_refined))
+        cached_result = fit_cache.get(cache_key)
+        if cached_result is _SKIP_RESULT:
+            continue
+        if cached_result is not None:
+            results.append(cached_result.copy())
+            continue
 
         # Extract finer subregion
         sub_img_fine, x0_idx_fine, y0_idx_fine = extract_subregion(
@@ -164,13 +203,11 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
         # z_flat = sub_img_interp.ravel() #∆ variable name 250604
         # switch from interp to fitting pixels 250916, noted that we were understimating brightness
         interp_size = 20
-        sub_img_interp = zoom(sub_img_fine, interp_size / sub_img_fine.shape[0], order=1)
-        H, W = sub_img_interp.shape
-        x_indices, y_indices = np.meshgrid(np.arange(W), np.arange(H))
-        x_coords = ((x_indices / (W-1)) * (sub_img_fine.shape[1]-1) + x0_idx_fine) * pix_size_um
-        y_coords = ((y_indices / (H-1)) * (sub_img_fine.shape[0]-1) + y0_idx_fine) * pix_size_um
-        x_flat = x_coords.ravel()
-        y_flat = y_coords.ravel()
+        zoom_factor = interp_size / sub_img_fine.shape[0]
+        sub_img_interp = zoom(sub_img_fine, zoom_factor, order=1)
+        base_x_flat, base_y_flat = _get_interp_grids(sub_img_fine.shape, sub_img_interp.shape)
+        x_flat = (base_x_flat + x0_idx_fine) * pix_size_um
+        y_flat = (base_y_flat + y0_idx_fine) * pix_size_um
         z_flat = sub_img_interp.ravel()
 
         # Initial guess
@@ -183,41 +220,31 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 
         # Fit
         try:
-            #popt, _ = curve_fit(gaussian2d, (x_flat, y_flat), z_flat, p0=p0)
-            def residuals(params, x, y, z):
-                A, x0, sx, y0, sy, offset = params
-                model = A * np.exp(-((x - x0)**2 / (2 * sx**2) + (y - y0)**2 / (2 * sy**2))) + offset
-                return model - z
-
-            # region = str(region)
-            # if region == '4':
-            #     sigma_ub = 0.8 #for wider NIR peaks
-            #     sig_threshold = max(sig_threshold, SIGMA_UB)  # keep post-filter consistent
-            # else:
-            #     sigma_ub = 0.5
             sigma_ub = 0.3
 
             lb = [1, x0_guess - 1, 0.0, y0_guess - 1, 0.0, 0.0]
             ub = [2 * amp_guess, x0_guess + 1, sigma_ub, y0_guess + 1, sigma_ub, offset_guess * 1.2]
 
             # Perform fit
-            res = least_squares(residuals, p0, args=(x_flat, y_flat, z_flat), bounds=(lb, ub))
+            res = least_squares(_gaussian_residuals, p0, args=(x_flat, y_flat, z_flat), bounds=(lb, ub))
             popt = res.x
             amp_fit, x0_fit, sigx_fit, y0_fit, sigy_fit, offset_fit = popt
-            brightness_fit = 2 * np.pi * amp_fit * sigx_fit * sigy_fit / pix_size_um**2
+            brightness_fit = 2 * np.pi * amp_fit * sigx_fit * sigy_fit / pix_size_um_sq
             roi_min = np.min(sub_img_fine)
             brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * roi_min
             #brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * offset_fit
 
             if brightness_integrated > 1e9 or brightness_integrated < 1:
                 print(f"Excluded peak for brightness {brightness_integrated:.2e}")
+                fit_cache[cache_key] = _SKIP_RESULT
                 continue
             EPS = 1e-3
             if sigx_fit > sig_threshold + EPS or sigy_fit > sig_threshold + EPS:
+                fit_cache[cache_key] = _SKIP_RESULT
                 continue
 
             # Note: coordinates are already RELATIVE to cropped image
-            results.append({
+            result = {
                 'x_pix': center_x_refined,
                 'y_pix': center_y_refined,
                 'x_um': x0_fit,
@@ -227,9 +254,12 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
                 'sigy_fit': sigy_fit,
                 'brightness_fit': brightness_fit,
                 'brightness_integrated': brightness_integrated
-            })
+            }
+            results.append(result)
+            fit_cache[cache_key] = result.copy()
 
         except RuntimeError:
+            fit_cache[cache_key] = _SKIP_RESULT
             continue
 
     df = pd.DataFrame(results)
