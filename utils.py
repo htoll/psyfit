@@ -74,16 +74,56 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
     # else → 'all': use full image
 
     # --- Detect peaks ---
-    smoothed_image = gaussian_filter(image_data_cps, sigma=1)
+    smoothed_image = gaussian_filter(image_data_cps, sigma=0.6)
+    suppression_radius = max(2, int(0.6 * radius_pix_fine))
+
     threshold_abs = np.mean(smoothed_image) + threshold * np.std(smoothed_image)*0.1
 
     if signal == 'UCNP':
-        coords = peak_local_max(smoothed_image, min_distance=5, threshold_abs=threshold_abs)
+        coords = peak_local_max(smoothed_image, min_distance=suppression_radius, 
+                                threshold_abs=threshold_abs,         
+                                footprint=np.ones((3, 3))      # tighter NMS)
     else:
-        blobs = blob_log(smoothed_image, min_sigma=1, max_sigma=3, num_sigma=5, threshold=5 * threshold)
+        blobs = blob_log(smoothed_image, min_sigma=0.8, max_sigma=3, num_sigma=5, threshold=5 * threshold)
         coords = blobs[:, :2]
 
     #print(f"{os.path.basename(sif)}: Found {len(coords)} peaks in region {region}")
+    coords = [tuple(c) for c in coords]  # list of (y, x)
+    results = []
+    seen = set()  # to avoid infinite loops on duplicates
+    
+    while i < len(coords):
+        center_y, center_x = coords[i]
+        i += 1
+        key = (int(center_y), int(center_x))
+        if key in seen:
+            continue
+        seen.add(key)
+    
+        # Extract subregion
+        sub_img, x0_idx, y0_idx = extract_subregion(image_data_cps, center_x, center_y, radius_pix_fine)
+    
+        # Quick local check for multiple peaks in this subwindow
+        sub_blur = gaussian_filter(sub_img, sigma=0.5)
+        # relative threshold: 30% of local max avoids noise, keeps siblings
+        loc_thr = sub_blur.max() * 0.3
+        local_peaks = peak_local_max(
+            sub_blur,
+            min_distance=2,
+            threshold_abs=loc_thr,
+            exclude_border=False
+        )
+
+    if local_peaks.shape[0] > 1:
+        # enqueue each local maximum as its own candidate (translated to image coords)
+        for ly, lx in local_peaks:
+            ny = y0_idx + ly
+            nx = x0_idx + lx
+            # skip if extremely close to any already-known coord
+            if all((abs(ny - cy) > 1 or abs(nx - cx) > 1) for cy, cx in coords):
+                coords.append((ny, nx))
+        continue  # don't fit the ambiguous merged center; handle the new ones
+
 
     results = []
     for center_y, center_x in coords:
