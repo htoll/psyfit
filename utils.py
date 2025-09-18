@@ -92,7 +92,8 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
     coords = [tuple(c) for c in coords]  # list of (y, x)
     results = []
     seen = set()  # to avoid infinite loops on duplicates
-    
+
+    i = 0
     while i < len(coords):
         center_y, center_x = coords[i]
         i += 1
