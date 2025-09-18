@@ -115,14 +115,14 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
             exclude_border=False
         )
 
-    if local_peaks.shape[0] > 1:
-        # enqueue each local maximum as its own candidate (translated to image coords)
-        for ly, lx in local_peaks:
-            ny = y0_idx + ly
-            nx = x0_idx + lx
-            # skip if extremely close to any already-known coord
-            if all((abs(ny - cy) > 1 or abs(nx - cx) > 1) for cy, cx in coords):
-                coords.append((ny, nx))
+        if local_peaks.shape[0] > 1:
+            # enqueue each local maximum as its own candidate (translated to image coords)
+            for ly, lx in local_peaks:
+                ny = y0_idx + ly
+                nx = x0_idx + lx
+                # skip if extremely close to any already-known coord
+                if all((abs(ny - cy) > 1 or abs(nx - cx) > 1) for cy, cx in coords):
+                    coords.append((ny, nx))
         continue  # don't fit the ambiguous merged center; handle the new ones
 
 
