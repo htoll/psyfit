@@ -416,7 +416,7 @@ def run():
                 st.download_button(
                     label="Download PSFs (HTML)",
                     data=html_bytes,
-                    file_name=f"{selected_file_name}.html",
+                    file_name=f"{os.path.splitext(selected_file_name)[0]}.html",
                     mime="text/html",
                 )
 
