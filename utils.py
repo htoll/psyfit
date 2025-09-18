@@ -179,7 +179,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um=0.1
         if cached_result is not None:
             # A prior candidate already fit this PSF; skip duplicating it.
 
-            results.append(cached_result.copy
+            results.append(cached_result.copy)
 
         # Extract finer subregion
         sub_img_fine, x0_idx_fine, y0_idx_fine = extract_subregion(
