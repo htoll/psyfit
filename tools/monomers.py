@@ -255,7 +255,8 @@ def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=
         pix_size_um=pix_size_um,
         sig_threshold=sig_threshold,
     )
-
+def df_to_csv_bytes(df):
+    return df.to_csv(index=False).encode("utf-8")
 
 def run():
     col1, col2 = st.columns([1, 2])
