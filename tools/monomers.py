@@ -419,6 +419,17 @@ def run():
                     file_name=f"{selected_file_name}.html",
                     mime="text/html",
                 )
+
+                if combined_df is not None and not combined_df.empty:
+                    csv_bytes = df_to_csv_bytes(combined_df)
+                    st.download_button(
+                        label="Download as CSV",
+                        data=csv_bytes,
+                        file_name=f"{os.path.splitext(selected_file_name)[0]}_compiled.csv",
+                        mime="text/csv",
+                    )
+                else:
+                    st.info("No compiled data available to download yet.")
             else:
                 st.error(f"Data for file '{selected_file_name}' not found.")
 
