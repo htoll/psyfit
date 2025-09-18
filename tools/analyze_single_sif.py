@@ -89,7 +89,7 @@ def run():
         -Dye signal sets sensitivity of blob detection
         ''')
         diagram = """ Splits sif into quadrants (256x256 px):
-        ┌─┬─┐  
+          ┌─┬─┐  
         │ 1 │ 2 │  
         ├─┼─┤  
         │ 3 │ 4 │  
