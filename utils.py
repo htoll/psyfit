@@ -82,7 +82,8 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
     if signal == 'UCNP':
         coords = peak_local_max(smoothed_image, min_distance=suppression_radius, 
                                 threshold_abs=threshold_abs,         
-                                footprint=np.ones((3, 3))      # tighter NMS)
+                                footprint=np.ones((3, 3))      # tighter NMS 
+                               )
     else:
         blobs = blob_log(smoothed_image, min_sigma=0.8, max_sigma=3, num_sigma=5, threshold=5 * threshold)
         coords = blobs[:, :2]
