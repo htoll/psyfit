@@ -95,6 +95,7 @@ def run():
         │ 3 │ 4 │  
         └─┴─┘  
         """
+        sig_threshold = st.number_input("Sigma Threshold", min_value = 0.1, value = 0.25, help= 'Set sigma stringency in pixels')
         region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
 
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:
@@ -118,7 +119,7 @@ def run():
 
     if st.session_state.analyze_clicked and uploaded_files:
         try:
-            processed_data, combined_df = process_files(uploaded_files, region, threshold=threshold, signal=signal)
+            processed_data, combined_df = process_files(uploaded_files, region, threshold=threshold, signal=signal, sig_threshold=sig_threshold)
 
             if len(uploaded_files) > 1:
                 file_options = [f.name for f in uploaded_files]
