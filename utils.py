@@ -288,7 +288,7 @@ def integrate_sif(
 
         # Fit
         try:
-            sigma_ub = 0.3
+            sigma_ub = 0.3 * pix_size_um
 
             lb = [1, x0_guess - 1, 0.0, y0_guess - 1, 0.0, 0.0]
             ub = [2 * amp_guess, x0_guess + 1, sigma_ub, y0_guess + 1, sigma_ub, offset_guess * 1.2]
@@ -307,6 +307,7 @@ def integrate_sif(
                 fit_cache[cache_key] = _SKIP_RESULT
                 continue
             EPS = 1e-3
+            sig_threshold = sig_threshold * pix_size_um
             if sigx_fit > sig_threshold + EPS or sigy_fit > sig_threshold + EPS:
                 fit_cache[cache_key] = _SKIP_RESULT
                 continue
