@@ -9,6 +9,7 @@ import platform
 import subprocess
 from datetime import datetime, timezone
 import streamlit as st
+from zoneinfo import ZoneInfo
 
 # Ensure local imports work when running "streamlit run app.py"
 REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
@@ -32,7 +33,7 @@ def _repo_last_updated(repo_path: str) -> str:
         return "unknown"
 
     try:
-        timestamp = datetime.fromtimestamp(int(timestamp_raw), tz=timezone.utc).astimezone()
+        timestamp = datetime.fromtimestamp(int(timestamp_raw), tz=timezone.utc).astimezone(ZoneInfo("America/New_York"))
     except (ValueError, OSError, OverflowError):
         return "unknown"
 
