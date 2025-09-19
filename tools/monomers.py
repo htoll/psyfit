@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import plotly.express as px
 from matplotlib.lines import Line2D
+import tools.process_files as process_files_module
 
 from utils import integrate_sif, plot_histogram, HWT_aesthetic
 
