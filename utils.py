@@ -108,7 +108,21 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um=0.1
     smoothed_image = gaussian_filter(image_data_cps, sigma=0.6)
     suppression_radius = max(2, int(0.6 * radius_pix_fine))
 
-    threshold_abs = np.mean(smoothed_image) + threshold * np.std(smoothed_image)*0.1
+    mean_val = float(np.mean(smoothed_image))
+    std_val = float(np.std(smoothed_image))
+    base_threshold = mean_val + threshold * std_val * 0.1
+
+    median_val = float(np.median(smoothed_image))
+    mad = float(np.median(np.abs(smoothed_image - median_val)))
+    if mad > 0:
+        robust_sigma = mad / 0.6745
+    else:
+        robust_sigma = std_val
+    robust_sigma = max(robust_sigma, 1e-6)
+    noise_floor = robust_sigma
+
+    adaptive_threshold = median_val + threshold * robust_sigma * 0.2
+    threshold_abs = max(base_threshold, adaptive_threshold)
 
     if signal == 'UCNP':
         coords = peak_local_max(smoothed_image, min_distance=suppression_radius,
@@ -215,6 +229,16 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um=0.1
         # Initial guess
         amp_guess = np.max(sub_img_fine)
         offset_guess = np.min(sub_img_fine)
+        local_baseline = float(np.median(sub_img_fine))
+        local_mad = float(np.median(np.abs(sub_img_fine - local_baseline)))
+        if local_mad > 0:
+            local_noise = local_mad / 0.6745
+        else:
+            local_noise = noise_floor
+        local_noise = max(local_noise, noise_floor)
+        if amp_guess - local_baseline < 1.5 * local_noise:
+            fit_cache[cache_key] = _SKIP_RESULT
+            continue
         x0_guess = center_x_refined * pix_size_um
         y0_guess = center_y_refined * pix_size_um
         sigma_guess = 0.3
