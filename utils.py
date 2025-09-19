@@ -1,11 +1,11 @@
 import sif_parser
 import numpy as np
 import pandas as pd
-from skimage.feature import peak_local_max
 from skimage.feature import blob_log
 
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
+from sklearn.neighbors import KDTree
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
@@ -34,6 +34,103 @@ import plotly.graph_objects as go
 _PEAK_FOOTPRINT = np.ones((3, 3), dtype=int)
 _INTERP_GRID_CACHE = {}
 _SKIP_RESULT = object()
+
+
+def _sklearn_peak_local_max(
+    image,
+    *,
+    min_distance=1,
+    threshold_abs=None,
+    num_peaks=None,
+    exclude_border=True,
+    footprint=None,
+):
+    """Lightweight peak finder backed by scikit-learn's KDTree."""
+
+    arr = np.asarray(image, dtype=np.float64)
+    if arr.size == 0:
+        return np.empty((0, arr.ndim), dtype=int)
+
+    finite_mask = np.isfinite(arr)
+    if not finite_mask.any():
+        return np.empty((0, arr.ndim), dtype=int)
+
+    finite_vals = arr[finite_mask]
+    if threshold_abs is None:
+        threshold_abs_val = float(finite_vals.min())
+    else:
+        threshold_abs_val = float(threshold_abs)
+
+    candidate_mask = (arr > threshold_abs_val) & finite_mask
+    max_peaks = None
+    if num_peaks is not None and not np.isinf(num_peaks):
+        max_peaks = max(0, int(num_peaks))
+        if max_peaks == 0:
+            return np.empty((0, arr.ndim), dtype=int)
+
+    if not candidate_mask.any():
+        if max_peaks is not None and max_peaks > 0:
+            flat_idx = int(np.nanargmax(arr))
+            coord = np.array(np.unravel_index(flat_idx, arr.shape), dtype=int)
+            return coord.reshape(1, -1)
+        return np.empty((0, arr.ndim), dtype=int)
+
+    coords = np.argwhere(candidate_mask)
+    intensities = arr[candidate_mask]
+
+    if coords.shape[0] == 0:
+        return np.empty((0, arr.ndim), dtype=int)
+
+    if exclude_border:
+        border = int(np.ceil(min_distance))
+        if border > 0:
+            valid_mask = np.ones(coords.shape[0], dtype=bool)
+            for axis, size in enumerate(arr.shape):
+                valid_mask &= coords[:, axis] >= border
+                valid_mask &= coords[:, axis] < size - border
+            coords = coords[valid_mask]
+            intensities = intensities[valid_mask]
+            if coords.shape[0] == 0:
+                if max_peaks is not None and max_peaks > 0:
+                    flat_idx = int(np.nanargmax(arr))
+                    coord = np.array(np.unravel_index(flat_idx, arr.shape), dtype=int)
+                    return coord.reshape(1, -1)
+                return np.empty((0, arr.ndim), dtype=int)
+
+    order = np.argsort(intensities)[::-1]
+    coords = coords[order]
+    intensities = intensities[order]
+
+    if coords.shape[0] == 0:
+        return np.empty((0, arr.ndim), dtype=int)
+
+    radius = float(max(min_distance, 0.0))
+    if footprint is not None:
+        footprint = np.asarray(footprint)
+        if footprint.size > 0:
+            offsets = [(dim - 1) / 2.0 for dim in footprint.shape]
+            radius = max([radius, *offsets])
+
+    if radius <= 0.0:
+        if max_peaks is None:
+            return coords.copy()
+        return coords[:max_peaks].copy()
+
+    coords_float = coords.astype(np.float64, copy=False)
+    tree = KDTree(coords_float, leaf_size=16, metric="minkowski", p=np.inf)
+    suppressed = np.zeros(coords.shape[0], dtype=bool)
+    accepted = []
+
+    for idx, point in enumerate(coords_float):
+        if suppressed[idx]:
+            continue
+        accepted.append(coords[idx])
+        if max_peaks is not None and len(accepted) >= max_peaks:
+            break
+        neighbor_idx = tree.query_radius(point.reshape(1, -1), r=radius, return_distance=False)[0]
+        suppressed[neighbor_idx] = True
+
+    return np.asarray(accepted, dtype=int)
 
 
 def _estimate_sigma_from_moment(sub_img, pix_size_um, baseline, min_sigma, max_sigma):
@@ -189,10 +286,12 @@ def integrate_sif(
     threshold_abs = max(base_threshold, adaptive_threshold)
 
     if signal == 'UCNP':
-        coords = peak_local_max(smoothed_image, min_distance=suppression_radius,
-                                threshold_abs=threshold_abs,
-                                footprint=_PEAK_FOOTPRINT      # tighter NMS
-                               )
+        coords = _sklearn_peak_local_max(
+            smoothed_image,
+            min_distance=suppression_radius,
+            threshold_abs=threshold_abs,
+            footprint=_PEAK_FOOTPRINT,
+        )
     else:
         blobs = blob_log(smoothed_image, min_sigma=0.8, max_sigma=3, num_sigma=5, threshold=5 * threshold)
         coords = blobs[:, :2]
@@ -217,11 +316,11 @@ def integrate_sif(
         sub_blur = gaussian_filter(sub_img, sigma=0.5)
         # relative threshold: 30% of local max avoids noise, keeps siblings
         loc_thr = sub_blur.max() * 0.3
-        local_peaks = peak_local_max(
+        local_peaks = _sklearn_peak_local_max(
             sub_blur,
             min_distance=2,
             threshold_abs=loc_thr,
-            exclude_border=False
+            exclude_border=False,
         )
 
         if local_peaks.shape[0] > 1:
@@ -243,7 +342,7 @@ def integrate_sif(
 
         # Refine peak
         blurred = gaussian_filter(sub_img, sigma=1)
-        local_peak = peak_local_max(blurred, num_peaks=1)
+        local_peak = _sklearn_peak_local_max(blurred, num_peaks=1)
         if local_peak.shape[0] == 0:
             continue
         local_y, local_x = local_peak[0]
