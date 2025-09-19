@@ -405,7 +405,7 @@ def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=
             with open(self._path, "rb") as f:
                 return memoryview(f.read())
 
-    uploads = [_FakeUpload(name, path) for (name, path) in saved_records]
+    uploads = [_FakeUpload(name, path) for name, path, *_ in saved_records]
     pf = getattr(process_files_module.process_files, "__wrapped__", None)
     if pf is None:
         raise RuntimeError("process_files.__wrapped__ not found; cannot bypass Streamlit cache.")
