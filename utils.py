@@ -113,6 +113,7 @@ def integrate_sif(
     signal='UCNP',
     pix_size_um=0.1,
     sig_threshold=0.25,
+    min_sigma_um = 0.15,
     *,
     min_fit_separation_px=3,
     min_r2 = 0.85
@@ -131,6 +132,10 @@ def integrate_sif(
         Minimum coefficient of determination (R²) required for a fitted PSF to
         be accepted. Set to ``None`` to disable the residual-based quality
         filter. Defaults to 0.85.
+        
+    min_sigma_um : float, optional
+        Minimum allowed Gaussian sigma (in microns). Fits smaller than this
+        threshold are discarded. Defaults to 0.15 µm (≈150 nm).
     """
     image_data, metadata = sif_parser.np_open(sif, ignore_corrupt=True)
     image_data = image_data[0]  # (H, W)
@@ -323,7 +328,7 @@ def integrate_sif(
             continue
         x0_guess = center_x_refined * pix_size_um
         y0_guess = center_y_refined * pix_size_um
-        sigma_min = 0.05
+        sigma_min = max(float(min_sigma_um), 0.0)
         sigma_max = max(float(sig_threshold), sigma_min)
         sigma_ub = sigma_max  # bounds expressed in microns to match coordinate scaling
         baseline_for_sigma = min(local_baseline + local_noise, amp_guess)
@@ -339,7 +344,7 @@ def integrate_sif(
         # Fit
         try:
 
-            lb = [1, x0_guess - 1, 0.0, y0_guess - 1, 0.0, 0.0]
+            lb = [1, x0_guess - 1, sigma_min, y0_guess - 1, sigma_min, 0.0]
             ub = [2 * amp_guess, x0_guess + 1, sigma_ub, y0_guess + 1, sigma_ub, offset_guess * 1.2]
 
             # Perform fit
@@ -375,6 +380,9 @@ def integrate_sif(
                 continue
             EPS = 1e-3
             if sigx_fit > sig_threshold + EPS or sigy_fit > sig_threshold + EPS:
+                fit_cache[cache_key] = _SKIP_RESULT
+                continue
+            if sigx_fit < sigma_min - EPS or sigy_fit < sigma_min - EPS:
                 fit_cache[cache_key] = _SKIP_RESULT
                 continue
 
