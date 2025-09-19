@@ -72,7 +72,26 @@ def HWT_aesthetic():
     sns.despine()
     return palette 
 
-def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um=0.1, sig_threshold=0.3):
+def integrate_sif(
+    sif,
+    threshold=1,
+    region='all',
+    signal='UCNP',
+    pix_size_um=0.1,
+    sig_threshold=0.3,
+    *,
+    min_fit_separation_px=3,
+):
+    """Detect peaks in a SIF image and fit local 2D Gaussian PSFs.
+
+    Parameters
+    ----------
+    min_fit_separation_px : float, optional
+        Minimum centre-to-centre distance (in pixels) required between accepted
+        fits. Candidates closer than this distance to an existing result are
+        skipped. Default is 3 pixels. Pass ``0`` or ``None`` to disable the
+        separation filter.
+    """
     image_data, metadata = sif_parser.np_open(sif, ignore_corrupt=True)
     image_data = image_data[0]  # (H, W)
 
@@ -200,6 +219,29 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um=0.1
         sub_img_fine, x0_idx_fine, y0_idx_fine = extract_subregion(
             image_data_cps, center_x_refined, center_y_refined, radius_pix_fine
         )
+        local_peak_value = float(np.max(sub_img_fine)) if sub_img_fine.size else 0.0
+
+        replace_index = None
+        replace_cache_key = None
+        if min_fit_separation_px is not None and min_fit_separation_px > 0:
+            min_sep_sq = float(min_fit_separation_px) ** 2
+            closest_idx = None
+            closest_peak = None
+            for idx, existing in enumerate(results):
+                dx = float(existing.get('x_pix', 0.0)) - center_x_refined
+                dy = float(existing.get('y_pix', 0.0)) - center_y_refined
+                if dx * dx + dy * dy <= min_sep_sq:
+                    existing_peak = float(existing.get('local_peak_value', existing.get('brightness_integrated', 0.0)))
+                    if closest_idx is None or existing_peak > closest_peak:
+                        closest_idx = idx
+                        closest_peak = existing_peak
+            if closest_idx is not None:
+                if closest_peak >= local_peak_value:
+                    fit_cache[cache_key] = _SKIP_RESULT
+                    continue
+                replace_index = closest_idx
+                existing = results[closest_idx]
+                replace_cache_key = (int(existing.get('y_pix', 0)), int(existing.get('x_pix', 0)))
         # # Interpolate to 20x20 grid (like MATLAB)
         # interp_size = 20
         # zoom_factor = interp_size / sub_img_fine.shape[0]
@@ -279,9 +321,15 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um=0.1
                 'sigx_fit': sigx_fit,
                 'sigy_fit': sigy_fit,
                 'brightness_fit': brightness_fit,
-                'brightness_integrated': brightness_integrated
+                'brightness_integrated': brightness_integrated,
+                'local_peak_value': local_peak_value,
             }
-            results.append(result)
+            if replace_index is not None:
+                if replace_cache_key is not None and replace_cache_key != cache_key:
+                    fit_cache.pop(replace_cache_key, None)
+                results[replace_index] = result
+            else:
+                results.append(result)
             fit_cache[cache_key] = result.copy()
 
         except RuntimeError:
