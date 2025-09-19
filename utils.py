@@ -115,6 +115,7 @@ def integrate_sif(
     sig_threshold=0.25,
     *,
     min_fit_separation_px=3,
+    min_r2 = 0.85
 ):
     """Detect peaks in a SIF image and fit local 2D Gaussian PSFs.
 
@@ -125,6 +126,11 @@ def integrate_sif(
         fits. Candidates closer than this distance to an existing result are
         skipped. Default is 3 pixels. Pass ``0`` or ``None`` to disable the
         separation filter.
+
+    min_r2 : float or None, optional
+        Minimum coefficient of determination (R²) required for a fitted PSF to
+        be accepted. Set to ``None`` to disable the residual-based quality
+        filter. Defaults to 0.85.
     """
     image_data, metadata = sif_parser.np_open(sif, ignore_corrupt=True)
     image_data = image_data[0]  # (H, W)
@@ -340,6 +346,24 @@ def integrate_sif(
             res = least_squares(_gaussian_residuals, p0, args=(x_flat, y_flat, z_flat), bounds=(lb, ub))
             popt = res.x
             amp_fit, x0_fit, sigx_fit, y0_fit, sigy_fit, offset_fit = popt
+            
+            # Evaluate residual quality of the fitted Gaussian on the
+            # interpolated sub-image to filter out noisy / poorly modelled PSFs.
+            exp_term = -(
+                (x_flat - x0_fit) ** 2 / (2 * sigx_fit ** 2)
+                + (y_flat - y0_fit) ** 2 / (2 * sigy_fit ** 2)
+            )
+            model_flat = amp_fit * np.exp(exp_term) + offset_fit
+            residual_flat = z_flat - model_flat
+            ss_res = float(np.sum(residual_flat ** 2))
+            ss_tot = float(np.sum((z_flat - z_flat.mean()) ** 2))
+            if ss_tot <= np.finfo(float).eps:
+                fit_r2 = 1.0 if ss_res <= np.finfo(float).eps else -np.inf
+            else:
+                fit_r2 = 1.0 - ss_res / ss_tot
+            if min_r2 is not None and fit_r2 < min_r2:
+                fit_cache[cache_key] = _SKIP_RESULT
+                continue
             brightness_fit = 2 * np.pi * amp_fit * sigx_fit * sigy_fit / pix_size_um_sq
             roi_min = np.min(sub_img_fine)
             brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * roi_min
@@ -366,6 +390,8 @@ def integrate_sif(
                 'brightness_fit': brightness_fit,
                 'brightness_integrated': brightness_integrated,
                 'local_peak_value': local_peak_value,
+                'fit_r2': fit_r2,
+
             }
             if replace_index is not None:
                 if replace_cache_key is not None and replace_cache_key != cache_key:
