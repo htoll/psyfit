@@ -167,7 +167,7 @@ def _run_integrate_sif(
     region,
     signal,
     pix_size_um=0.1,
-    sig_threshold=0.3,
+    sig_threshold=0.2,
 ):
     with _patched_dataframe_constructor():
         df, image_data_cps = integrate_sif(
