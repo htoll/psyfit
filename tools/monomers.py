@@ -1,16 +1,18 @@
 # tools/monomers.py
 import streamlit as st
 import os, io, tempfile, hashlib, re
+from contextlib import contextmanager
+
 import pandas as pd
 import numpy as np
 from matplotlib.colors import LogNorm
+from matplotlib.patches import Circle
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import plotly.express as px
 from matplotlib.lines import Line2D
 
-from utils import plot_brightness, plot_histogram, HWT_aesthetic
-from tools.process_files import process_files
+from utils import integrate_sif, plot_histogram, HWT_aesthetic
 
 CATEGORY_ORDER = ["Monomers", "Dimers", "Trimers", "Multimers"]
 CATEGORY_COLORS = {
@@ -19,6 +21,9 @@ CATEGORY_COLORS = {
     "Trimers":   "#DE8F05",  # orange
     "Multimers": "#D55E00",  # red
 }
+
+CACHE_SESSION_KEY = "monomers_file_cache"
+
 
 def thresholds_from_single_brightness(single_ucnp_brightness: float):
     """
@@ -37,27 +42,185 @@ def _hash_file(uploaded_file):
     return h
 
 
+def _hash_file_path(path: str, chunk_size: int = 1 << 20) -> str:
+    """Compute an md5 hash for an on-disk file path."""
+    h = hashlib.md5()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(chunk_size), b""):
+                if not chunk:
+                    break
+                h.update(chunk)
+    except FileNotFoundError:
+        return ""
+    return h.hexdigest()
+
+
 def _normalize_saved_values(values_iterable):
-    """
-    Accept values that might be either:
-      - (display_name, temp_path) tuples (new format), OR
-      - plain path strings from older runs (legacy)
-    Return a list of (display_name, temp_path) tuples.
-    """
+    """Return a list of (display_name, temp_path, file_hash) tuples."""
     normalized = []
     for v in values_iterable:
-        if isinstance(v, (tuple, list)) and len(v) == 2:
-            name, path = v
-            normalized.append((str(name), str(path)))
+        name = path = file_hash = None
+        if isinstance(v, (tuple, list)):
+            if len(v) >= 3:
+                name, path, file_hash = v[:3]
+            elif len(v) == 2:
+                name, path = v
+                file_hash = _hash_file_path(path)
         elif isinstance(v, str):
+            path = v
             name = os.path.basename(v)
-            normalized.append((name, v))
+            file_hash = _hash_file_path(v)
+
+        if name is None or path is None:
+            continue
+        if not file_hash:
+            file_hash = _hash_file_path(path)
+        normalized.append((str(name), str(path), str(file_hash)))
+
     return normalized
 
-from matplotlib.patches import Circle
-from matplotlib.colors import LogNorm
-import matplotlib.pyplot as plt
-import numpy as np
+
+def _ensure_triplet_saved_files(saved_files: dict) -> None:
+    """Mutate saved_files so every entry is a (name, path, hash) triple."""
+    for key, value in list(saved_files.items()):
+        name = path = file_hash = None
+        if isinstance(value, str):
+            path = value
+            name = os.path.basename(path)
+        elif isinstance(value, (tuple, list)):
+            if len(value) >= 3:
+                name, path, file_hash = value[:3]
+            elif len(value) == 2:
+                name, path = value
+
+        if name is None or path is None:
+            saved_files.pop(key, None)
+            continue
+
+        if not file_hash:
+            file_hash = _hash_file_path(path)
+
+        saved_files[key] = (str(name), str(path), str(file_hash))
+
+
+def _prune_cached_results(valid_hashes):
+    cache = st.session_state.get(CACHE_SESSION_KEY)
+    if not cache:
+        return
+
+    for cache_key in list(cache.keys()):
+        if cache_key[0] not in valid_hashes:
+            cache.pop(cache_key, None)
+
+
+@contextmanager
+def _patched_dataframe_constructor():
+    original_ctor = pd.DataFrame
+
+    def _dataframe_with_callable_copy(data=None, *args, **kwargs):
+        if isinstance(data, (list, tuple)):
+            fixed = []
+            changed = False
+            for item in data:
+                if callable(item) and getattr(item, "__name__", "") == "copy":
+                    owner = getattr(item, "__self__", None)
+                    if isinstance(owner, dict):
+                        fixed.append(item())
+                        changed = True
+                        continue
+                fixed.append(item)
+            if changed:
+                data = fixed
+        return original_ctor(data, *args, **kwargs)
+
+    pd.DataFrame = _dataframe_with_callable_copy
+    try:
+        yield
+    finally:
+        pd.DataFrame = original_ctor
+
+
+def _deduplicate_psf_dataframe(df) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
+    if df.empty or not {"x_pix", "y_pix"}.issubset(df.columns):
+        return df
+
+    working = df.copy()
+    working["_x_round"] = working["x_pix"].round(3)
+    working["_y_round"] = working["y_pix"].round(3)
+    if "brightness_integrated" in working.columns:
+        working = working.sort_values("brightness_integrated", ascending=False)
+
+    deduped = working.drop_duplicates(subset=["_x_round", "_y_round"], keep="first")
+    deduped = deduped.drop(columns=["_x_round", "_y_round"], errors="ignore")
+    deduped = deduped.reset_index(drop=True)
+    return deduped
+
+
+def _run_integrate_sif(
+    path,
+    *,
+    threshold,
+    region,
+    signal,
+    pix_size_um=0.1,
+    sig_threshold=0.3,
+):
+    with _patched_dataframe_constructor():
+        df, image_data_cps = integrate_sif(
+            path,
+            threshold=threshold,
+            region=region,
+            signal=signal,
+            pix_size_um=pix_size_um,
+            sig_threshold=sig_threshold,
+        )
+
+    df = _deduplicate_psf_dataframe(df)
+    return df, image_data_cps
+
+
+def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3):
+    cache = st.session_state.setdefault(CACHE_SESSION_KEY, {})
+    processed_data = {}
+    combined_frames = []
+
+    for display_name, path, file_hash in saved_records:
+        cache_key = (
+            file_hash,
+            str(region),
+            float(threshold),
+            str(signal),
+            float(pix_size_um),
+            float(sig_threshold),
+        )
+        cached_entry = cache.get(cache_key)
+        if cached_entry is not None:
+            df_cached = cached_entry["df"].copy(deep=True)
+            image_data = cached_entry["image"]
+        else:
+            df_cached, image_data = _run_integrate_sif(
+                path,
+                threshold=threshold,
+                region=region,
+                signal=signal,
+                pix_size_um=pix_size_um,
+                sig_threshold=sig_threshold,
+            )
+            cache[cache_key] = {
+                "df": df_cached.copy(deep=True),
+                "image": image_data.copy() if isinstance(image_data, np.ndarray) else image_data,
+            }
+            df_cached = df_cached.copy(deep=True)
+
+        processed_data[display_name] = {"df": df_cached, "image": image_data}
+        if not df_cached.empty:
+            combined_frames.append(df_cached)
+
+    combined_df = pd.concat(combined_frames, ignore_index=True) if combined_frames else pd.DataFrame()
+    return processed_data, combined_df
 
 
 def plot_monomer_brightness(
@@ -242,7 +405,7 @@ def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=
                 return memoryview(f.read())
 
     uploads = [_FakeUpload(name, path) for (name, path) in saved_records]
-    pf = getattr(process_files, "__wrapped__", None)
+    pf = getattr(process_files_module.process_files, "__wrapped__", None)
     if pf is None:
         raise RuntimeError("process_files.__wrapped__ not found; cannot bypass Streamlit cache.")
 
@@ -269,6 +432,8 @@ def run():
         st.session_state.processed = None  # (processed_data, combined_df)
     if "selected_file_name" not in st.session_state:
         st.session_state.selected_file_name = None
+    if CACHE_SESSION_KEY not in st.session_state:
+        st.session_state[CACHE_SESSION_KEY] = {}
 
     with col1:
         uploaded_files = st.file_uploader(
@@ -283,12 +448,13 @@ def run():
         current_keys = set()
         if uploaded_files:
             for f in uploaded_files:
-                key = f"{f.name}:{_hash_file(f)}"
+                file_hash = _hash_file(f)
+                key = f"{f.name}:{file_hash}"
                 current_keys.add(key)
                 if key not in st.session_state.saved_files:
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".sif") as tmp:
                         tmp.write(f.getbuffer())
-                        st.session_state.saved_files[key] = (f.name, tmp.name)
+                        st.session_state.saved_files[key] = (f.name, tmp.name, file_hash)
                     changed = True
 
         # 2) Remove files no longer present in the uploader
@@ -296,7 +462,10 @@ def run():
         stale_keys = [k for k in st.session_state.saved_files.keys() if k not in current_keys]
         for k in stale_keys:
             val = st.session_state.saved_files[k]
-            name, path = (val if isinstance(val, (tuple, list)) and len(val) == 2 else (os.path.basename(val), val))
+            if isinstance(val, (tuple, list)) and len(val) >= 2:
+                path = val[1]
+            else:
+                path = str(val)
             try:
                 if os.path.exists(path):
                     os.remove(path)
@@ -305,12 +474,13 @@ def run():
             del st.session_state.saved_files[k]
             changed = True
 
+        _ensure_triplet_saved_files(st.session_state.saved_files)
+
         # 3) If the set of saved files changed (added/removed), invalidate results
         if changed or (set(st.session_state.saved_files.keys()) != prev_keys):
             st.session_state.processed = None
             # If selected file no longer exists, clear selection
-            current_names = [v[0] if isinstance(v, (tuple, list)) else os.path.basename(v)
-                             for v in st.session_state.saved_files.values()]
+            current_names = [v[0] for v in st.session_state.saved_files.values()]
             if st.session_state.selected_file_name not in current_names:
                 st.session_state.selected_file_name = None
 
@@ -318,7 +488,10 @@ def run():
         # --- UI to select file & params (based on synced saved_files) ---
         current_values = list(st.session_state.saved_files.values())
         normalized_records = _normalize_saved_values(current_values)
-        file_options = [display for (display, _) in normalized_records]
+        valid_hashes = {record[2] for record in normalized_records}
+        _prune_cached_results(valid_hashes)
+
+        file_options = [display for (display, _, _) in normalized_records]
 
         if file_options:
             default_index = 0
@@ -362,8 +535,8 @@ def run():
                     processed_data, combined_df = _process_files_cached(
                         saved_records,
                         region=region,
-                        threshold=threshold,   
-                        signal=signal,         
+                        threshold=threshold,
+                        signal=signal,
                     )
                     st.session_state.processed = (processed_data, combined_df)
 
