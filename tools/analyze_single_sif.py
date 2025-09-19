@@ -83,7 +83,7 @@ def run():
     with st.sidebar:
         st.header("Analyze SIF Files")
         uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
-        threshold = st.number_input("Threshold", min_value=0, value=2, help='''
+        threshold = st.number_input("Peak Finding Threshold", min_value=0, value=5, help='''
         Stringency of fit, higher value is more selective:
         -UCNP signal sets absolute peak cut off
         -Dye signal sets sensitivity of blob detection
