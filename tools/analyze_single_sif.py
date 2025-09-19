@@ -95,7 +95,7 @@ def run():
         │ 3 │ 4 │  
         └─┴─┘  
         """
-        sig_threshold = st.number_input("Sigma Threshold", min_value = 0.1, value = 0.25, help= 'Set sigma stringency in pixels')
+        sig_threshold = st.number_input("Sigma Threshold", min_value = 0.1, value = 0.20, help= 'Set sigma stringency in pixels')
         region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
 
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:
