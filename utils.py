@@ -36,6 +36,40 @@ _INTERP_GRID_CACHE = {}
 _SKIP_RESULT = object()
 
 
+def _estimate_sigma_from_moment(sub_img, pix_size_um, baseline, min_sigma, max_sigma):
+    """Estimate Gaussian sigma along x/y via intensity-weighted second moments."""
+    if sub_img.size == 0:
+        return (min_sigma, min_sigma)
+
+    # Subtract a baseline so that background fluctuations are de-emphasised.
+    weights = np.asarray(sub_img, dtype=np.float64) - float(baseline)
+    if not np.isfinite(weights).all():
+        weights = np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
+    weights = np.clip(weights, 0.0, None)
+    total = float(weights.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        fallback = max(min_sigma, min(max_sigma, 0.5 * (min_sigma + max_sigma)))
+        return (fallback, fallback)
+
+    y_idx, x_idx = np.indices(sub_img.shape, dtype=np.float64)
+    mean_x = float((weights * x_idx).sum() / total)
+    mean_y = float((weights * y_idx).sum() / total)
+
+    var_x = float((weights * (x_idx - mean_x) ** 2).sum() / total)
+    var_y = float((weights * (y_idx - mean_y) ** 2).sum() / total)
+
+    var_x = max(var_x, 0.0)
+    var_y = max(var_y, 0.0)
+
+    sigma_x = np.sqrt(var_x) * pix_size_um
+    sigma_y = np.sqrt(var_y) * pix_size_um
+
+    sigma_x = float(np.clip(sigma_x, min_sigma, max_sigma))
+    sigma_y = float(np.clip(sigma_y, min_sigma, max_sigma))
+
+    return (sigma_x, sigma_y)
+
+
 def _gaussian_residuals(params, x, y, z):
     A, x0, sx, y0, sy, offset = params
     model = A * np.exp(-((x - x0) ** 2 / (2 * sx ** 2) + (y - y0) ** 2 / (2 * sy ** 2))) + offset
@@ -283,9 +317,18 @@ def integrate_sif(
             continue
         x0_guess = center_x_refined * pix_size_um
         y0_guess = center_y_refined * pix_size_um
-        sigma_ub = 0.3  # bounds expressed in microns to match coordinate scaling
-        sigma_guess = 0.95 * sigma_ub
-        p0 = [amp_guess, x0_guess, sigma_guess, y0_guess, sigma_guess, offset_guess]
+        sigma_min = 0.05
+        sigma_max = max(float(sig_threshold), sigma_min)
+        sigma_ub = sigma_max  # bounds expressed in microns to match coordinate scaling
+        baseline_for_sigma = min(local_baseline + local_noise, amp_guess)
+        sigma_guess_x, sigma_guess_y = _estimate_sigma_from_moment(
+            sub_img_fine,
+            pix_size_um,
+            baseline_for_sigma,
+            sigma_min,
+            sigma_max,
+        )
+        p0 = [amp_guess, x0_guess, sigma_guess_x, y0_guess, sigma_guess_y, offset_guess]
 
         # Fit
         try:
