@@ -78,7 +78,7 @@ def integrate_sif(
     region='all',
     signal='UCNP',
     pix_size_um=0.1,
-    sig_threshold=0.3,
+    sig_threshold=0.25,
     *,
     min_fit_separation_px=3,
 ):
@@ -284,7 +284,7 @@ def integrate_sif(
         x0_guess = center_x_refined * pix_size_um
         y0_guess = center_y_refined * pix_size_um
         sigma_ub = 0.3  # bounds expressed in microns to match coordinate scaling
-        sigma_guess = min(0.3, 0.95 * sigma_ub)
+        sigma_guess = 0.95 * sigma_ub
         p0 = [amp_guess, x0_guess, sigma_guess, y0_guess, sigma_guess, offset_guess]
 
         # Fit
