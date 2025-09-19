@@ -266,34 +266,25 @@ def integrate_sif(
     # else → 'all': use full image
 
     # --- Detect peaks ---
-    smoothed_image = gaussian_filter(image_data_cps, sigma=0.6)
-    suppression_radius = max(2, int(0.6 * radius_pix_fine))
+    smoothed_image = gaussian_filter(image_data_cps, sigma=1)
 
     mean_val = float(np.mean(smoothed_image))
     std_val = float(np.std(smoothed_image))
-    base_threshold = mean_val + threshold * std_val * 0.1
+    std_val = max(std_val, 1e-6)
+    noise_floor = std_val
+    threshold_abs = mean_val + threshold * std_val
 
-    median_val = float(np.median(smoothed_image))
-    mad = float(np.median(np.abs(smoothed_image - median_val)))
-    if mad > 0:
-        robust_sigma = mad / 0.6745
-    else:
-        robust_sigma = std_val
-    robust_sigma = max(robust_sigma, 1e-6)
-    noise_floor = robust_sigma
-
-    adaptive_threshold = median_val + threshold * robust_sigma * 0.2
-    threshold_abs = max(base_threshold, adaptive_threshold)
+    min_distance = 5
 
     if signal == 'UCNP':
         coords = _sklearn_peak_local_max(
             smoothed_image,
-            min_distance=suppression_radius,
+            min_distance=min_distance,
             threshold_abs=threshold_abs,
             footprint=_PEAK_FOOTPRINT,
         )
     else:
-        blobs = blob_log(smoothed_image, min_sigma=0.8, max_sigma=3, num_sigma=5, threshold=5 * threshold)
+        blobs = blob_log(smoothed_image, min_sigma=1, max_sigma=3, num_sigma=5, threshold=5 * threshold)
         coords = blobs[:, :2]
 
     #print(f"{os.path.basename(sif)}: Found {len(coords)} peaks in region {region}")
