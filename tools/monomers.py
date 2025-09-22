@@ -168,6 +168,8 @@ def _run_integrate_sif(
     signal,
     pix_size_um=0.1,
     sig_threshold=0.2,
+    min_fit_separation_px=3.0,
+    min_r2=0.85,
 ):
     with _patched_dataframe_constructor():
         df, image_data_cps = integrate_sif(
@@ -177,13 +179,15 @@ def _run_integrate_sif(
             signal=signal,
             pix_size_um=pix_size_um,
             sig_threshold=sig_threshold,
+            min_fit_separation_px=min_fit_separation_px,
+            min_r2=min_r2,
         )
 
     df = _deduplicate_psf_dataframe(df)
     return df, image_data_cps
 
 
-def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3):
+def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3, min_fit_separation_px=3.0, min_r2=0.85):
     cache = st.session_state.setdefault(CACHE_SESSION_KEY, {})
     processed_data = {}
     combined_frames = []
@@ -196,6 +200,8 @@ def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=
             str(signal),
             float(pix_size_um),
             float(sig_threshold),
+            float(min_fit_separation_px),
+            None if min_r2 is None else float(min_r2),
         )
         cached_entry = cache.get(cache_key)
         if cached_entry is not None:
@@ -209,6 +215,8 @@ def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=
                 signal=signal,
                 pix_size_um=pix_size_um,
                 sig_threshold=sig_threshold,
+                min_fit_separation_px=min_fit_separation_px,
+                min_r2=min_r2,
             )
             cache[cache_key] = {
                 "df": df_cached.copy(deep=True),
@@ -396,7 +404,7 @@ def plot_monomer_brightness(
 
 
 @st.cache_data(show_spinner=False)
-def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3):
+def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3, min_fit_separation_px=3.0, min_r2=0.85):
     class _FakeUpload:
         def __init__(self, name, path):
             self.name = name
@@ -411,14 +419,33 @@ def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=
         raise RuntimeError("process_files.__wrapped__ not found; cannot bypass Streamlit cache.")
 
     # FORWARD the parameters to process_files.__wrapped__
-    return pf(
+    processed_data, combined_df = pf(
         uploads,
         region=region,
         threshold=threshold,
         signal=signal,
         pix_size_um=pix_size_um,
         sig_threshold=sig_threshold,
+        min_fit_separation_px=min_fit_separation_px,
+        min_r2=min_r2,
     )
+
+    deduped_data = {}
+    deduped_frames = []
+    for name, entry in processed_data.items():
+        df = entry.get("df")
+        deduped_df = _deduplicate_psf_dataframe(df)
+        deduped_data[name] = {"df": deduped_df, "image": entry.get("image")}
+        if isinstance(deduped_df, pd.DataFrame) and not deduped_df.empty:
+            deduped_frames.append(deduped_df)
+
+    combined_df = (
+        pd.concat(deduped_frames, ignore_index=True)
+        if deduped_frames
+        else pd.DataFrame()
+    )
+
+    return deduped_data, combined_df
 def df_to_csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
 
@@ -517,14 +544,30 @@ def run():
                                           "- UCNP for high SNR (sklearn peakfinder)\n"
                                           "- dye for low SNR (sklearn blob detection)")
                                     )
-            diagram = """ Splits sif into quadrants (256x256 px):  
-                                ┌─┬─┐  
-                                │ 1 │ 2 │  
-                                ├─┼─┤  
-                                │ 3 │ 4 │  
+            diagram = """ Splits sif into quadrants (256x256 px):
+                                ┌─┬─┐
+                                │ 1 │ 2 │
+                                ├─┼─┤
+                                │ 3 │ 4 │
                                 └─┴─┘
                                 """
             region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
+
+            min_fit_separation_px = st.number_input(
+                "Min fit separation (px)",
+                min_value=0.0,
+                value=3.0,
+                step=0.5,
+                help="Minimum allowed centre-to-centre distance between accepted PSF fits.",
+            )
+            min_r2 = st.slider(
+                "Min fit R²",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.85,
+                step=0.01,
+                help="Discard Gaussian fits whose coefficient of determination falls below this threshold.",
+            )
 
             cmap = st.selectbox("Colormap", options=["plasma", "viridis", "magma", "hot", "gray", "hsv"])
             st.session_state["monomers_cmap"] = cmap
@@ -538,6 +581,8 @@ def run():
                         region=region,
                         threshold=threshold,
                         signal=signal,
+                        min_fit_separation_px=float(min_fit_separation_px),
+                        min_r2=float(min_r2),
                     )
                     st.session_state.processed = (processed_data, combined_df)
 
