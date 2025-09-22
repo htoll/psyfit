@@ -75,7 +75,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 
     # --- Detect peaks ---
     smoothed_image = gaussian_filter(image_data_cps, sigma=1)
-    threshold_abs = np.mean(smoothed_image) + threshold * np.std(smoothed_image)*0.1
+    threshold_abs = np.mean(smoothed_image) + threshold * np.std(smoothed_image)
 
     if signal == 'UCNP':
         coords = peak_local_max(smoothed_image, min_distance=5, threshold_abs=threshold_abs)
@@ -103,24 +103,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
         sub_img_fine, x0_idx_fine, y0_idx_fine = extract_subregion(
             image_data_cps, center_x_refined, center_y_refined, radius_pix_fine
         )
-        # # Interpolate to 20x20 grid (like MATLAB)
-        # interp_size = 20
-        # zoom_factor = interp_size / sub_img_fine.shape[0]
-        # sub_img_interp = zoom(sub_img_fine, zoom_factor, order=1)  # bilinear interpolation
 
-        # # Prepare grid
-        # # y_indices, x_indices = np.indices(sub_img_fine.shape)
-        # # x_coords = (x_indices + x0_idx_fine) * pix_size_um
-        # # y_coords = (y_indices + y0_idx_fine) * pix_size_um
-        # interp_shape = sub_img_interp.shape
-        # y_indices, x_indices = np.indices(interp_shape)
-        # x_coords = (x_indices / interp_shape[1] * sub_img_fine.shape[1] + x0_idx_fine) * pix_size_um
-        # y_coords = (y_indices / interp_shape[0] * sub_img_fine.shape[0] + y0_idx_fine) * pix_size_um
-
-        # x_flat = x_coords.ravel()
-        # y_flat = y_coords.ravel()
-        # z_flat = sub_img_interp.ravel() #∆ variable name 250604
-        # switch from interp to fitting pixels 250916, noted that we were understimating brightness
         interp_size = 20
         sub_img_interp = zoom(sub_img_fine, interp_size / sub_img_fine.shape[0], order=1)
         H, W = sub_img_interp.shape
@@ -150,7 +133,6 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
             region = str(region)
             if region == '4':
                 sigma_ub = 0.8 #for wider NIR peaks
-                sig_threshold = max(sig_threshold, SIGMA_UB)  # keep post-filter consistent
             else:
                 sigma_ub = 0.5
 
@@ -163,8 +145,8 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
             amp_fit, x0_fit, sigx_fit, y0_fit, sigy_fit, offset_fit = popt
             brightness_fit = 2 * np.pi * amp_fit * sigx_fit * sigy_fit / pix_size_um**2
             roi_min = np.min(sub_img_fine)
-            brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * roi_min
-            #brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * offset_fit
+            #brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * roi_min
+            brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * offset_fit
 
             if brightness_integrated > 1e9 or brightness_integrated < 1:
                 print(f"Excluded peak for brightness {brightness_integrated:.2e}")

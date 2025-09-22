@@ -101,7 +101,7 @@ def run():
                                                                 - UCNP for high SNR (sklearn peakfinder)
                                                                 - dye for low SNR (sklearn blob detection)''')
         cmap = st.selectbox("Colormap", options=['plasma', 'gray', "magma", 'viridis', 'hot', 'hsv'])
-        show_fits = st.checkbox("Show fits")
+        show_fits = st.checkbox("Show fits", value=True)
         normalization = st.checkbox("Log Image Scaling")
         save_format = st.selectbox("Download format", options=["svg", "png", "jpeg"]).lower()
         show_heatmap = st.toggle(
