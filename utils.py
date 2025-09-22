@@ -346,8 +346,6 @@ def integrate_sif(
             continue
         if cached_result is not None:
             # A prior candidate already fit this PSF; skip duplicating it.
-
-            results.append(cached_result.copy())
             continue
 
         # Extract finer subregion

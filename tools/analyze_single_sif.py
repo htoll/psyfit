@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import io
+import pandas as pd
 from utils import integrate_sif, plot_brightness, plot_histogram
 from tools.process_files import process_files
 from matplotlib.colors import LogNorm
@@ -64,6 +65,26 @@ def build_brightness_heatmap(processed_data, weight_col="brightness_integrated",
     return heatmap
 
 
+def _deduplicate_psf_dataframe(df: pd.DataFrame, precision: int = 3) -> pd.DataFrame:
+    if df is None:
+        return df
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
+    if df.empty or not {"x_pix", "y_pix"}.issubset(df.columns):
+        return df
+
+    working = df.copy()
+    working["_x_round"] = working["x_pix"].round(precision)
+    working["_y_round"] = working["y_pix"].round(precision)
+    if "brightness_integrated" in working.columns:
+        working = working.sort_values("brightness_integrated", ascending=False)
+
+    deduped = working.drop_duplicates(subset=["_x_round", "_y_round"], keep="first")
+    deduped = deduped.drop(columns=["_x_round", "_y_round"], errors="ignore")
+    deduped.reset_index(drop=True, inplace=True)
+    return deduped
+
+
 
 
 
@@ -97,6 +118,21 @@ def run():
         """
         sig_threshold = st.number_input("Sigma Threshold", min_value = 0.1, value = 0.20, help= 'Set sigma stringency in pixels')
         region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
+        min_fit_separation_px = st.number_input(
+            "Min fit separation (px)",
+            min_value=0.0,
+            value=3.0,
+            step=0.5,
+            help="Minimum allowed centre-to-centre distance between accepted PSF fits.",
+        )
+        min_r2 = st.slider(
+            "Min fit R²",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.85,
+            step=0.01,
+            help="Discard Gaussian fits whose coefficient of determination falls below this threshold.",
+        )
 
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:
                                                                 - UCNP for high SNR (sklearn peakfinder)
@@ -119,7 +155,29 @@ def run():
 
     if st.session_state.analyze_clicked and uploaded_files:
         try:
-            processed_data, combined_df = process_files(uploaded_files, region, threshold=threshold, signal=signal, sig_threshold=sig_threshold)
+            processed_data, _ = process_files(
+                uploaded_files,
+                region,
+                threshold=threshold,
+                signal=signal,
+                sig_threshold=sig_threshold,
+                min_fit_separation_px=min_fit_separation_px,
+                min_r2=min_r2,
+            )
+
+            deduped_frames = []
+            for file_name, entry in processed_data.items():
+                df = entry.get("df")
+                deduped_df = _deduplicate_psf_dataframe(df)
+                processed_data[file_name]["df"] = deduped_df
+                if isinstance(deduped_df, pd.DataFrame) and not deduped_df.empty:
+                    deduped_frames.append(deduped_df)
+
+            combined_df = (
+                pd.concat(deduped_frames, ignore_index=True)
+                if deduped_frames
+                else pd.DataFrame()
+            )
 
             if len(uploaded_files) > 1:
                 file_options = [f.name for f in uploaded_files]
