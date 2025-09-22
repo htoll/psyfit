@@ -12,8 +12,7 @@ def process_files(uploaded_files, region, threshold=1,
                   pix_size_um=0.1, 
                   sig_threshold=0.3,
                   min_fit_separation_px=3,
-                min_r2 = 0.85
-                 ):
+                  min_r2=0.85):
     """
     Processes all uploaded .sif files and returns a dictionary of dataframes
     and images, plus a single combined dataframe for the histogram.
@@ -31,15 +30,16 @@ def process_files(uploaded_files, region, threshold=1,
             f.write(uploaded_file.getbuffer())
         
         try:
-            df, image_data_cps = integrate_sif(file_path, 
-                                               region=region,
-                                                  threshold=threshold,
-                                               signal = signal,
-                                               pix_size_um = pix_size_um,
-                                               sig_threshold=sig_threshold,
-                                               min_fit_separation_px=3,
-                                                min_r2 = 0.85
-                                                )
+            df, image_data_cps = integrate_sif(
+                file_path,
+                region=region,
+                threshold=threshold,
+                signal=signal,
+                pix_size_um=pix_size_um,
+                sig_threshold=sig_threshold,
+                min_fit_separation_px=min_fit_separation_px,
+                min_r2=min_r2,
+            )
             processed_data[uploaded_file.name] = {
                 "df": df,
                 "image": image_data_cps,
