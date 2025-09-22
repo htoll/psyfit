@@ -267,22 +267,20 @@ def integrate_sif(
 
     # --- Detect peaks ---
     smoothed_image = gaussian_filter(image_data_cps, sigma=1)
+    threshold_abs = np.mean(smoothed_image) + threshold * np.std(smoothed_image)
 
-    mean_val = float(np.mean(smoothed_image))
-    std_val = float(np.std(smoothed_image))
-    std_val = max(std_val, 1e-6)
-    noise_floor = std_val
-    threshold_abs = mean_val + threshold * std_val
+
+    # mean_val = float(np.mean(smoothed_image))
+    # std_val = float(np.std(smoothed_image))
+    # std_val = max(std_val, 1e-6)
+    # noise_floor = std_val
+    # threshold_abs = mean_val + threshold * std_val
 
     min_distance = 5
 
+
     if signal == 'UCNP':
-        coords = _sklearn_peak_local_max(
-            smoothed_image,
-            min_distance=min_distance,
-            threshold_abs=threshold_abs,
-            footprint=_PEAK_FOOTPRINT,
-        )
+        coords = peak_local_max(smoothed_image, min_distance=5, threshold_abs=threshold_abs)
     else:
         blobs = blob_log(smoothed_image, min_sigma=1, max_sigma=3, num_sigma=5, threshold=5 * threshold)
         coords = blobs[:, :2]
