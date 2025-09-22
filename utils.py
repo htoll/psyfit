@@ -285,66 +285,66 @@ def integrate_sif(
         blobs = blob_log(smoothed_image, min_sigma=1, max_sigma=3, num_sigma=5, threshold=5 * threshold)
         coords = blobs[:, :2]
 
-    #print(f"{os.path.basename(sif)}: Found {len(coords)} peaks in region {region}")
-    coords = [tuple(c) for c in coords]  # list of (y, x)
-    seen = set()  # to avoid infinite loops on duplicates
+    # #print(f"{os.path.basename(sif)}: Found {len(coords)} peaks in region {region}")
+    # coords = [tuple(c) for c in coords]  # list of (y, x)
+    # seen = set()  # to avoid infinite loops on duplicates
 
-    i = 0
-    while i < len(coords):
-        center_y, center_x = coords[i]
-        i += 1
-        key = (int(center_y), int(center_x))
-        if key in seen:
-            continue
-        seen.add(key)
+    # i = 0
+    # while i < len(coords):
+    #     center_y, center_x = coords[i]
+    #     i += 1
+    #     key = (int(center_y), int(center_x))
+    #     if key in seen:
+    #         continue
+    #     seen.add(key)
     
-        # Extract subregion
-        sub_img, x0_idx, y0_idx = extract_subregion(image_data_cps, center_x, center_y, radius_pix_fine)
+    #     # Extract subregion
+    #     sub_img, x0_idx, y0_idx = extract_subregion(image_data_cps, center_x, center_y, radius_pix_fine)
     
-        # Quick local check for multiple peaks in this subwindow
-        sub_blur = gaussian_filter(sub_img, sigma=0.5)
-        # relative threshold: 30% of local max avoids noise, keeps siblings
-        loc_thr = sub_blur.max() * 0.3
-        local_peaks = _sklearn_peak_local_max(
-            sub_blur,
-            min_distance=2,
-            threshold_abs=loc_thr,
-            exclude_border=False,
-        )
+    #     # Quick local check for multiple peaks in this subwindow
+    #     sub_blur = gaussian_filter(sub_img, sigma=0.5)
+    #     # relative threshold: 30% of local max avoids noise, keeps siblings
+    #     loc_thr = sub_blur.max() * 0.3
+    #     local_peaks = _sklearn_peak_local_max(
+    #         sub_blur,
+    #         min_distance=2,
+    #         threshold_abs=loc_thr,
+    #         exclude_border=False,
+    #     )
 
-        if local_peaks.shape[0] > 1:
-            # enqueue each local maximum as its own candidate (translated to image coords)
-            for ly, lx in local_peaks:
-                ny = y0_idx + ly
-                nx = x0_idx + lx
-                # skip if extremely close to any already-known coord
-                if all((abs(ny - cy) > 1 or abs(nx - cx) > 1) for cy, cx in coords):
-                    coords.append((ny, nx))
-        continue  # don't fit the ambiguous merged center; handle the new ones
+    #     if local_peaks.shape[0] > 1:
+    #         # enqueue each local maximum as its own candidate (translated to image coords)
+    #         for ly, lx in local_peaks:
+    #             ny = y0_idx + ly
+    #             nx = x0_idx + lx
+    #             # skip if extremely close to any already-known coord
+    #             if all((abs(ny - cy) > 1 or abs(nx - cx) > 1) for cy, cx in coords):
+    #                 coords.append((ny, nx))
+    #     continue  # don't fit the ambiguous merged center; handle the new ones
 
 
-    results = []
-    fit_cache = {}
+    # results = []
+    # fit_cache = {}
     for center_y, center_x in coords:
         # Extract subregion
         sub_img, x0_idx, y0_idx = extract_subregion(image_data_cps, center_x, center_y, radius_pix_fine)
 
         # Refine peak
         blurred = gaussian_filter(sub_img, sigma=1)
-        local_peak = _sklearn_peak_local_max(blurred, num_peaks=1)
+        local_peak = peak_local_max(blurred, num_peaks=1)
         if local_peak.shape[0] == 0:
             continue
         local_y, local_x = local_peak[0]
         center_x_refined = x0_idx + local_x
         center_y_refined = y0_idx + local_y
 
-        cache_key = (int(center_y_refined), int(center_x_refined))
-        cached_result = fit_cache.get(cache_key)
-        if cached_result is _SKIP_RESULT:
-            continue
-        if cached_result is not None:
-            # A prior candidate already fit this PSF; skip duplicating it.
-            continue
+        # cache_key = (int(center_y_refined), int(center_x_refined))
+        # cached_result = fit_cache.get(cache_key)
+        # if cached_result is _SKIP_RESULT:
+        #     continue
+        # if cached_result is not None:
+        #     # A prior candidate already fit this PSF; skip duplicating it.
+        #     continue
 
         # Extract finer subregion
         sub_img_fine, x0_idx_fine, y0_idx_fine = extract_subregion(
