@@ -354,27 +354,35 @@ def integrate_sif(
         )
         local_peak_value = float(np.max(sub_img_fine)) if sub_img_fine.size else 0.0
 
-        replace_index = None
-        replace_cache_key = None
+        replace_indices = None
+        replace_cache_keys = None
+        insert_pos = None
         if min_fit_separation_px is not None and min_fit_separation_px > 0:
             min_sep_sq = float(min_fit_separation_px) ** 2
-            closest_idx = None
-            closest_peak = None
+            # Collect every existing fit within the exclusion radius so we can
+            # either veto the new candidate (if an existing one is stronger) or
+            # evict all nearby weaker fits once the new fit succeeds.
+            conflicts = []
             for idx, existing in enumerate(results):
                 dx = float(existing.get('x_pix', 0.0)) - center_x_refined
                 dy = float(existing.get('y_pix', 0.0)) - center_y_refined
                 if dx * dx + dy * dy <= min_sep_sq:
                     existing_peak = float(existing.get('local_peak_value', existing.get('brightness_integrated', 0.0)))
-                    if closest_idx is None or existing_peak > closest_peak:
-                        closest_idx = idx
-                        closest_peak = existing_peak
-            if closest_idx is not None:
-                if closest_peak >= local_peak_value:
+                    conflicts.append((idx, existing_peak, existing))
+            if conflicts:
+                # Skip the candidate entirely when any nearby fit already has a
+                # higher peak height. Otherwise mark every conflicting fit for
+                # replacement so we don't keep a ring of weaker duplicates.
+                strongest_peak = max(conflicts, key=lambda item: item[1])[1]
+                if strongest_peak >= local_peak_value:
                     fit_cache[cache_key] = _SKIP_RESULT
                     continue
-                replace_index = closest_idx
-                existing = results[closest_idx]
-                replace_cache_key = (int(existing.get('y_pix', 0)), int(existing.get('x_pix', 0)))
+                replace_indices = sorted({idx for idx, _, _ in conflicts})
+                replace_cache_keys = list(dict.fromkeys([
+                    (int(existing.get('y_pix', 0)), int(existing.get('x_pix', 0)))
+                    for idx, _, existing in conflicts
+                ]))
+                insert_pos = replace_indices[0]
         # # Interpolate to 20x20 grid (like MATLAB)
         # interp_size = 20
         # zoom_factor = interp_size / sub_img_fine.shape[0]
@@ -489,10 +497,17 @@ def integrate_sif(
                 'fit_r2': fit_r2,
 
             }
-            if replace_index is not None:
-                if replace_cache_key is not None and replace_cache_key != cache_key:
-                    fit_cache.pop(replace_cache_key, None)
-                results[replace_index] = result
+            if replace_indices:
+                for key in replace_cache_keys:
+                    if key != cache_key:
+                        fit_cache.pop(key, None)
+                for idx in sorted(replace_indices, reverse=True):
+                    if 0 <= idx < len(results):
+                        results.pop(idx)
+                if insert_pos is None or insert_pos > len(results):
+                    results.append(result)
+                else:
+                    results.insert(insert_pos, result)
             else:
                 results.append(result)
             fit_cache[cache_key] = result.copy()

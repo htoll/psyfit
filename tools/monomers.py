@@ -187,7 +187,17 @@ def _run_integrate_sif(
     return df, image_data_cps
 
 
-def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3, min_fit_separation_px=3.0, min_r2=0.85):
+def _process_files_cached(
+    saved_records,
+    region,
+    threshold,
+    signal,
+    pix_size_um=0.1,
+    sig_threshold=0.3,
+    min_fit_separation_px=3.0,
+    min_r2=0.85,
+):
+
     cache = st.session_state.setdefault(CACHE_SESSION_KEY, {})
     processed_data = {}
     combined_frames = []
@@ -200,6 +210,7 @@ def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=
             str(signal),
             float(pix_size_um),
             float(sig_threshold),
+            None if min_fit_separation_px is None else float(min_fit_separation_px),
             float(min_fit_separation_px),
             None if min_r2 is None else float(min_r2),
         )
@@ -404,7 +415,17 @@ def plot_monomer_brightness(
 
 
 @st.cache_data(show_spinner=False)
-def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3, min_fit_separation_px=3.0, min_r2=0.85):
+def _process_files_cached(
+    saved_records,
+    region,
+    threshold,
+    signal,
+    pix_size_um=0.1,
+    sig_threshold=0.3,
+    min_fit_separation_px=3.0,
+    min_r2=0.85,
+):
+
     class _FakeUpload:
         def __init__(self, name, path):
             self.name = name
@@ -544,6 +565,29 @@ def run():
                                           "- UCNP for high SNR (sklearn peakfinder)\n"
                                           "- dye for low SNR (sklearn blob detection)")
                                     )
+            min_fit_separation_px = st.number_input(
+                "Min fit separation (px)",
+                min_value=0.0,
+                value=3.0,
+                step=0.5,
+                help=(
+                    "Minimum distance between accepted PSFs. "
+                    "Set to 0 to disable the separation filter."
+                ),
+            )
+            min_r2_input = st.number_input(
+                "Min fit R²",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.85,
+                step=0.01,
+                help=(
+                    "Minimum Gaussian fit quality (coefficient of determination). "
+                    "Set to 0 to disable this filter."
+                ),
+            )
+            min_r2 = min_r2_input if min_r2_input > 0.0 else None
+
             diagram = """ Splits sif into quadrants (256x256 px):
                                 ┌─┬─┐
                                 │ 1 │ 2 │
@@ -581,9 +625,9 @@ def run():
                         region=region,
                         threshold=threshold,
                         signal=signal,
-                        min_fit_separation_px=float(min_fit_separation_px),
-                        min_r2=float(min_r2),
-                    )
+                        min_fit_separation_px=min_fit_separation_px,
+                        min_r2=min_r2,
+
                     st.session_state.processed = (processed_data, combined_df)
 
     # DISPLAY

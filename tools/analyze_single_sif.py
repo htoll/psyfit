@@ -137,6 +137,28 @@ def run():
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:
                                                                 - UCNP for high SNR (sklearn peakfinder)
                                                                 - dye for low SNR (sklearn blob detection)''')
+        min_fit_separation_px = st.number_input(
+            "Min fit separation (px)",
+            min_value=0.0,
+            value=3.0,
+            step=0.5,
+            help=(
+                "Minimum centre-to-centre distance between accepted PSFs. "
+                "Set to 0 to disable the separation filter."
+            ),
+        )
+        min_r2_input = st.number_input(
+            "Min fit R²",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.85,
+            step=0.01,
+            help=(
+                "Minimum Gaussian fit quality (coefficient of determination). "
+                "Set to 0 to disable this filter."
+            ),
+        )
+        min_r2 = min_r2_input if min_r2_input > 0.0 else None
         cmap = st.selectbox("Colormap", options=['plasma', 'gray', "magma", 'viridis', 'hot', 'hsv'])
         show_fits = st.checkbox("Show fits", value = True)
         normalization = st.checkbox("Log Image Scaling")
@@ -155,7 +177,10 @@ def run():
 
     if st.session_state.analyze_clicked and uploaded_files:
         try:
+            processed_data, combined_df = process_files(
+
             processed_data, _ = process_files(
+
                 uploaded_files,
                 region,
                 threshold=threshold,
@@ -178,6 +203,7 @@ def run():
                 if deduped_frames
                 else pd.DataFrame()
             )
+
 
             if len(uploaded_files) > 1:
                 file_options = [f.name for f in uploaded_files]
