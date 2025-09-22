@@ -1,6 +1,7 @@
 
 import io
 import json
+import os
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -54,6 +55,12 @@ def run():
       smooth_window = st.slider("Rolling window size", 3, 101, 9, step=2)
       group_agg = st.selectbox("If multiple rows per group, aggregate Y using:", ["None", "mean", "median"])
       download_cleaned = st.checkbox("Enable download of cleaned/reshaped data", value=True)
+
+  if uploaded is not None:
+      selected_file_name = uploaded.name
+  else:
+      selected_file_name = "example_data.csv" if use_example else "plotted_data.csv"
+  selected_file_stem = os.path.splitext(selected_file_name)[0]
   
   # Helper palettes
   PLOTLY_PALETTES = {
@@ -272,7 +279,12 @@ def run():
   
       if download_cleaned:
           csv = long_df.to_csv(index=False).encode("utf-8")
-          st.download_button("⬇️ Download plotted data (CSV)", data=csv, file_name="plotted_data.csv", mime="text/csv")
+          st.download_button(
+              "⬇️ Download plotted data (CSV)",
+              data=csv,
+              file_name=f"{selected_file_stem}_plotted_data.csv",
+              mime="text/csv",
+          )
   
   def draw_paired_plot(tidy: pd.DataFrame):
       if tidy.empty:
@@ -310,7 +322,12 @@ def run():
   
       if download_cleaned:
           csv = plot_df.to_csv(index=False).encode("utf-8")
-          st.download_button("⬇️ Download plotted data (CSV)", data=csv, file_name="plotted_data_paired.csv", mime="text/csv")
+          st.download_button(
+              "⬇️ Download plotted data (CSV)",
+              data=csv,
+              file_name=f"{selected_file_stem}_plotted_data_paired.csv",
+              mime="text/csv",
+          )
   
   # Load data
   if uploaded is not None:

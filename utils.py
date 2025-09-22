@@ -1,11 +1,11 @@
 import sif_parser
 import numpy as np
 import pandas as pd
-from skimage.feature import peak_local_max
 from skimage.feature import blob_log
 
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
+from sklearn.neighbors import KDTree
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
@@ -29,6 +29,171 @@ import re
 import os
 import textwrap
 
+import plotly.express as px
+import plotly.graph_objects as go
+
+
+_PEAK_FOOTPRINT = np.ones((3, 3), dtype=int)
+_INTERP_GRID_CACHE = {}
+_SKIP_RESULT = object()
+
+
+def _sklearn_peak_local_max(
+    image,
+    *,
+    min_distance=1,
+    threshold_abs=None,
+    num_peaks=None,
+    exclude_border=True,
+    footprint=None,
+):
+    """Lightweight peak finder backed by scikit-learn's KDTree."""
+
+    arr = np.asarray(image, dtype=np.float64)
+    if arr.size == 0:
+        return np.empty((0, arr.ndim), dtype=int)
+
+    finite_mask = np.isfinite(arr)
+    if not finite_mask.any():
+        return np.empty((0, arr.ndim), dtype=int)
+
+    finite_vals = arr[finite_mask]
+    if threshold_abs is None:
+        threshold_abs_val = float(finite_vals.min())
+    else:
+        threshold_abs_val = float(threshold_abs)
+
+    candidate_mask = (arr > threshold_abs_val) & finite_mask
+    max_peaks = None
+    if num_peaks is not None and not np.isinf(num_peaks):
+        max_peaks = max(0, int(num_peaks))
+        if max_peaks == 0:
+            return np.empty((0, arr.ndim), dtype=int)
+
+    if not candidate_mask.any():
+        if max_peaks is not None and max_peaks > 0:
+            flat_idx = int(np.nanargmax(arr))
+            coord = np.array(np.unravel_index(flat_idx, arr.shape), dtype=int)
+            return coord.reshape(1, -1)
+        return np.empty((0, arr.ndim), dtype=int)
+
+    coords = np.argwhere(candidate_mask)
+    intensities = arr[candidate_mask]
+
+    if coords.shape[0] == 0:
+        return np.empty((0, arr.ndim), dtype=int)
+
+    if exclude_border:
+        border = int(np.ceil(min_distance))
+        if border > 0:
+            valid_mask = np.ones(coords.shape[0], dtype=bool)
+            for axis, size in enumerate(arr.shape):
+                valid_mask &= coords[:, axis] >= border
+                valid_mask &= coords[:, axis] < size - border
+            coords = coords[valid_mask]
+            intensities = intensities[valid_mask]
+            if coords.shape[0] == 0:
+                if max_peaks is not None and max_peaks > 0:
+                    flat_idx = int(np.nanargmax(arr))
+                    coord = np.array(np.unravel_index(flat_idx, arr.shape), dtype=int)
+                    return coord.reshape(1, -1)
+                return np.empty((0, arr.ndim), dtype=int)
+
+    order = np.argsort(intensities)[::-1]
+    coords = coords[order]
+    intensities = intensities[order]
+
+    if coords.shape[0] == 0:
+        return np.empty((0, arr.ndim), dtype=int)
+
+    radius = float(max(min_distance, 0.0))
+    if footprint is not None:
+        footprint = np.asarray(footprint)
+        if footprint.size > 0:
+            offsets = [(dim - 1) / 2.0 for dim in footprint.shape]
+            radius = max([radius, *offsets])
+
+    if radius <= 0.0:
+        if max_peaks is None:
+            return coords.copy()
+        return coords[:max_peaks].copy()
+
+    coords_float = coords.astype(np.float64, copy=False)
+    tree = KDTree(coords_float, leaf_size=16, metric="minkowski", p=np.inf)
+    suppressed = np.zeros(coords.shape[0], dtype=bool)
+    accepted = []
+
+    for idx, point in enumerate(coords_float):
+        if suppressed[idx]:
+            continue
+        accepted.append(coords[idx])
+        if max_peaks is not None and len(accepted) >= max_peaks:
+            break
+        neighbor_idx = tree.query_radius(point.reshape(1, -1), r=radius, return_distance=False)[0]
+        suppressed[neighbor_idx] = True
+
+    return np.asarray(accepted, dtype=int)
+
+
+def _estimate_sigma_from_moment(sub_img, pix_size_um, baseline, min_sigma, max_sigma):
+    """Estimate Gaussian sigma along x/y via intensity-weighted second moments."""
+    if sub_img.size == 0:
+        return (min_sigma, min_sigma)
+
+    # Subtract a baseline so that background fluctuations are de-emphasised.
+    weights = np.asarray(sub_img, dtype=np.float64) - float(baseline)
+    if not np.isfinite(weights).all():
+        weights = np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
+    weights = np.clip(weights, 0.0, None)
+    total = float(weights.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        fallback = max(min_sigma, min(max_sigma, 0.5 * (min_sigma + max_sigma)))
+        return (fallback, fallback)
+
+    y_idx, x_idx = np.indices(sub_img.shape, dtype=np.float64)
+    mean_x = float((weights * x_idx).sum() / total)
+    mean_y = float((weights * y_idx).sum() / total)
+
+    var_x = float((weights * (x_idx - mean_x) ** 2).sum() / total)
+    var_y = float((weights * (y_idx - mean_y) ** 2).sum() / total)
+
+    var_x = max(var_x, 0.0)
+    var_y = max(var_y, 0.0)
+
+    sigma_x = np.sqrt(var_x) * pix_size_um
+    sigma_y = np.sqrt(var_y) * pix_size_um
+
+    sigma_x = float(np.clip(sigma_x, min_sigma, max_sigma))
+    sigma_y = float(np.clip(sigma_y, min_sigma, max_sigma))
+
+    return (sigma_x, sigma_y)
+
+
+def _gaussian_residuals(params, x, y, z):
+    A, x0, sx, y0, sy, offset = params
+    model = A * np.exp(-((x - x0) ** 2 / (2 * sx ** 2) + (y - y0) ** 2 / (2 * sy ** 2))) + offset
+    return model - z
+
+
+def _get_interp_grids(orig_shape, interp_shape):
+    key = (orig_shape[0], orig_shape[1], interp_shape[0], interp_shape[1])
+    cached = _INTERP_GRID_CACHE.get(key)
+    if cached is None:
+        H, W = interp_shape
+        if W > 1:
+            x_lin = np.linspace(0, orig_shape[1] - 1, W, dtype=np.float64)
+        else:
+            x_lin = np.zeros(W, dtype=np.float64)
+        if H > 1:
+            y_lin = np.linspace(0, orig_shape[0] - 1, H, dtype=np.float64)
+        else:
+            y_lin = np.zeros(H, dtype=np.float64)
+        grid_x, grid_y = np.meshgrid(x_lin, y_lin)
+        cached = (grid_x.ravel(), grid_y.ravel())
+        _INTERP_GRID_CACHE[key] = cached
+    return cached
+
+
 def HWT_aesthetic():
     sns.set_style("ticks")
     sns.set_context("notebook", font_scale=1.5,
@@ -40,13 +205,22 @@ def HWT_aesthetic():
     sns.despine()
     return palette 
 
-def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3):
-    image_data, metadata = sif_parser.np_open(sif, ignore_corrupt=True)
+def integrate_sif(
+    sif,
+    threshold=1,
+    region='all',
+    signal='UCNP',
+    pix_size_um=0.1,
+    sig_threshold=0.25,
+    min_sigma_um = 0.15,
+    *,
+    min_fit_separation_px=3,
+    min_r2 = 0.85
+):
+    image_data, metadata = sif_parser.np_open(sif)
     image_data = image_data[0]  # (H, W)
 
     gainDAC = metadata['GainDAC']
-    if gainDAC == 0:
-        gainDAC =1 #account for gain turned off
     exposure_time = metadata['ExposureTime']
     accumulate_cycles = metadata['AccumulatedCycles']
 
@@ -135,6 +309,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
                 model = A * np.exp(-((x - x0)**2 / (2 * sx**2) + (y - y0)**2 / (2 * sy**2))) + offset
                 return model - z
 
+            # Set bounds similar to MATLAB
             lb = [1, x0_guess - 1, 0.0, y0_guess - 1, 0.0, offset_guess * 0.5]
             ub = [2 * amp_guess, x0_guess + 1, 0.175, y0_guess + 1, 0.175, offset_guess * 1.2]
 
@@ -145,7 +320,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
             brightness_fit = 2 * np.pi * amp_fit * sigx_fit * sigy_fit / pix_size_um**2
             brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * offset_fit
 
-            if brightness_fit > 1e9 or brightness_fit < 50:
+            if brightness_fit > 1e9 or brightness_fit < 10:
                 print(f"Excluded peak for brightness {brightness_fit:.2e}")
                 continue
             if sigx_fit > sig_threshold or sigy_fit > sig_threshold:
@@ -170,151 +345,461 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 
     df = pd.DataFrame(results)
     return df, image_data_cps
+    # """Detect peaks in a SIF image and fit local 2D Gaussian PSFs.
+
+    # Parameters
+    # ----------
+    # min_fit_separation_px : float, optional
+    #     Minimum centre-to-centre distance (in pixels) required between accepted
+    #     fits. Candidates closer than this distance to an existing result are
+    #     skipped. Default is 3 pixels. Pass ``0`` or ``None`` to disable the
+    #     separation filter.
+
+    # min_r2 : float or None, optional
+    #     Minimum coefficient of determination (R²) required for a fitted PSF to
+    #     be accepted. Set to ``None`` to disable the residual-based quality
+    #     filter. Defaults to 0.85.
+        
+    # min_sigma_um : float, optional
+    #     Minimum allowed Gaussian sigma (in microns). Fits smaller than this
+    #     threshold are discarded. Defaults to 0.15 µm (≈150 nm).
+    # """
+    # image_data, metadata = sif_parser.np_open(sif, ignore_corrupt=True)
+    # image_data = image_data[0]  # (H, W)
+
+    # gainDAC = metadata['GainDAC']
+    # if gainDAC == 0:
+    #     gainDAC =1 #account for gain turned off
+    # exposure_time = metadata['ExposureTime']
+    # accumulate_cycles = metadata['AccumulatedCycles']
+
+    # # Normalize counts → photons
+    # image_data_cps = image_data * (5.0 / gainDAC) / exposure_time / accumulate_cycles
+
+    # radius_um_fine = 0.5
+    # radius_pix_fine = int(radius_um_fine / pix_size_um)
+    # pix_size_um_sq = pix_size_um ** 2
+
+    # # --- Crop image if region specified ---
+    # region = str(region)
+    # if region == '3':
+    #     image_data_cps = image_data_cps[0:256, 0:256]
+    # elif region == '4':
+    #     image_data_cps = image_data_cps[0:256, 256:512]
+    # elif region == '1':
+    #     image_data_cps = image_data_cps[256:512, 0:256]
+    # elif region == '2':
+    #     image_data_cps = image_data_cps[256:512, 256:512]
+    # elif region == 'custom': #accounting for misaligned 638 beam on 250610
+    #     image_data_cps = image_data_cps[312:512, 56:256]
+
+    # # else → 'all': use full image
+
+    # # --- Detect peaks ---
+    # smoothed_image = gaussian_filter(image_data_cps, sigma=1)
+    # threshold_abs = np.mean(smoothed_image) + threshold * np.std(smoothed_image)
+
+
+    # # mean_val = float(np.mean(smoothed_image))
+    # # std_val = float(np.std(smoothed_image))
+    # # std_val = max(std_val, 1e-6)
+    # # noise_floor = std_val
+    # # threshold_abs = mean_val + threshold * std_val
+
+    # min_distance = 5
+
+
+    # if signal == 'UCNP':
+    #     coords = peak_local_max(smoothed_image, min_distance=5, threshold_abs=threshold_abs)
+    # else:
+    #     blobs = blob_log(smoothed_image, min_sigma=1, max_sigma=3, num_sigma=5, threshold=5 * threshold)
+    #     coords = blobs[:, :2]
+
+    # # #print(f"{os.path.basename(sif)}: Found {len(coords)} peaks in region {region}")
+    # # coords = [tuple(c) for c in coords]  # list of (y, x)
+    # # seen = set()  # to avoid infinite loops on duplicates
+
+    # # i = 0
+    # # while i < len(coords):
+    # #     center_y, center_x = coords[i]
+    # #     i += 1
+    # #     key = (int(center_y), int(center_x))
+    # #     if key in seen:
+    # #         continue
+    # #     seen.add(key)
+    
+    # #     # Extract subregion
+    # #     sub_img, x0_idx, y0_idx = extract_subregion(image_data_cps, center_x, center_y, radius_pix_fine)
+    
+    # #     # Quick local check for multiple peaks in this subwindow
+    # #     sub_blur = gaussian_filter(sub_img, sigma=0.5)
+    # #     # relative threshold: 30% of local max avoids noise, keeps siblings
+    # #     loc_thr = sub_blur.max() * 0.3
+    # #     local_peaks = _sklearn_peak_local_max(
+    # #         sub_blur,
+    # #         min_distance=2,
+    # #         threshold_abs=loc_thr,
+    # #         exclude_border=False,
+    # #     )
+
+    # #     if local_peaks.shape[0] > 1:
+    # #         # enqueue each local maximum as its own candidate (translated to image coords)
+    # #         for ly, lx in local_peaks:
+    # #             ny = y0_idx + ly
+    # #             nx = x0_idx + lx
+    # #             # skip if extremely close to any already-known coord
+    # #             if all((abs(ny - cy) > 1 or abs(nx - cx) > 1) for cy, cx in coords):
+    # #                 coords.append((ny, nx))
+    # #     continue  # don't fit the ambiguous merged center; handle the new ones
+
+
+    # # results = []
+    # # fit_cache = {}
+    # for center_y, center_x in coords:
+    #     # Extract subregion
+    #     sub_img, x0_idx, y0_idx = extract_subregion(image_data_cps, center_x, center_y, radius_pix_fine)
+
+    #     # Refine peak
+    #     blurred = gaussian_filter(sub_img, sigma=1)
+    #     local_peak = peak_local_max(blurred, num_peaks=1)
+    #     if local_peak.shape[0] == 0:
+    #         continue
+    #     local_y, local_x = local_peak[0]
+    #     center_x_refined = x0_idx + local_x
+    #     center_y_refined = y0_idx + local_y
+
+    #     # cache_key = (int(center_y_refined), int(center_x_refined))
+    #     # cached_result = fit_cache.get(cache_key)
+    #     # if cached_result is _SKIP_RESULT:
+    #     #     continue
+    #     # if cached_result is not None:
+    #     #     # A prior candidate already fit this PSF; skip duplicating it.
+    #     #     continue
+
+    #     # Extract finer subregion
+    #     sub_img_fine, x0_idx_fine, y0_idx_fine = extract_subregion(
+    #         image_data_cps, center_x_refined, center_y_refined, radius_pix_fine
+    #     )
+    #     local_peak_value = float(np.max(sub_img_fine)) if sub_img_fine.size else 0.0
+
+    #     replace_indices = None
+    #     replace_cache_keys = None
+    #     insert_pos = None
+    #     if min_fit_separation_px is not None and min_fit_separation_px > 0:
+    #         min_sep_sq = float(min_fit_separation_px) ** 2
+    #         # Collect every existing fit within the exclusion radius so we can
+    #         # either veto the new candidate (if an existing one is stronger) or
+    #         # evict all nearby weaker fits once the new fit succeeds.
+    #         conflicts = []
+    #         for idx, existing in enumerate(results):
+    #             dx = float(existing.get('x_pix', 0.0)) - center_x_refined
+    #             dy = float(existing.get('y_pix', 0.0)) - center_y_refined
+    #             if dx * dx + dy * dy <= min_sep_sq:
+    #                 existing_peak = float(existing.get('local_peak_value', existing.get('brightness_integrated', 0.0)))
+    #                 conflicts.append((idx, existing_peak, existing))
+    #         if conflicts:
+    #             # Skip the candidate entirely when any nearby fit already has a
+    #             # higher peak height. Otherwise mark every conflicting fit for
+    #             # replacement so we don't keep a ring of weaker duplicates.
+    #             strongest_peak = max(conflicts, key=lambda item: item[1])[1]
+    #             if strongest_peak >= local_peak_value:
+    #                 fit_cache[cache_key] = _SKIP_RESULT
+    #                 continue
+    #             replace_indices = sorted({idx for idx, _, _ in conflicts})
+    #             replace_cache_keys = list(dict.fromkeys([
+    #                 (int(existing.get('y_pix', 0)), int(existing.get('x_pix', 0)))
+    #                 for idx, _, existing in conflicts
+    #             ]))
+    #             insert_pos = replace_indices[0]
+    #     # # Interpolate to 20x20 grid (like MATLAB)
+    #     # interp_size = 20
+    #     # zoom_factor = interp_size / sub_img_fine.shape[0]
+    #     # sub_img_interp = zoom(sub_img_fine, zoom_factor, order=1)  # bilinear interpolation
+
+    #     # # Prepare grid
+    #     # # y_indices, x_indices = np.indices(sub_img_fine.shape)
+    #     # # x_coords = (x_indices + x0_idx_fine) * pix_size_um
+    #     # # y_coords = (y_indices + y0_idx_fine) * pix_size_um
+    #     # interp_shape = sub_img_interp.shape
+    #     # y_indices, x_indices = np.indices(interp_shape)
+    #     # x_coords = (x_indices / interp_shape[1] * sub_img_fine.shape[1] + x0_idx_fine) * pix_size_um
+    #     # y_coords = (y_indices / interp_shape[0] * sub_img_fine.shape[0] + y0_idx_fine) * pix_size_um
+
+    #     # x_flat = x_coords.ravel()
+    #     # y_flat = y_coords.ravel()
+    #     # z_flat = sub_img_interp.ravel() #∆ variable name 250604
+    #     # switch from interp to fitting pixels 250916, noted that we were understimating brightness
+    #     interp_size = 20
+    #     zoom_factor = interp_size / sub_img_fine.shape[0]
+    #     sub_img_interp = zoom(sub_img_fine, zoom_factor, order=1)
+    #     base_x_flat, base_y_flat = _get_interp_grids(sub_img_fine.shape, sub_img_interp.shape)
+    #     x_flat = (base_x_flat + x0_idx_fine) * pix_size_um
+    #     y_flat = (base_y_flat + y0_idx_fine) * pix_size_um
+    #     z_flat = sub_img_interp.ravel()
+
+    #     # Initial guess
+    #     amp_guess = np.max(sub_img_fine)
+    #     offset_guess = np.min(sub_img_fine)
+    #     local_baseline = float(np.median(sub_img_fine))
+    #     local_mad = float(np.median(np.abs(sub_img_fine - local_baseline)))
+    #     if local_mad > 0:
+    #         local_noise = local_mad / 0.6745
+    #     else:
+    #         local_noise = noise_floor
+    #     local_noise = max(local_noise, noise_floor)
+    #     if amp_guess - local_baseline < 1.5 * local_noise:
+    #         fit_cache[cache_key] = _SKIP_RESULT
+    #         continue
+    #     x0_guess = center_x_refined * pix_size_um
+    #     y0_guess = center_y_refined * pix_size_um
+    #     sigma_min = max(float(min_sigma_um), 0.0)
+    #     sigma_max = max(float(sig_threshold), sigma_min)
+    #     sigma_ub = sigma_max  # bounds expressed in microns to match coordinate scaling
+    #     baseline_for_sigma = min(local_baseline + local_noise, amp_guess)
+    #     sigma_guess_x, sigma_guess_y = _estimate_sigma_from_moment(
+    #         sub_img_fine,
+    #         pix_size_um,
+    #         baseline_for_sigma,
+    #         sigma_min,
+    #         sigma_max,
+    #     )
+    #     p0 = [amp_guess, x0_guess, sigma_guess_x, y0_guess, sigma_guess_y, offset_guess]
+
+    #     # Fit
+    #     try:
+
+    #         lb = [1, x0_guess - 1, sigma_min, y0_guess - 1, sigma_min, 0.0]
+    #         ub = [2 * amp_guess, x0_guess + 1, sigma_ub, y0_guess + 1, sigma_ub, offset_guess * 1.2]
+
+    #         # Perform fit
+    #         res = least_squares(_gaussian_residuals, p0, args=(x_flat, y_flat, z_flat), bounds=(lb, ub))
+    #         popt = res.x
+    #         amp_fit, x0_fit, sigx_fit, y0_fit, sigy_fit, offset_fit = popt
+            
+    #         # Evaluate residual quality of the fitted Gaussian on the
+    #         # interpolated sub-image to filter out noisy / poorly modelled PSFs.
+    #         exp_term = -(
+    #             (x_flat - x0_fit) ** 2 / (2 * sigx_fit ** 2)
+    #             + (y_flat - y0_fit) ** 2 / (2 * sigy_fit ** 2)
+    #         )
+    #         model_flat = amp_fit * np.exp(exp_term) + offset_fit
+    #         residual_flat = z_flat - model_flat
+    #         ss_res = float(np.sum(residual_flat ** 2))
+    #         ss_tot = float(np.sum((z_flat - z_flat.mean()) ** 2))
+    #         if ss_tot <= np.finfo(float).eps:
+    #             fit_r2 = 1.0 if ss_res <= np.finfo(float).eps else -np.inf
+    #         else:
+    #             fit_r2 = 1.0 - ss_res / ss_tot
+    #         if min_r2 is not None and fit_r2 < min_r2:
+    #             fit_cache[cache_key] = _SKIP_RESULT
+    #             continue
+    #         brightness_fit = 2 * np.pi * amp_fit * sigx_fit * sigy_fit / pix_size_um_sq
+    #         roi_min = np.min(sub_img_fine)
+    #         brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * roi_min
+    #         #brightness_integrated = np.sum(sub_img_fine) - sub_img_fine.size * offset_fit
+
+    #         if brightness_integrated > 1e9 or brightness_integrated < 1:
+    #             print(f"Excluded peak for brightness {brightness_integrated:.2e}")
+    #             fit_cache[cache_key] = _SKIP_RESULT
+    #             continue
+    #         EPS = 1e-3
+    #         if sigx_fit > sig_threshold + EPS or sigy_fit > sig_threshold + EPS:
+    #             fit_cache[cache_key] = _SKIP_RESULT
+    #             continue
+    #         if sigx_fit < sigma_min - EPS or sigy_fit < sigma_min - EPS:
+    #             fit_cache[cache_key] = _SKIP_RESULT
+    #             continue
+
+    #         # Note: coordinates are already RELATIVE to cropped image
+    #         result = {
+    #             'x_pix': center_x_refined,
+    #             'y_pix': center_y_refined,
+    #             'x_um': x0_fit,
+    #             'y_um': y0_fit,
+    #             'amp_fit': amp_fit,
+    #             'sigx_fit': sigx_fit,
+    #             'sigy_fit': sigy_fit,
+    #             'brightness_fit': brightness_fit,
+    #             'brightness_integrated': brightness_integrated,
+    #             'local_peak_value': local_peak_value,
+    #             'fit_r2': fit_r2,
+
+    #         }
+    #         if replace_indices:
+    #             for key in replace_cache_keys:
+    #                 if key != cache_key:
+    #                     fit_cache.pop(key, None)
+    #             for idx in sorted(replace_indices, reverse=True):
+    #                 if 0 <= idx < len(results):
+    #                     results.pop(idx)
+    #             if insert_pos is None or insert_pos > len(results):
+    #                 results.append(result)
+    #             else:
+    #                 results.insert(insert_pos, result)
+    #         else:
+    #             results.append(result)
+    #         fit_cache[cache_key] = result.copy()
+
+    #     except RuntimeError:
+    #         fit_cache[cache_key] = _SKIP_RESULT
+    #         continue
+
+    # df = pd.DataFrame(results)
+    # return df, image_data_cps
     
 def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
+
 
 def plot_brightness(
     image_data_cps,
     df,
     show_fits=True,
-    plot_brightness_histogram=False,
+    plot_brightness_histogram=False,   
     normalization=False,
     pix_size_um=0.1,
-    cmap="magma",
-    interactive=False,
+    cmap='magma',
+    *,
+    interactive=False,                
+    dragmode='zoom'                    # 'zoom' (magnifier) or 'pan'
 ):
+    """
+    If interactive=False (default): returns a Matplotlib Figure (original behavior).
+    If interactive=True: returns a Plotly Figure with box-zoom/pan and crisp vector overlays.
+    """
+    # --- MATPLOTLIB PATH (UNCHANGED DEFAULT) ---
+    if not interactive:
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import LogNorm
+        from matplotlib.patches import Circle
 
-    if interactive:
-        img = image_data_cps
-        if normalization:
-            # approximate LogNorm by log10 scaling
-            eps = max(float(np.percentile(img, 0.01)), 1e-9)
-            img = np.log10(np.clip(img, eps, None))
-            colorbar_title = "log10(cps)"
-        else:
-            colorbar_title = "cps"
+        fig_width, fig_height = 5, 5
+        scale = fig_width / 5
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
-        cmap_map = {
-            "magma": "Magma",
-            "viridis": "Viridis",
-            "plasma": "Plasma",
-            "hot": "Hot",
-            "gray": "Gray",
-            "hsv": "HSV",
-        }
-        plotly_scale = cmap_map.get(cmap, "Magma")
+        norm = LogNorm() if normalization else None
+        im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=norm, origin='lower')
+        ax.tick_params(axis='both', length=0, labelleft=False, labelright=False,
+                       labeltop=False, labelbottom=False)
 
-        fig = px.imshow(
-            img,
-            color_continuous_scale=plotly_scale,
-            origin="lower",
-            aspect="equal",
-        )
-        fig.update_layout(
-            margin=dict(l=0, r=0, t=0, b=0),
-            coloraxis_colorbar=dict(title=colorbar_title),
-            xaxis_title="X (px)",
-            yaxis_title="Y (px)",
-        )
+        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.ax.tick_params(labelsize=10*scale)
+        cbar.set_label('pps', fontsize=10*scale)
 
         if show_fits and df is not None and not df.empty:
-            x_candidates = ["x", "x_px", "col", "column", "x_pix", "x_idx"]
-            y_candidates = ["y", "y_px", "row", "line", "y_pix", "y_idx"]
-            x_col = next((c for c in x_candidates if c in df.columns), None)
-            y_col = next((c for c in y_candidates if c in df.columns), None)
-            if x_col and y_col:
-                xs = df[x_col].to_numpy()
-                ys = df[y_col].to_numpy()
-                if "sigx_fit" in df.columns and "sigy_fit" in df.columns:
-                    radii = 2 * np.maximum(df["sigx_fit"], df["sigy_fit"]) / pix_size_um
-                elif "r" in df.columns:
-                    radii = df["r"].to_numpy()
-                else:
-                    radii = np.full_like(xs, 4.0, dtype=float)
+            for _, row in df.iterrows():
+                x_px = row['x_pix']
+                y_px = row['y_pix']
+                brightness_kpps = row['brightness_integrated'] / 1000.0
+                radius_px = 2 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
 
-                shapes = []
-                for x, y, r in zip(xs, ys, radii):
-                    shapes.append(
-                        dict(
-                            type="circle",
-                            xref="x",
-                            yref="y",
-                            x0=x - r,
-                            x1=x + r,
-                            y0=y - r,
-                            y1=y + r,
-                            line=dict(width=1.5),
-                            fillcolor="rgba(0,0,0,0)",
-                            layer="above",
-                        )
-                    )
-                fig.update_layout(shapes=shapes)
+                circle = Circle((x_px, y_px), radius_px, color='white',
+                                fill=False, linewidth=1*scale, alpha=0.7)
+                ax.add_patch(circle)
 
-                hovertemplate = "x=%{x:.2f}px<br>y=%{y:.2f}px"
-                custom = None
-                if "brightness_fit" in df.columns:
-                    br = df["brightness_fit"].to_numpy()
-                    custom = np.stack([br], axis=1)
-                    hovertemplate += "<br>brightness=%{customdata[0]:.3e} pps"
+                ax.text(x_px + 7.5, y_px + 7.5, f"{brightness_kpps:.1f} kpps",
+                        color='white', fontsize=7*scale, ha='center', va='center')
 
-                fig.add_trace(
-                    go.Scatter(
-                        x=xs,
-                        y=ys,
-                        mode="markers",
-                        marker=dict(symbol="circle-open", size=10, line=dict(width=1.5)),
-                        name="Fits",
-                        showlegend=False,
-                        customdata=custom,
-                        hovertemplate=hovertemplate,
-                    )
-                )
-
-        h, w = img.shape
-        fig.update_xaxes(range=[-0.5, w - 0.5], constrain="domain")
-        fig.update_yaxes(range=[-0.5, h - 0.5], scaleanchor="x", scaleratio=1)
+        plt.tight_layout()
+        HWT_aesthetic()
         return fig
 
-    # --- static matplotlib version ---
-    fig_width, fig_height = 5, 5
-    scale = fig_width / 5
+    # --- PLOTLY PATH (INTERACTIVE) ---
+    import numpy as np
 
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    # Map Matplotlib colormap names to Plotly scales
+    cmap_map = {
+        "magma": "Magma", "viridis": "Viridis", "plasma": "Plasma",
+        "hot": "Hot", "gray": "Gray", "hsv": "HSV", "cividis": "Cividis", "inferno": "Inferno"
+    }
+    plotly_scale = cmap_map.get(cmap, "Magma")
+
+    # Approximate LogNorm for image display if requested
+    img = image_data_cps.astype(float)
     if normalization:
-        normalization = LogNorm()
+        eps = max(float(np.percentile(img, 0.01)), 1e-9)
+        img_display = np.log10(np.clip(img + 1.0, eps, None))
     else:
-        normalization = None
-    im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=normalization, origin="lower")
-    ax.tick_params(axis="both", length=0, labelleft=False, labelright=False, labeltop=False, labelbottom=False)
 
-    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.ax.tick_params(labelsize=10 * scale)
-    cbar.set_label("pps", fontsize=10 * scale)
+        img_display = img
 
-    if show_fits and df is not None and not df.empty:
-        for _, row in df.iterrows():
-            x_px = row["x_pix"]
-            y_px = row["y_pix"]
-            brightness_kpps = row["brightness_fit"] / 1000
-            radius_px = 2 * max(row["sigx_fit"], row["sigy_fit"]) / pix_size_um
+    # Base image with stored cps for hover
+    fig = px.imshow(
+        img_display,
+        origin="lower",
+        aspect="equal",
+        color_continuous_scale=plotly_scale
+    )
+    # store original cps values for accurate hover information
+    img_custom = np.expand_dims(img, axis=-1)
+    fig.data[0].customdata = img_custom
+    fig.data[0].hovertemplate = (
+        "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata[0]:.1f}<extra></extra>"
+    )
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=30, b=0),
+        dragmode=dragmode,
+        coloraxis_colorbar=dict(
+            title="pps" if not normalization else "log10(pps)",
+            yanchor="middle",
+            y=0.5,
+            lenmode="fraction",
+            len=0.8,
+            thickness=20,
+        ),
+        xaxis_title="X (px)",
+        yaxis_title="Y (px)"
+    )
 
-            circle = Circle((x_px, y_px), radius_px, color="white", fill=False, linewidth=1 * scale, alpha=0.7)
-            ax.add_patch(circle)
+    xs = ys = rs = br = None
+    if df is not None and not df.empty:
+        xs = df["x_pix"].to_numpy()
+        ys = df["y_pix"].to_numpy()
+        rs = (2 * np.maximum(df["sigx_fit"].to_numpy(), df["sigy_fit"].to_numpy()) / pix_size_um).astype(float)
+        br = (df["brightness_integrated"].to_numpy() / 1000.0).astype(float)
 
-            ax.text(
-                x_px + 7.5,
-                y_px + 7.5,
-                f"{brightness_kpps:.1f} kpps",
-                color="white",
-                fontsize=7 * scale,
-                ha="center",
-                va="center",
-            )
+        custom = np.stack([br], axis=1)
+        fig.add_trace(go.Scatter(
+            x=xs,
+            y=ys,
+            mode="markers",
+            marker=dict(size=1, opacity=0),
+            name="Fits",
+            customdata=custom,
+            hovertemplate="x=%{x:.2f}px<br>y=%{y:.2f}px<br>brightness=%{customdata[0]:.1f} kpps<extra></extra>",
+            showlegend=False,
+        ))
 
-    plt.tight_layout()
-    HWT_aesthetic()
+        if show_fits:
+            shapes = []
+            for x, y, r in zip(xs, ys, rs):
+                shapes.append(dict(
+                    type="circle",
+                    xref="x", yref="y",
+                    x0=x - r, x1=x + r,
+                    y0=y - r, y1=y + r,
+                    line=dict(width=1.5, color="white"),
+                    fillcolor="rgba(0,0,0,0)",
+                    layer="above",
+                ))
+            fig.update_layout(shapes=shapes)
+
+            fig.add_trace(go.Scatter(
+                x=xs + 7.5, y=ys + 7.5, mode="text",
+                text=[f"{v:.1f} kpps" for v in br],
+                textfont=dict(color="white", size=10),
+                textposition="middle center",
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+# Keep pixel coordinates aligned and square pixels
+    h, w = img.shape
+    fig.update_xaxes(range=[-0.5, w - 0.5], constrain="domain", showgrid=False, zeroline=False)
+    fig.update_yaxes(range=[-0.5, h - 0.5], scaleanchor="x", scaleratio=1, showgrid=False, zeroline=False)
+
+
     return fig
+
 
 
 def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None):
@@ -332,7 +817,7 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     scale = fig_width / 5
 
-    brightness_vals = df['brightness_fit'].values
+    brightness_vals = df['brightness_integrated'].values
 
     # Apply min/max filtering if specified
     if min_val is not None and max_val is not None:
@@ -459,7 +944,7 @@ def coloc_subplots(ucnp_file, dye_file, df_dict, colocalization_radius=2, show_f
     ucnp_df, ucnp_img = df_dict[ucnp_file.name]
     dye_df, dye_img = df_dict[dye_file.name]
 
-    required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
+    required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_integrated']
     ucnp_has_fit = all(col in ucnp_df.columns for col in required_cols)
     dye_has_fit = all(col in dye_df.columns for col in required_cols)
 
@@ -490,10 +975,10 @@ def coloc_subplots(ucnp_file, dye_file, df_dict, colocalization_radius=2, show_f
                     'source_dye_file': dye_file.name,
                     'ucnp_x': x_ucnp,
                     'ucnp_y': y_ucnp,
-                    'ucnp_brightness': row_ucnp['brightness_fit'],
+                    'ucnp_brightness': row_ucnp['brightness_integrated'],
                     'dye_x': dye_df.loc[best_idx]['x_pix'],
                     'dye_y': dye_df.loc[best_idx]['y_pix'],
-                    'dye_brightness': dye_df.loc[best_idx]['brightness_fit'],
+                    'dye_brightness': dye_df.loc[best_idx]['brightness_integrated'],
                     'distance': distances[best_idx],
                 })
 
@@ -542,13 +1027,13 @@ def gaussian2d(xy, amp, x0, sigma_x, y0, sigma_y, offset):
 
 
 def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, normalization=None, save_format = 'SVG', univ_minmax=False, cmap = 'grey'):
-    required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_fit']
+    required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_integrated']
     all_matched_pairs = []
 
     n_files = len(sif_files)
     n_cols = min(4, max(1, n_files))   # between 1 and 4, never more than files
     n_rows = int(np.ceil(n_files / n_cols))
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
     if isinstance(axes, np.ndarray):
         axes = axes.flatten()
     else:
@@ -588,10 +1073,10 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
                     colocalized[idx] = True
                     closest_idx = distances.idxmin()
                     all_matched_pairs.append({
-                        'x': x, 'y': y, 'brightness': row['brightness_fit'],
+                        'x': x, 'y': y, 'brightness': row['brightness_integrated'],
                         'closest_x': df.at[closest_idx, 'x_pix'],
                         'closest_y': df.at[closest_idx, 'y_pix'],
-                        'closest_brightness': df.at[closest_idx, 'brightness_fit'],
+                        'closest_brightness': df.at[closest_idx, 'brightness_integrated'],
                         'distance': distances[closest_idx]
                     })
 
@@ -613,7 +1098,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
                 circle = Circle((row['x_pix'], row['y_pix']), radius_px, color=color, fill=False, linewidth=1, alpha=0.7)
                 ax.add_patch(circle)
                 ax.text(row['x_pix'] + 7.5, row['y_pix'] + 7.5,
-                        f"{row['brightness_fit']/1000:.1f} kpps",
+                        f"{row['brightness_integrated']/1000:.1f} kpps",
                         color=color, fontsize=7, ha='center', va='center')
 
         wrapped_basename = "\n".join(textwrap.wrap(basename, width=25))

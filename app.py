@@ -6,16 +6,53 @@ import importlib
 import importlib.util
 from importlib import metadata as importlib_metadata
 import platform
+import subprocess
+from datetime import datetime, timezone
 import streamlit as st
+from zoneinfo import ZoneInfo
 
 # Ensure local imports work when running "streamlit run app.py"
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
+
+sys.path.append(REPO_ROOT)
+
+
+def _repo_last_updated(repo_path: str) -> str:
+    """Return a human-readable timestamp for the last git commit in ``repo_path``."""
+
+    try:
+        timestamp_raw = subprocess.check_output(
+            ["git", "-C", repo_path, "log", "-1", "--format=%ct"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return "unknown"
+
+    if not timestamp_raw:
+        return "unknown"
+
+    try:
+        timestamp = datetime.fromtimestamp(int(timestamp_raw), tz=timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    except (ValueError, OSError, OverflowError):
+        return "unknown"
+
+    return timestamp.strftime("%Y-%m-%d %H:%M:%S %Z")
 
 # --- Page setup ---
 try:
     st.set_page_config(layout="wide")
 except Exception:
     pass
+
+st.markdown(
+    (
+        "<div style='display:flex; justify-content:flex-end; margin-bottom:0.5rem; color:#5c5c5c;'>"
+        f"<span style='font-size:0.9rem;'>Last repository update: {_repo_last_updated(REPO_ROOT)}</span>"
+        "</div>"
+    ),
+    unsafe_allow_html=True,
+)
 
 st.sidebar.title("Tools")
 
@@ -29,7 +66,7 @@ tool_registry = {
     "Monomer Estimation": ("tools.monomers", "run"),
     "Process Movie": ("tools.read_movie", "run"),
     # "Plot CSVs": ("tools.plot_csv", "run"),  # commented like your original
-    "Spherical NP TEM": ("tools.spherical_tem", "run"),
+    "TEM Size Analysis": ("tools.spherical_tem", "run"),
 }
 
 show_traces = st.sidebar.toggle(
@@ -145,13 +182,6 @@ def safe_run_tool(modpath: str, funcname: str, label: str):
             return run_fn()
         except Exception as e:
             render_error_context(f"{label} crashed while running", e)
-            with st.expander("Quick things to check"):
-                st.markdown(
-                    "- Are the input files/paths valid?\n"
-                    "- Did package versions change (e.g., scikit-image, scipy, sklearn)?\n"
-                    "- Any GPU/driver issues for heavy operations?\n"
-                    "- Toggle 'Show error tracebacks' above to see details."
-                )
             return
 
 if tool_label in label_to_key:
