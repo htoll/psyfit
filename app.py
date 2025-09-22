@@ -6,8 +6,36 @@ import importlib
 import importlib.util
 from importlib import metadata as importlib_metadata
 import platform
-import streamlit as st
+import subprocess
+from datetime import datetime, timezone
 
+import streamlit as st
+from zoneinfo import ZoneInfo
+
+
+REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
+
+def _repo_last_updated(repo_path: str) -> str:
+    """Return a human-readable timestamp for the last git commit in ``repo_path``."""
+
+    try:
+        timestamp_raw = subprocess.check_output(
+            ["git", "-C", repo_path, "log", "-1", "--format=%ct"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return "unknown"
+
+    if not timestamp_raw:
+        return "unknown"
+
+    try:
+        timestamp = datetime.fromtimestamp(int(timestamp_raw), tz=timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    except (ValueError, OSError, OverflowError):
+        return "unknown"
+
+    return timestamp.strftime("%Y-%m-%d %H:%M:%S %Z")
 # Ensure local imports work when running "streamlit run app.py"
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 #test
@@ -16,6 +44,16 @@ try:
     st.set_page_config(layout="wide")
 except Exception:
     pass
+
+st.markdown(
+    (
+        "<div style='display:flex; justify-content:flex-end; margin-bottom:0.5rem; color:#5c5c5c;'>"
+        f"<span style='font-size:0.9rem;'>Last repository update: {_repo_last_updated(REPO_ROOT)}</span>"
+        "</div>"
+    ),
+    unsafe_allow_html=True,
+)
+
 
 st.sidebar.title("Tools")
 
