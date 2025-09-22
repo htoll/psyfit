@@ -179,8 +179,6 @@ def run():
         try:
             processed_data, combined_df = process_files(
 
-            processed_data, _ = process_files(
-
                 uploaded_files,
                 region,
                 threshold=threshold,
