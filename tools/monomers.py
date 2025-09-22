@@ -67,7 +67,7 @@ def plot_monomer_brightness(
     plot_brightness_histogram=False,
     normalization=False,
     pix_size_um=0.1,
-    cmap='magma',
+    cmap='plasma',
     single_ucnp_brightness=None,
     *,
     interactive=False,
@@ -151,7 +151,7 @@ def plot_monomer_brightness(
         "magma": "Magma", "viridis": "Viridis", "plasma": "Plasma",
         "hot": "Hot", "gray": "Gray", "hsv": "HSV", "cividis": "Cividis", "inferno": "Inferno"
     }
-    plotly_scale = cmap_map.get(cmap, "Magma")
+    plotly_scale = cmap_map.get(cmap, "plasma")
 
     img = image_data_cps.astype(float)
     if normalization:
@@ -258,7 +258,6 @@ def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=
 
 
 def run():
-    col1, col2 = st.columns([1, 2])
 
     # Persistent state
     if "saved_files" not in st.session_state:
@@ -268,8 +267,13 @@ def run():
         st.session_state.processed = None  # (processed_data, combined_df)
     if "selected_file_name" not in st.session_state:
         st.session_state.selected_file_name = None
+    normalized_records = []
+    selected_file_name = st.session_state.get("selected_file_name")
+    threshold = None
+    signal = None
+    region = None
 
-    with col1:
+    with st.sidebar:
         uploaded_files = st.file_uploader(
             "Upload .sif file", type=["sif"], accept_multiple_files=True
         )
@@ -351,10 +355,18 @@ def run():
                                 """
             region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
 
-            cmap = st.selectbox("Colormap", options=["plasma", "viridis", "magma", "hot", "gray", "hsv"])
+            cmap_options = ["plasma", "viridis", "magma", "hot", "gray", "hsv"]
+            current_cmap = st.session_state.get("monomers_cmap", "plasma")
+            try:
+                default_cmap_index = cmap_options.index(current_cmap)
+            except ValueError:
+                default_cmap_index = cmap_options.index("plasma")
+            cmap = st.selectbox("Colormap", options=cmap_options, index=default_cmap_index)            
             st.session_state["monomers_cmap"] = cmap
+            show_fits = st.checkbox("Show fits", value=True)
+            normalization = st.checkbox("Log Image Scaling", value = True)
+            save_format = st.selectbox("Download format", ["svg", "png", "jpeg"]).lower()
 
-            # PROCESS
             if st.button("Process uploaded files"):
                 with st.spinner("Processing…"):
                     saved_records = tuple(normalized_records)
@@ -366,35 +378,125 @@ def run():
                     )
                     st.session_state.processed = (processed_data, combined_df)
 
+        else:
+            st.session_state.selected_file_name = None
+
     # DISPLAY
     if st.session_state.get("processed"):
         processed_data, combined_df = st.session_state.processed
+        selected_file_name = st.session_state.get("selected_file_name")
+        if not selected_file_name and processed_data:
+            selected_file_name = next(iter(processed_data.keys()))
+            st.session_state.selected_file_name = selected_file_name
 
-        plot_col1, plot_col2 = col2.columns(2)
-        mime_map = {"svg": "image/svg+xml", "png": "image/png", "jpeg": "image/jpeg"}
+        data_to_plot = processed_data.get(selected_file_name) if selected_file_name else None
+        df_selected = data_to_plot.get("df") if data_to_plot else None
+        image_data_cps = data_to_plot.get("image") if data_to_plot else None
+
+        plot_col1, plot_col2 = st.columns(2)
+        fig_pie = None
+        thresholds = None
+        single_ucnp_brightness_value = st.session_state.get("single_ucnp_brightness")
+
+        with plot_col2:
+            if not combined_df.empty:
+                brightness_vals = combined_df['brightness_integrated'].values
+                default_min_val = float(np.min(brightness_vals))
+                default_max_val = float(np.max(brightness_vals))
+
+                user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
+                user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
+
+                try:
+                    user_min_val = float(user_min_val_str)
+                    user_max_val = float(user_max_val_str)
+                except ValueError:
+                    st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
+                    st.stop()
+
+                if user_min_val >= user_max_val:
+                    st.warning("Min brightness must be less than max brightness.")
+                else:
+                    num_bins = st.number_input("# Bins:", value=50)
+
+                    if single_ucnp_brightness_value is None:
+                        default_spb = float(np.mean(brightness_vals))
+                    else:
+                        default_spb = float(single_ucnp_brightness_value)
+                    default_spb = float(np.clip(default_spb, user_min_val, user_max_val))
+
+                    single_ucnp_brightness_value = st.number_input(
+                        "Single Particle Brightness (pps)",
+                        min_value=user_min_val,
+                        max_value=user_max_val,
+                        value=default_spb,
+                    )
+                    st.session_state["single_ucnp_brightness"] = float(single_ucnp_brightness_value)
+
+                    thresholds = thresholds_from_single_brightness(single_ucnp_brightness_value)
+
+                    fig_hist_final, _, _ = plot_histogram(
+                        combined_df,
+                        min_val=user_min_val,
+                        max_val=user_max_val,
+                        num_bins=num_bins,
+                        thresholds=thresholds,
+                    )
+                    st.pyplot(fig_hist_final)
+
+                    bins_for_pie = [user_min_val] + [t for t in thresholds if user_min_val < t < user_max_val] + [user_max_val]
+                    bins_for_pie = sorted(bins_for_pie)
+                    num_bins_pie = len(bins_for_pie) - 1
+                    labels_for_pie = CATEGORY_ORDER[:num_bins_pie]
+
+                    if len(labels_for_pie) != num_bins_pie:
+                        st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins_pie} bins.")
+                    else:
+                        categories = pd.cut(
+                            combined_df['brightness_integrated'],
+                            bins=bins_for_pie,
+                            right=False,
+                            include_lowest=True,
+                            labels=labels_for_pie,
+                        )
+                        category_counts = categories.value_counts().reset_index()
+                        category_counts.columns = ['Category', 'Count']
+
+                        fig_pie = px.pie(
+                            category_counts,
+                            values='Count',
+                            names='Category',
+                            color='Category',
+                            color_discrete_map=CATEGORY_COLORS,
+                        )
+                        fig_pie.update_traces(textposition='inside', textinfo='percent+label', textfont_size=18)
+                        fig_pie.update_layout(
+                            font=dict(size=18),
+                            legend=dict(font=dict(size=16)),
+                            margin=dict(l=0, r=0, t=0, b=0),
+                        )
+
+        single_ucnp_brightness_value = st.session_state.get(
+            "single_ucnp_brightness", single_ucnp_brightness_value
+        )
+
 
         with plot_col1:
-            show_fits = st.checkbox("Show fits", value=True)
-            normalization = st.checkbox("Log Image Scaling", value = True)
-            save_format = st.selectbox("Download format", ["svg", "png", "jpeg"]).lower()
 
-            selected_file_name = st.session_state.get("selected_file_name")
-            if not selected_file_name and processed_data:
-                selected_file_name = next(iter(processed_data.keys()))
-                st.session_state.selected_file_name = selected_file_name
 
-            if selected_file_name in processed_data:
-                data_to_plot = processed_data[selected_file_name]
-                df_selected = data_to_plot["df"]
-                image_data_cps = data_to_plot["image"]
+            if not selected_file_name:
+                st.info("Upload .sif files and click 'Process uploaded files' to view results.")
+            elif data_to_plot is None:
+                st.error(f"Data for file '{selected_file_name}' not found.")
+            else:
                 fig_image = plot_monomer_brightness(
                     image_data_cps,
                     df_selected,
                     show_fits=show_fits,
                     normalization=normalization,
                     pix_size_um=0.1,
-                    cmap=st.session_state.get("monomers_cmap", "magma"),
-                    single_ucnp_brightness = st.session_state.get("single_ucnp_brightness"),
+                    cmap=st.session_state.get("monomers_cmap", "plasma"),
+                    single_ucnp_brightness=single_ucnp_brightness_value,
                     interactive=True,
                 )
                 fig_image.update_layout(height=640)
@@ -418,112 +520,34 @@ def run():
                     file_name=f"{selected_file_name}.html",
                     mime="text/html",
                 )
-            else:
-                st.error(f"Data for file '{selected_file_name}' not found.")
+                if fig_pie is not None:
+                    st.plotly_chart(fig_pie, use_container_width=True)
 
-        with plot_col2:
-            if not combined_df.empty:
-                # Get defaults
-                brightness_vals = combined_df['brightness_integrated'].values
-                default_min_val = float(np.min(brightness_vals))
-                default_max_val = float(np.max(brightness_vals))
-                
-                user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
-                user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
-                
-                try:
-                    user_min_val = float(user_min_val_str); user_max_val = float(user_max_val_str)
-                except ValueError:
-                    st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
-                    st.stop()
-                
-                if user_min_val >= user_max_val:
-                    st.warning("Min brightness must be less than max brightness.")
-                else:
-                    num_bins = st.number_input("# Bins:", value=50)
-                
-                    # Single-particle brightness drives thresholds everywhere
-                    # default to previous session value or to mean image intensity if missing
-                    default_spb = st.session_state.get("single_ucnp_brightness", float(np.mean(brightness_vals)))
-                    single_ucnp_brightness = st.number_input(
-                        "Single Particle Brightness (pps)",
-                        min_value=user_min_val, max_value=user_max_val, value=float(default_spb)
-                    )
-                    st.session_state["single_ucnp_brightness"] = float(single_ucnp_brightness)
-                
-                    thresholds = thresholds_from_single_brightness(single_ucnp_brightness)
-                
-                    # Plot the histogram with unified thresholds
-                    fig_hist_final, _, _ = plot_histogram(
-                        combined_df,
-                        min_val=user_min_val,
-                        max_val=user_max_val,
-                        num_bins=num_bins,
-                        thresholds=thresholds
-                    )
-                    st.pyplot(fig_hist_final)
+        processed = st.session_state.processed[0]
+        if processed:
+            psf_counts = {os.path.basename(name): len(processed[name]["df"]) for name in processed.keys()}
 
+            def extract_sif_number(filename):
+                m = re.search(r'_([0-9]+)\.sif$', filename)
+                return m.group(1) if m else filename
 
-                    with plot_col1:
-                        bins_for_pie = [user_min_val] + [t for t in thresholds if user_min_val < t < user_max_val] + [user_max_val]
-                        bins_for_pie = sorted(bins_for_pie)
-                        num_bins_pie = len(bins_for_pie) - 1
-                        labels_for_pie = CATEGORY_ORDER[:num_bins_pie]
+            file_names = [extract_sif_number(n) for n in psf_counts.keys()]
+            counts = list(psf_counts.values())
+            mean_count = np.mean(counts) if counts else 0
 
-                        if len(labels_for_pie) != num_bins_pie:
-                            st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins_pie} bins.")
-                        else:
-                            categories = pd.cut(
-                                combined_df['brightness_integrated'],
-                                bins=bins_for_pie,
-                                right=False,
-                                include_lowest=True,
-                                labels=labels_for_pie
-                            )
-                            category_counts = categories.value_counts().reset_index()
-                            category_counts.columns = ['Category', 'Count']
-                    
-                            # Force consistent color order by label
-                            plotly_colors = [mcolors.to_hex(CATEGORY_COLORS[label]) for label in labels_for_pie]
-                    
-                            fig_pie = px.pie(
-                                category_counts,
-                                values='Count',
-                                names='Category',
-                                color='Category',
-                                color_discrete_map=CATEGORY_COLORS
-                            )
-                            # Larger fonts for readability
-                            fig_pie.update_traces(textposition='inside', textinfo='percent+label', textfont_size=18)
-                            fig_pie.update_layout(
-                                font=dict(size=18),
-                                legend=dict(font=dict(size=16)),
-                                margin=dict(l=0, r=0, t=0, b=0)
-                            )
-                            st.plotly_chart(fig_pie, use_container_width=True)
-
-        # Summary PSF count bar plot in left column (col1)
-        with col1:
-            if st.session_state.get("processed"):
-                processed = st.session_state.processed[0]
-                psf_counts = {os.path.basename(name): len(processed[name]["df"]) for name in processed.keys()}
-
-                def extract_sif_number(filename):
-                    m = re.search(r'_([0-9]+)\.sif$', filename)
-                    return m.group(1) if m else filename
-
-                file_names = [extract_sif_number(n) for n in psf_counts.keys()]
-                counts = list(psf_counts.values())
-                mean_count = np.mean(counts) if counts else 0
-
-                fig_count, ax_count = plt.subplots(figsize=(5, 3))
-                ax_count.bar(file_names, counts)
-                ax_count.axhline(mean_count, color=CATEGORY_COLORS["Multimers"], linestyle='--',
-                 label=f'Avg = {mean_count:.1f}', linewidth=0.8)                
-                ax_count.set_ylabel("# Fit PSFs", fontsize=10)
-                ax_count.set_xlabel("SIF #", fontsize=10)
-                ax_count.legend(fontsize=10)
-                ax_count.tick_params(axis='x', labelsize=8)
-                ax_count.tick_params(axis='y', labelsize=8)
-                HWT_aesthetic()
-                st.pyplot(fig_count)
+            fig_count, ax_count = plt.subplots(figsize=(5, 3))
+            ax_count.bar(file_names, counts)
+            ax_count.axhline(
+                mean_count,
+                color=CATEGORY_COLORS["Multimers"],
+                linestyle='--',
+                label=f'Avg = {mean_count:.1f}',
+                linewidth=0.8,
+            )
+            ax_count.set_ylabel("# Fit PSFs", fontsize=10)
+            ax_count.set_xlabel("SIF #", fontsize=10)
+            ax_count.legend(fontsize=10)
+            ax_count.tick_params(axis='x', labelsize=8)
+            ax_count.tick_params(axis='y', labelsize=8)
+            HWT_aesthetic()
+            st.pyplot(fig_count)
