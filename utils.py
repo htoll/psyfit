@@ -215,7 +215,7 @@ def integrate_sif(
     min_fit_separation_px=3,
     min_r2 = 0.85
 ):
-        image_data, metadata = sif_parser.np_open(sif)
+    image_data, metadata = sif_parser.np_open(sif)
     image_data = image_data[0]  # (H, W)
 
     gainDAC = metadata['GainDAC']
