@@ -7,8 +7,39 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
-
+import hashlib
 import streamlit as st
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+from matplotlib.ticker import MaxNLocator
+
+
+from utils import HWT_aesthetic
+
+
+def _hash_file(uf) -> str:
+    try:
+        b = uf.getbuffer()
+    except Exception:
+        # Some Streamlit versions use .read(); reset cursor afterwards
+        pos = uf.tell()
+        b = uf.read()
+        uf.seek(pos)
+    return hashlib.md5(b).hexdigest()
+
+def _build_proc_key(sif_files, region_ucnp, region_dye, threshold, ucnp_id, dye_id):
+    # Only things that affect processing should be in this key
+    names_hashes = tuple(sorted((f.name, _hash_file(f)) for f in (sif_files or [])))
+    return (names_hashes, str(region_ucnp), str(region_dye), int(threshold), str(ucnp_id), str(dye_id))
+def _extract_common_stem(uploaded_files):
+    if not uploaded_files:
+        return "results"
+    # Take the first file as a base
+    name = Path(uploaded_files[0].name).stem
+    # Remove everything after the last underscore
+    if "_" in name:
+        return name.rsplit("_", 1)[0]
+    return name
 if not hasattr(st, "experimental_rerun"):
     if hasattr(st, "rerun"):
         st.experimental_rerun = st.rerun  # type: ignore
@@ -68,6 +99,37 @@ def _process_files(uploaded_files, region, threshold, signal):
     if _process_files_external is not None:
         return _process_files_external(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM)
     return _process_files_fallback(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM)
+
+def _autoscale_xy(ax, x, y, pad=0.05):
+    import numpy as _np
+    x = _np.asarray(x); y = _np.asarray(y)
+    m = _np.isfinite(x) & _np.isfinite(y)
+
+    # Always lock x to [0, 5]
+    ax.set_xlim(0, 5)
+
+    if not m.any():
+        return  # nothing to scale
+
+    # Only use points that would be visible in the x-window to scale y
+    x_in = (x >= 0) & (x <= 5) & m
+    if not x_in.any():
+        # Fallback: use all finite points if none in [0,5]
+        x_in = m
+
+    yv = y[x_in]
+    if yv.size == 0:
+        return
+
+    ymin = float(_np.nanmin(yv))
+    ymax = float(_np.nanmax(yv))
+
+    # Handle zero-span gracefully
+    dy = ymax - ymin
+    if not _np.isfinite(dy) or dy <= 0:
+        dy = max(1.0, abs(ymax) if _np.isfinite(ymax) else 1.0)
+
+    ax.set_ylim(ymin - dy * pad, ymax + dy * pad)
 
 def _split_ucnp_dye(files, ucnp_id="976", dye_id="638"):
     """
@@ -212,6 +274,8 @@ def run():
     with st.sidebar:
         st.header("Inputs")
         sif_files = st.file_uploader("SIF files (UCNP + Dye)", type=["sif"], accept_multiple_files=True)
+        stem = _extract_common_stem(sif_files)
+
         csv_help = "Optional: upload one combined CSV with a 'sif_name'/'file' column, or per-image CSVs."
         st.header("IDs")
         ucnp_id = st.text_input("UCNP ID token", value="976", help="Substring used to identify UCNP files (matched in filename).")
@@ -238,26 +302,35 @@ def run():
         st.info("Upload SIF files to begin.")
         return
 
-    # Optional: load fit CSVs
+        
 
-    # Split & process
-    ucnp_files, dye_files = _split_ucnp_dye(sif_files, ucnp_id=ucnp_id, dye_id=dye_id)
-    u_data, _ = _process_files(ucnp_files, region=region_ucnp, threshold=threshold, signal="UCNP") if ucnp_files else ({}, pd.DataFrame())
-    d_data, _ = _process_files(dye_files,  region=region_dye, threshold=threshold, signal="dye")   if dye_files  else ({}, pd.DataFrame())
+        # --- Split & process (cached in session so brightness tweaks don't redo work) ---
+    proc_key = _build_proc_key(sif_files, region_ucnp, region_dye, threshold, ucnp_id, dye_id)
+    if "proc_key" not in st.session_state or st.session_state["proc_key"] != proc_key:
+        ucnp_files, dye_files = _split_ucnp_dye(sif_files, ucnp_id=ucnp_id, dye_id=dye_id)
+        u_data, _ = _process_files(ucnp_files, region=region_ucnp, threshold=threshold, signal="UCNP") if ucnp_files else ({}, pd.DataFrame())
+        d_data, _ = _process_files(dye_files,  region=region_dye,  threshold=threshold, signal="dye")  if dye_files  else ({}, pd.DataFrame())
 
-    # Build simple name lists for matching (just the .name keys we used in dicts)
-    u_names = sorted(list(u_data.keys()), key=natural_sort_key)
-    d_names = sorted(list(d_data.keys()), key=natural_sort_key)
-    pairs = _match_ucnp_dye_files(u_names, d_names)
+        u_names = sorted(list(u_data.keys()), key=natural_sort_key)
+        d_names = sorted(list(d_data.keys()), key=natural_sort_key)
+        pairs = _match_ucnp_dye_files(u_names, d_names)
+
+        st.session_state.update({
+            "proc_key": proc_key,
+            "u_data": u_data,
+            "d_data": d_data,
+            "pairs": pairs,
+        })
+    else:
+        u_data = st.session_state["u_data"]
+        d_data = st.session_state["d_data"]
+        pairs  = st.session_state["pairs"]
+
     st.caption(f"Matched {len(pairs)} UCNP↔Dye pairs.")
 
-    # Prepare Matplotlib
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import LogNorm
-
     # Accumulate matched-peak rows
-    tab_pairs, tab_plots = st.tabs(["Pairs", "Plots"])
-
+    tab_pairs = st.container()
+    tab_plots = st.container()
     with tab_pairs:
         matched_rows = []
         overall_placeholder = st.empty()
@@ -373,52 +446,45 @@ def run():
         matched_df = pd.DataFrame(matched_rows)
         st.session_state['coloc_matched_df'] = matched_df
 
-        st.download_button(
-            "Download colocalized pairs (CSV)",
-            data=matched_df.to_csv(index=False).encode("utf-8"),
-            file_name="colocalized_pairs.csv",
-            mime="text/csv",
-        )
 
 
 
 
         with tab_plots:
-            st.subheader("Plots")
             matched_df = st.session_state.get("coloc_matched_df", pd.DataFrame())
             if matched_df is None or matched_df.empty:
-                st.info("No matched peaks yet — open the Pairs tab first.")
+                st.info("No matched peaks yet.")
             else:
-                mode = st.radio("Single-particle brightness", ["Manual (enter pps)","Automatic (Gaussian μ)"], index=0, help="Automatic assumes most PSFs are single particles. If this is not true, use Manual.")
-                st.warning("Automatic mode assumes the majority of PSFs are single particles.")
 
-                if mode.startswith("Automatic"):
-                    try:
-                        from scipy.stats import norm
-                        uvals = matched_df["ucnp_brightness"].astype(float).to_numpy()
-                        dvals = matched_df["dye_brightness"].astype(float).to_numpy()
-                        import numpy as _np
-                        uvals = uvals[_np.isfinite(uvals) & (uvals > 0)]
-                        dvals = dvals[_np.isfinite(dvals) & (dvals > 0)]
-                        mu_ucnp, _ = norm.fit(uvals) if uvals.size else (_np.nan, _np.nan)
-                        mu_dye,  _ = norm.fit(dvals) if dvals.size else (_np.nan, _np.nan)
-                        single_ucnp_brightness = float(mu_ucnp) if _np.isfinite(mu_ucnp) else 1.0
-                        single_dye_brightness  = float(mu_dye)  if _np.isfinite(mu_dye)  else 1.0
-                        st.caption(f"Estimated single UCNP = {single_ucnp_brightness:.3e} pps, single Dye = {single_dye_brightness:.3e} pps")
-                    except Exception as e:
-                        st.error(f"Gaussian fit failed: {e}")
-                        single_ucnp_brightness = 1.0
-                        single_dye_brightness = 1.0
-                else:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        single_ucnp_brightness = st.number_input("Single UCNP brightness (pps)", min_value=0.0, value=1e5, format="%.3e")
-                    with c2:
-                        single_dye_brightness  = st.number_input("Single Dye brightness (pps)", min_value=0.0, value=1e5, format="%.3e")
+                c1, c2 = st.columns(2)
+                with c1:
+                    single_ucnp_brightness = st.number_input("Single UCNP brightness (pps)", min_value=0.0, value=1e5, format="%.2e")
+                with c2:
+                    single_dye_brightness  = st.number_input("Single Dye brightness (pps)", min_value=0.0, value=5e2, format="%.2e")
 
                 md = matched_df.copy()
                 md["num_ucnps"] = md["ucnp_brightness"].astype(float) / max(single_ucnp_brightness, 1e-12)
                 md["num_dyes"]  = md["dye_brightness"].astype(float)  / max(single_dye_brightness,  1e-12)
+                # ---- Single CSV with 2 metadata rows + full table ----
+                meta = io.StringIO()
+                meta.write("Single Emitter,Brightness(pps)\n")
+                meta.write(f"single_ucnp_brightness_pps,{single_ucnp_brightness}\n")
+                meta.write(f"single_dye_brightness_pps,{single_dye_brightness}\n")
+                meta.write("\n")  # blank line separator
+
+                # Append the full (unthresholded) table
+                md_csv = io.StringIO()
+                md.to_csv(md_csv, index=False)
+                md_csv.seek(0)
+
+                # Combine and serve
+                payload = (meta.getvalue() + md_csv.getvalue()).encode("utf-8")
+                st.download_button(
+                    "Download results (CSV)",
+                    data=payload,
+                    file_name=f"{stem}_colocalized_results.csv",
+                    mime="text/csv",
+                )
 
 
                 thresh_factor = st.number_input(
@@ -428,13 +494,19 @@ def run():
                             )
                 thresholded_df = md[md["ucnp_brightness"] >= thresh_factor * single_ucnp_brightness].copy()
 
-                import matplotlib.pyplot as plt
                 fig_sc2, ax_sc2 = plt.subplots(figsize=(6,5))
-                ax_sc2.scatter(md["num_ucnps"].to_numpy(), md["num_dyes"].to_numpy(), alpha=0.6)
+                xvals = md["num_ucnps"].to_numpy(dtype=float)
+                yvals = md["num_dyes"].to_numpy(dtype=float)
+                ax_sc2.scatter(md["num_ucnps"].to_numpy(), md["num_dyes"].to_numpy(), alpha=0.6, clip_on = False)
                 ax_sc2.set_xlabel("Number of UCNPs per PSF")
                 ax_sc2.set_ylabel("Number of Dyes per PSF")
                 ax_sc2.set_title("Matched UCNPs")
-                ax_sc2.set_xlim(0, 5)
+
+                _autoscale_xy(ax_sc2, xvals, yvals)
+                HWT_aesthetic()
+                ax_sc2.grid(True, which="both", linestyle=":", color="lightgrey", alpha=0.7)
+
+
                 colA, colB = st.columns(2)
                 with colA:
                     st.pyplot(fig_sc2)
@@ -452,13 +524,16 @@ def run():
                     ax_h2.set_title("Single UCNPs: no data in [0, 2] after threshold")
                 ax_h2.set_xlabel("Number of Dyes per Single UCNP")
                 ax_h2.set_ylabel("Count")
+                ax_h2.xaxis.set_major_locator(MaxNLocator(integer=True))
+                HWT_aesthetic()
+                # If the highest x value is 2, force a taller y-axis so it doesn't look flat
+                if y_subset.size <= 2:
+                    ax_h2.set_ylim(0, 5)
+
+
+
                 with colB:
                     st.pyplot(fig_h2)
-                st.download_button(
-                    "Download thresholded results (CSV)",
-                    data=thresholded_df.to_csv(index=False).encode("utf-8"),
-                    file_name="thresholded_results.csv",
-                    mime="text/csv",
-                )
+
 if __name__ == "__main__":
     run()
