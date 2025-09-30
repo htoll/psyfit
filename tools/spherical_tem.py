@@ -35,11 +35,14 @@ from skimage.morphology import (
 )
 from skimage.segmentation import watershed
 
-from streamlit_plotly_events import plotly_events
-from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 
 import hashlib
+
+try:  # pragma: no cover
+    import tifffile
+except Exception:  # pragma: no cover
+    tifffile = None
 
 
 # Optional import of pyDM3reader (for reading DM3/DM4 files)
@@ -167,6 +170,109 @@ def try_read_dm3(file_bytes: bytes) -> DM3Image:
             pass
 
 
+def _nm_per_px_from_tiff_resolution(page) -> Optional[float]:
+    try:
+        xres_tag = page.tags.get("XResolution")
+        unit_tag = page.tags.get("ResolutionUnit")
+        if xres_tag is None or unit_tag is None:
+            return None
+
+        xres_val = xres_tag.value
+        if isinstance(xres_val, (tuple, list)) and len(xres_val) >= 2:
+            num, den = xres_val[0], xres_val[1]
+        else:
+            num, den = xres_val, 1
+        num = float(num)
+        den = float(den) if float(den) != 0 else 1.0
+        pixels_per_unit = num / den if den else None
+        if not pixels_per_unit or pixels_per_unit <= 0:
+            return None
+
+        unit_val = unit_tag.value
+        if isinstance(unit_val, (tuple, list)):
+            unit_val = unit_val[0]
+        if isinstance(unit_val, bytes):
+            try:
+                unit_val = unit_val.decode(errors="ignore")
+            except Exception:
+                unit_val = None
+
+        if unit_val in (2, "Inch", "inch", "INCH"):
+            unit_nm = 25_400_000.0
+        elif unit_val in (3, "Centimeter", "centimeter", "CENTIMETER"):
+            unit_nm = 10_000_000.0
+        else:
+            return None
+
+        return unit_nm / pixels_per_unit
+    except Exception:
+        return None
+
+
+def _nm_per_px_from_tiff_description(page) -> Optional[float]:
+    try:
+        desc_tag = page.tags.get("ImageDescription")
+        if desc_tag is None:
+            return None
+        text = _text(desc_tag.value)
+        if not text:
+            return None
+        for match in re.finditer(r"([0-9]*\.?[0-9]+)\s*(nm|nanometer|nanometre|µm|um|micrometer|micrometre|micron|angstrom|å|a)", text, re.IGNORECASE):
+            val = float(match.group(1))
+            unit = match.group(2).lower()
+            if unit in ("um", "µm", "μm", "micrometer", "micrometre", "micron"):
+                val_nm = val * 1000.0
+            elif unit in ("angstrom", "å", "a"):
+                val_nm = val * 0.1
+            else:
+                val_nm = val
+            ctx_start = max(0, match.start() - 20)
+            ctx_end = min(len(text), match.end() + 20)
+            context = text[ctx_start:ctx_end].lower()
+            if "pixel" in context:
+                return val_nm
+        return None
+    except Exception:
+        return None
+
+
+def try_read_tiff(file_bytes: bytes) -> DM3Image:
+    if tifffile is None:  # pragma: no cover
+        raise RuntimeError("tifffile is not installed. Install with: pip install tifffile")
+
+    bio = io.BytesIO(file_bytes)
+    with tifffile.TiffFile(bio) as tif:
+        page = tif.pages[0]
+        data = page.asarray()
+        if data.ndim > 2:
+            data = data[..., 0]
+        data = np.asarray(data, dtype=np.float32)
+
+        nm_from_desc = _nm_per_px_from_tiff_description(page)
+        nm_from_res = _nm_per_px_from_tiff_resolution(page)
+        if nm_from_desc is not None:
+            nm_per_px = nm_from_desc
+        elif nm_from_res is not None:
+            nm_per_px = nm_from_res
+        else:
+            nm_per_px = float("nan")
+
+    return DM3Image(data=data, nm_per_px=float(nm_per_px))
+
+
+def read_tem_image(name: str, file_bytes: bytes) -> DM3Image:
+    ext = os.path.splitext(name or "")[1].lower()
+    if ext in {".dm3", ".dm4"}:
+        return try_read_dm3(file_bytes)
+    if ext in {".tif", ".tiff"}:
+        return try_read_tiff(file_bytes)
+    raise RuntimeError(f"Unsupported file type: {ext or 'unknown'}")
+
+
+def _hash_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Threshold helpers
 # ---------------------------------------------------------------------------
@@ -191,18 +297,6 @@ def histogram_for_intensity(data: np.ndarray, nbins: Optional[int] = None) -> Tu
     counts, edges = np.histogram(vals, bins=nbins)
     centers = edges[:-1] + np.diff(edges) / 2
     return centers, counts
-
-
-def kmeans_threshold(data: np.ndarray, sample: int = 200_000) -> float:
-    flat = data.reshape(-1)
-    if len(flat) > sample:
-        idx = np.random.choice(len(flat), sample, replace=False)
-        flat = flat[idx]
-    km = KMeans(n_clusters=2, n_init="auto", random_state=42)
-    labels = km.fit_predict(flat.reshape(-1, 1))
-    c1_max = flat[labels == 0].max()
-    c2_max = flat[labels == 1].max()
-    return _as_float(min(c1_max, c2_max))
 
 
 def gmm_threshold(data: np.ndarray, nbins: Optional[int] = None, sample: int = 200_000) -> float:
@@ -465,106 +559,156 @@ def histogram_with_fit(
 # ---------------------------------------------------------------------------
 
 def run() -> None:  # pragma: no cover
-    st.title("v2.1 TEM Particle Characterization (.dm3)")
+    st.title("v2.2 TEM Particle Characterization (.dm3/.tif)")
 
     if pydm3 is None:
-        st.error("`pyDM3reader` is not installed. Please run: `pip install pyDM3reader`")
-        return
+        st.warning("`pyDM3reader` is not installed. DM3/DM4 files will be skipped.")
+    if tifffile is None:
+        st.warning("`tifffile` is not installed. TIFF files will be skipped.")
 
     st.caption(
-        "Upload one or more `.dm3` images, choose a thresholding method and the particle shape, "
-        "then view size distributions."
+        "Upload one or more `.dm3`, `.dm4`, `.tif`, or `.tiff` images, select the particle shape, "
+        "and view Gaussian mixture-based size distributions."
     )
 
     col_left, col_right = st.columns([1, 1])
 
     with col_left:
-        files = st.file_uploader("Upload .dm3 file(s)", accept_multiple_files=True, type=["dm3", "dm4"])
+        files = st.file_uploader(
+            "Upload TEM image file(s)",
+            accept_multiple_files=True,
+            type=["dm3", "dm4", "tif", "tiff"],
+        )
 
     with col_right:
-        method = st.selectbox("Threshold method", ["GMM", "K-means", "Manual"], index=0)
         shape_type = st.selectbox("Shape type", ["Sphere", "Hexagon", "Cube"], index=0)
-        nbins_int = st.slider("Intensity histogram bins", 20, 200, 60, step=5)
+        nbins_int = st.slider(
+            "GMM histogram bins",
+            20,
+            200,
+            60,
+            step=5,
+            help="Number of bins used when fitting the Gaussian mixture threshold.",
+        )
         min_shape_size_input = st.number_input(
             "Minimum shape size (nm, or pixels if calibration missing)",
-            min_value=0.0, max_value=10_000.0, value=4.0, step=0.5,
+            min_value=0.0,
+            max_value=10_000.0,
+            value=4.0,
+            step=0.5,
         )
         # Anti-clumping controls (unchanged)
-        smooth_sigma = st.slider("Smoothing σ (px)", 0.0, 2.5, 0.8, step=0.1,
-                                 help="Gaussian blur before thresholding; increases separation of nearby particles.")
-        min_peak_distance = st.slider("Min seed distance (px)", 1, 20, 6, step=1,
-                                      help="Minimum spacing between watershed markers from distance peaks.")
-        h_max = st.slider("Marker fallback threshold", 0, 10, 2, step=1,
-                          help="Used only if too few distance peaks are found.")
-
-    if "manual_threshold" not in st.session_state:
-        st.session_state.manual_threshold = None
+        smooth_sigma = st.slider(
+            "Smoothing σ (px)",
+            0.0,
+            2.5,
+            0.8,
+            step=0.1,
+            help="Gaussian blur before thresholding; increases separation of nearby particles.",
+        )
+        min_peak_distance = st.slider(
+            "Min seed distance (px)",
+            1,
+            20,
+            6,
+            step=1,
+            help="Minimum spacing between watershed markers from distance peaks.",
+        )
+        h_max = st.slider(
+            "Marker fallback threshold",
+            0,
+            10,
+            2,
+            step=1,
+            help="Used only if too few distance peaks are found.",
+        )
 
     results: List[Dict[str, np.ndarray]] = []
     missing_scale_files: List[str] = []
+    cache: Dict[Tuple[Any, ...], Dict[str, np.ndarray]] = st.session_state.setdefault("tem_cache", {})
 
     if files:
-        with st.spinner("Processing …"):
-            for i, f in enumerate(files, start=1):
-                dm3 = try_read_dm3(f.read())
-                data = dm3.data
-                nm_per_px = dm3.nm_per_px
+        file_entries: List[Tuple[Any, ...]] = []
+        for f in files:
+            file_bytes = f.getvalue()
+            cache_key = (
+                f.name,
+                f.size,
+                _hash_bytes(file_bytes),
+                shape_type,
+                float(min_shape_size_input),
+                float(smooth_sigma),
+                int(min_peak_distance),
+                int(h_max),
+                int(nbins_int),
+            )
+            file_entries.append((f, file_bytes, cache_key))
 
-                if isinstance(nm_per_px, (int, float, np.floating)) and np.isfinite(nm_per_px) and nm_per_px > 0:
-                    measurement_unit = "nm"
-                    min_size_value = _as_float(min_shape_size_input)
-                else:
-                    measurement_unit = "px"
-                    min_size_value = _as_float(min_shape_size_input)
-                    missing_scale_files.append(f.name)
-                    nm_per_px = float("nan")
+        uncached = [entry for entry in file_entries if entry[2] not in cache]
+        if uncached:
+            with st.spinner("Processing …"):
+                for f, file_bytes, cache_key in uncached:
+                    try:
+                        image = read_tem_image(f.name, file_bytes)
+                    except Exception as exc:
+                        st.error(f"Failed to read {f.name}: {exc}")
+                        continue
 
-                # Threshold selection
-                if method == "Manual":
-                    fig_h = go.Figure()
-                    centers, counts = histogram_for_intensity(data, nbins_int)
-                    fig_h.add_trace(go.Bar(x=centers, y=counts))
-                    fig_h.update_layout(
-                        title="Intensity histogram (click to set threshold)",
-                        xaxis_title="Intensity",
-                        yaxis_title="Frequency",
-                    )
-                    clicked = plotly_events(fig_h, click_event=True, hover_event=False, select_event=False, key=f"click_{i}")
-                    if clicked:
-                        st.session_state.manual_threshold = _as_float(clicked[-1]["x"])
-                    st.session_state.manual_threshold = st.number_input(
-                        "Manual threshold (intensity)",
-                        value=_as_float(st.session_state.manual_threshold)
-                        if st.session_state.manual_threshold is not None
-                        else float(np.median(data)),
-                        format="%.6f",
-                        key=f"manual_thr_{i}",
-                    )
-                    chosen_threshold = _as_float(st.session_state.manual_threshold)
-                elif method == "K-means":
-                    chosen_threshold = kmeans_threshold(data)
-                    st.info(f"K-means threshold = **{chosen_threshold:.4f}**")
-                else:  # GMM
+                    data = image.data
+                    nm_per_px = image.nm_per_px
+
+                    if (
+                        isinstance(nm_per_px, (int, float, np.floating))
+                        and np.isfinite(nm_per_px)
+                        and nm_per_px > 0
+                    ):
+                        measurement_unit = "nm"
+                        min_size_value = _as_float(min_shape_size_input)
+                    else:
+                        measurement_unit = "px"
+                        min_size_value = _as_float(min_shape_size_input)
+                        nm_per_px = float("nan")
+
                     chosen_threshold = gmm_threshold(data, nbins_int)
-                    st.info(f"GMM threshold = **{chosen_threshold:.4f}**")
 
-                seg = segment_and_measure_shapes(
-                    data=data,
-                    threshold=chosen_threshold,
-                    nm_per_px=nm_per_px,
-                    shape_type=shape_type,
-                    min_size_value=min_size_value,
-                    measurement_unit=measurement_unit,
-                    min_area_px=5,
-                    smooth_sigma=_as_float(smooth_sigma),
-                    h_max=int(h_max),
-                    min_peak_distance=int(min_peak_distance),
-                )
-                seg["name"] = f.name
-                results.append(seg)
+                    seg = segment_and_measure_shapes(
+                        data=data,
+                        threshold=chosen_threshold,
+                        nm_per_px=nm_per_px,
+                        shape_type=shape_type,
+                        min_size_value=min_size_value,
+                        measurement_unit=measurement_unit,
+                        min_area_px=5,
+                        smooth_sigma=_as_float(smooth_sigma),
+                        h_max=int(h_max),
+                        min_peak_distance=int(min_peak_distance),
+                    )
+                    seg["name"] = f.name
+                    seg["threshold"] = (
+                        float(chosen_threshold)
+                        if chosen_threshold is not None and np.isfinite(chosen_threshold)
+                        else None
+                    )
+                    cache[cache_key] = seg
+
+        for f, _, cache_key in file_entries:
+            cached = cache.get(cache_key)
+            if not cached:
+                continue
+            results.append(cached)
+            if cached.get("unit") != "nm":
+                missing_scale_files.append(f.name)
 
         # Display selected image results
         if results:
+            threshold_lines = [
+                f"{r['name']}: {r['threshold']:.4f}"
+                for r in results
+                if r.get("threshold") is not None
+            ]
+            if threshold_lines:
+                st.info("GMM thresholds — " + ", ".join(threshold_lines))
+
             names = [r["name"] for r in results]
             sel_name = st.selectbox("Select image to display", names)
             sel = next(r for r in results if r["name"] == sel_name)
@@ -702,11 +846,18 @@ def run() -> None:  # pragma: no cover
             else:
                 st.info("Insufficient classified particles for histograms.")
     else:
-        st.info("Upload one or more `.dm3` (or `.dm4`) files to begin.")
+        st.info("Upload one or more `.dm3`, `.dm4`, `.tif`, or `.tiff` files to begin.")
 
     # keep variable around to prevent Streamlit from re-running needlessly
-    _ = (tuple((f.name, f.size, f.type) for f in files) if files else (),
-         method, shape_type, nbins_int, float(min_shape_size_input))
+    _ = (
+        tuple((f.name, f.size, f.type) for f in files) if files else (),
+        shape_type,
+        nbins_int,
+        float(min_shape_size_input),
+        float(smooth_sigma),
+        int(min_peak_distance),
+        int(h_max),
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
