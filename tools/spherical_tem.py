@@ -1,6 +1,6 @@
 """Interactive TEM particle analysis tool.
 
-This Streamlit app reads `.dm3` files and measures particle sizes.  It now
+This Streamlit app reads `.dm3` and `.tif/.tiff` files and measures particle sizes.  It now
 supports spherical, hexagonal and cubic nanoparticles and provides quick
 visual checks of the segmentation quality.
 
@@ -23,7 +23,6 @@ import io
 import math
 import os
 import tempfile
-import datetime as dt
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
@@ -40,8 +39,6 @@ from skimage.morphology import (
     disk, 
     h_maxima)
 from skimage.segmentation import watershed
-from streamlit_plotly_events import plotly_events
-from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 
 # Optional import of ncempy (for reading dm3 files)
@@ -49,6 +46,12 @@ try:  # pragma: no cover - simply a convenience check
     from ncempy.io import dm as ncem_dm
 except Exception:  # pragma: no cover
     ncem_dm = None
+
+# Optional import for TIFF reading
+try:  # pragma: no cover - runtime dependency check
+    import tifffile
+except Exception:  # pragma: no cover
+    tifffile = None
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +116,58 @@ def try_read_dm3(file_bytes: bytes) -> DM3Image:
             pass
 
 
+def try_read_tiff(file_bytes: bytes) -> DM3Image:
+    """Read a TIFF file into a :class:`DM3Image` instance."""
+
+    if tifffile is None:  # pragma: no cover - runtime check in UI
+        raise RuntimeError("tifffile is not installed. Please install it (pip install tifffile).")
+
+    with tifffile.TiffFile(io.BytesIO(file_bytes)) as tif:
+        arr = tif.asarray()
+        if arr.ndim > 2:
+            arr = np.squeeze(arr)
+        if arr.ndim == 3:
+            if arr.shape[-1] in (3, 4):
+                arr = arr[..., :3].mean(axis=-1)
+            else:
+                arr = arr[0]
+        data = np.array(arr, dtype=np.float32)
+
+        nm_per_px = float("nan")
+        try:
+            page0 = tif.pages[0]
+            res_tag = page0.tags.get("XResolution")
+            unit_tag = page0.tags.get("ResolutionUnit")
+            if res_tag is not None and unit_tag is not None:
+                num, den = res_tag.value
+                if den:
+                    px_per_unit = num / den
+                    unit_val = unit_tag.value
+                    if unit_val == 2:  # inch
+                        nm_per_unit = 25_400_000.0
+                    elif unit_val == 3:  # centimeter
+                        nm_per_unit = 10_000_000.0
+                    else:
+                        nm_per_unit = float("nan")
+                    if np.isfinite(px_per_unit) and np.isfinite(nm_per_unit):
+                        nm_per_px = nm_per_unit / px_per_unit
+        except Exception:
+            nm_per_px = float("nan")
+
+    return DM3Image(data=data, nm_per_px=nm_per_px)
+
+
+def read_tem_image(file_bytes: bytes, filename: str) -> DM3Image:
+    """Dispatch reading logic based on file extension."""
+
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".dm3":
+        return try_read_dm3(file_bytes)
+    if ext in {".tif", ".tiff"}:
+        return try_read_tiff(file_bytes)
+    raise RuntimeError(f"Unsupported file type: {ext or 'unknown'}")
+
+
 # ---------------------------------------------------------------------------
 # Threshold helpers
 # ---------------------------------------------------------------------------
@@ -131,18 +186,6 @@ def histogram_for_intensity(data: np.ndarray, nbins: Optional[int] = None) -> Tu
     counts, edges = np.histogram(vals, bins=nbins)
     centers = edges[:-1] + np.diff(edges) / 2
     return centers, counts
-
-
-def kmeans_threshold(data: np.ndarray, sample: int = 200_000) -> float:
-    flat = data.reshape(-1)
-    if len(flat) > sample:
-        idx = np.random.choice(len(flat), sample, replace=False)
-        flat = flat[idx]
-    km = KMeans(n_clusters=2, n_init="auto", random_state=42)
-    labels = km.fit_predict(flat.reshape(-1, 1))
-    c1_max = flat[labels == 0].max()
-    c2_max = flat[labels == 1].max()
-    return float(min(c1_max, c2_max))
 
 
 def gmm_threshold(data: np.ndarray, nbins: Optional[int] = None, sample: int = 200_000) -> float:
@@ -375,33 +418,72 @@ def histogram_with_fit(
 
 
 # ---------------------------------------------------------------------------
+# Cached processing helpers
+# ---------------------------------------------------------------------------
+
+
+@st.cache_data(show_spinner=False)
+def process_tem_file(
+    file_bytes: bytes,
+    filename: str,
+    nbins_int: int,
+    shape_type: str,
+    min_shape_size_input: float,
+) -> Dict[str, np.ndarray]:
+    """Process an uploaded TEM image and return segmentation results."""
+
+    image = read_tem_image(file_bytes, filename)
+    data = image.data
+    nm_per_px = image.nm_per_px
+
+    if np.isfinite(nm_per_px) and nm_per_px > 0:
+        measurement_unit = "nm"
+        min_size_value = float(min_shape_size_input)
+    else:
+        measurement_unit = "px"
+        min_size_value = float(min_shape_size_input)
+        nm_per_px = float("nan")
+
+    chosen_threshold = gmm_threshold(data, nbins_int)
+
+    seg = segment_and_measure_shapes(
+        data=data,
+        threshold=chosen_threshold,
+        nm_per_px=nm_per_px,
+        shape_type=shape_type,
+        min_size_value=min_size_value,
+        measurement_unit=measurement_unit,
+        min_area_px=5,
+    )
+    seg["name"] = filename
+    seg["threshold"] = chosen_threshold
+    seg["missing_scale"] = measurement_unit != "nm"
+    return seg
+
+
+# ---------------------------------------------------------------------------
 # Streamlit UI
 # ---------------------------------------------------------------------------
 
 
 def run() -> None:  # pragma: no cover - Streamlit entry point
-    st.title("TEM Particle Characterization (.dm3)")
-
-    if ncem_dm is None:
-        st.error("`ncempy` is not installed. Please run: `pip install ncempy`")
-        return
+    st.title("TEM Particle Characterization (.dm3/.tif)")
 
     st.caption(
-        "Upload one or more `.dm3` images, choose a thresholding method and the particle shape, "
-        "then view size distributions."
+        "Upload one or more `.dm3` or `.tif/.tiff` images, choose the particle shape, "
+        "then view size distributions. Thresholding uses a Gaussian mixture model."
     )
 
     col_left, col_right = st.columns([1, 1])
 
     with col_left:
-        files = st.file_uploader("Upload .dm3 file(s)", accept_multiple_files=True, type=["dm3"])
+        files = st.file_uploader(
+            "Upload TEM file(s)",
+            accept_multiple_files=True,
+            type=["dm3", "tif", "tiff"],
+        )
 
     with col_right:
-        method = st.selectbox(
-            "Threshold method",
-            ["GMM", "K-means", "Manual"],
-            index=0,
-        )
         shape_type = st.selectbox("Shape type", ["Sphere", "Hexagon", "Cube"], index=0)
         nbins_int = st.slider("Intensity histogram bins", 20, 200, 60, step=5)
         min_shape_size_input = st.number_input(
@@ -412,72 +494,38 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
             step=0.5,
         )
 
-    if "manual_threshold" not in st.session_state:
-        st.session_state.manual_threshold = None
-
     results: List[Dict[str, np.ndarray]] = []
-
     missing_scale_files: List[str] = []
+    processing_errors: List[str] = []
 
     if files:
         with st.spinner("Processing …"):
-            for i, f in enumerate(files, start=1):
-                dm3 = try_read_dm3(f.read())
-                data = dm3.data
-                nm_per_px = dm3.nm_per_px
-
-                if np.isfinite(nm_per_px) and nm_per_px > 0:
-                    measurement_unit = "nm"
-                    min_size_value = float(min_shape_size_input)
-                else:
-                    measurement_unit = "px"
-                    min_size_value = float(min_shape_size_input)
-                    missing_scale_files.append(f.name)
-                    nm_per_px = float("nan")
-
-                # Threshold selection
-                if method == "Manual":
-                    fig_h = go.Figure()
-                    centers, counts = histogram_for_intensity(data, nbins_int)
-                    fig_h.add_trace(go.Bar(x=centers, y=counts))
-                    fig_h.update_layout(
-                        title="Intensity histogram (click to set threshold)",
-                        xaxis_title="Intensity",
-                        yaxis_title="Frequency",
+            for f in files:
+                file_bytes = f.getvalue()
+                try:
+                    seg = process_tem_file(
+                        file_bytes=file_bytes,
+                        filename=f.name,
+                        nbins_int=int(nbins_int),
+                        shape_type=shape_type,
+                        min_shape_size_input=float(min_shape_size_input),
                     )
-                    clicked = plotly_events(fig_h, click_event=True, hover_event=False, select_event=False, key=f"click_{i}")
-                    if clicked:
-                        st.session_state.manual_threshold = float(clicked[-1]["x"])
-                    st.session_state.manual_threshold = st.number_input(
-                        "Manual threshold (intensity)",
-                        value=float(st.session_state.manual_threshold)
-                        if st.session_state.manual_threshold is not None
-                        else float(np.median(data)),
-                        format="%.6f",
-                        key=f"manual_thr_{i}",
-                    )
-                    chosen_threshold = float(st.session_state.manual_threshold)
-                elif method == "K-means":
-                    chosen_threshold = kmeans_threshold(data)
-                    st.info(f"K-means threshold = **{chosen_threshold:.4f}**")
-                else:  # GMM
-                    chosen_threshold = gmm_threshold(data, nbins_int)
-                    st.info(f"GMM threshold = **{chosen_threshold:.4f}**")
+                except RuntimeError as exc:
+                    processing_errors.append(f"{f.name}: {exc}")
+                    continue
 
-                seg = segment_and_measure_shapes(
-                    data=data,
-                    threshold=chosen_threshold,
-                    nm_per_px=nm_per_px,
-                    shape_type=shape_type,
-                    min_size_value=min_size_value,
-                    measurement_unit=measurement_unit,
-                    min_area_px=5,
-                )
-                seg["name"] = f.name
                 results.append(seg)
+                if seg.get("missing_scale", False):
+                    missing_scale_files.append(seg.get("name", f.name))
 
-        # Dropdown to select image for display
+        if processing_errors:
+            for err in processing_errors:
+                st.error(err)
+
         if results:
+            for seg in results:
+                st.info(f"{seg['name']}: GMM threshold = **{seg['threshold']:.4f}**")
+
             names = [r["name"] for r in results]
             sel_name = st.selectbox("Select image to display", names)
             sel = next(r for r in results if r["name"] == sel_name)
@@ -487,145 +535,146 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                 st.image(sel["annotated_png"], caption=f"Annotated segmentation preview ({sel['unit']})", use_column_width=True)
             with tab2:
                 st.image(sel["watershed_png"], caption="Watershed labels", use_column_width=True)
-
-        if missing_scale_files:
-            missing_list = "\n".join(f"• {name}" for name in sorted(set(missing_scale_files)))
-            st.warning(
-                "Pixel size metadata was not found for the following file(s). "
-                "All measurements (including the minimum shape size filter) are reported in pixels:\n"
-                f"{missing_list}"
-            )
-
-        # ------------------------------------------------------------------
-        # Combined histograms
-        # ------------------------------------------------------------------
-        st.markdown("---")
-
-        units_present = {r.get("unit", "nm") for r in results}
-        if len(units_present) > 1:
-            st.error("Cannot combine histograms because uploaded images use mixed measurement units.")
-            return
-
-        unit_label = units_present.pop() if units_present else "nm"
-
-        if shape_type == "Sphere":
-            all_d = np.concatenate([r["diameters_nm"] for r in results]) if results else np.array([])
-            if all_d.size:
-                range_slider = st.slider(
-                    f"Diameter range ({unit_label})",
-                    float(all_d.min()),
-                    float(all_d.max()),
-                    (float(all_d.min()), float(all_d.max())),
+            if missing_scale_files:
+                missing_list = "\n".join(f"• {name}" for name in sorted(set(missing_scale_files)))
+                st.warning(
+                    "Pixel size metadata was not found for the following file(s). "
+                    "All measurements (including the minimum shape size filter) are reported in pixels:\n"
+                    f"{missing_list}"
                 )
-                nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
-                fig, mu, n = histogram_with_fit(all_d, nbins, range_slider, f"Diameter ({unit_label})", unit_label)
-                if unit_label == "nm" and np.isfinite(mu):
-                    volume = (4 / 3) * np.pi * (mu / 2) ** 3
-                    title_suffix = f"μ={mu:.2f}, Vol={volume:.2f} nm³, n={n}"
+
+            # ------------------------------------------------------------------
+            # Combined histograms
+            # ------------------------------------------------------------------
+            st.markdown("---")
+
+            units_present = {r.get("unit", "nm") for r in results}
+            if len(units_present) > 1:
+                st.error("Cannot combine histograms because uploaded images use mixed measurement units.")
+                return
+
+            unit_label = units_present.pop() if units_present else "nm"
+
+            if shape_type == "Sphere":
+                all_d = np.concatenate([r["diameters_nm"] for r in results]) if results else np.array([])
+                if all_d.size:
+                    range_slider = st.slider(
+                        f"Diameter range ({unit_label})",
+                        float(all_d.min()),
+                        float(all_d.max()),
+                        (float(all_d.min()), float(all_d.max())),
+                    )
+                    nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
+                    fig, mu, n = histogram_with_fit(all_d, nbins, range_slider, f"Diameter ({unit_label})", unit_label)
+                    if unit_label == "nm" and np.isfinite(mu):
+                        volume = (4 / 3) * np.pi * (mu / 2) ** 3
+                        title_suffix = f"μ={mu:.2f}, Vol={volume:.2f} nm³, n={n}"
+                    else:
+                        title_suffix = f"μ={mu:.2f}, n={n}"
+                    fig.update_layout(title=f"Diameter ({unit_label}): {title_suffix}")
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
-                    title_suffix = f"μ={mu:.2f}, n={n}"
-                fig.update_layout(title=f"Diameter ({unit_label}): {title_suffix}")
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No particles detected.")
+                    st.info("No particles detected.")
 
-        elif shape_type == "Hexagon":
-            all_hex = np.concatenate([r["hex_axes_nm"] for r in results]) if results else np.array([])
-            all_len = np.concatenate([r["lengths_nm"] for r in results]) if results else np.array([])
-            all_wid = np.concatenate([r["widths_nm"] for r in results]) if results else np.array([])
-            if all_hex.size and all_len.size and all_wid.size:
-                range_hex = st.slider(
-                    f"Hexagon diagonal range ({unit_label})",
-                    float(all_hex.min()),
-                    float(all_hex.max()),
-                    (float(all_hex.min()), float(all_hex.max())),
-                )
-                range_len = st.slider(
-                    f"Length range ({unit_label})",
-                    float(all_len.min()),
-                    float(all_len.max()),
-                    (float(all_len.min()), float(all_len.max())),
-                )
-                range_wid = st.slider(
-                    f"Width range ({unit_label})",
-                    float(all_wid.min()),
-                    float(all_wid.max()),
-                    (float(all_wid.min()), float(all_wid.max())),
-                )
-                nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
+            elif shape_type == "Hexagon":
+                all_hex = np.concatenate([r["hex_axes_nm"] for r in results]) if results else np.array([])
+                all_len = np.concatenate([r["lengths_nm"] for r in results]) if results else np.array([])
+                all_wid = np.concatenate([r["widths_nm"] for r in results]) if results else np.array([])
+                if all_hex.size and all_len.size and all_wid.size:
+                    range_hex = st.slider(
+                        f"Hexagon diagonal range ({unit_label})",
+                        float(all_hex.min()),
+                        float(all_hex.max()),
+                        (float(all_hex.min()), float(all_hex.max())),
+                    )
+                    range_len = st.slider(
+                        f"Length range ({unit_label})",
+                        float(all_len.min()),
+                        float(all_len.max()),
+                        (float(all_len.min()), float(all_len.max())),
+                    )
+                    range_wid = st.slider(
+                        f"Width range ({unit_label})",
+                        float(all_wid.min()),
+                        float(all_wid.max()),
+                        (float(all_wid.min()), float(all_wid.max())),
+                    )
+                    nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
 
-                fig_hex, mu_hex, n_hex = histogram_with_fit(all_hex, nbins, range_hex, f"Hexagon diagonal ({unit_label})", unit_label)
-                fig_len, mu_len, n_len = histogram_with_fit(all_len, nbins, range_len, f"Length ({unit_label})", unit_label)
-                fig_wid, mu_wid, n_wid = histogram_with_fit(all_wid, nbins, range_wid, f"Width ({unit_label})", unit_label)
+                    fig_hex, mu_hex, n_hex = histogram_with_fit(all_hex, nbins, range_hex, f"Hexagon diagonal ({unit_label})", unit_label)
+                    fig_len, mu_len, n_len = histogram_with_fit(all_len, nbins, range_len, f"Length ({unit_label})", unit_label)
+                    fig_wid, mu_wid, n_wid = histogram_with_fit(all_wid, nbins, range_wid, f"Width ({unit_label})", unit_label)
 
-                # Volume of hexagonal prism
-                if unit_label == "nm" and np.isfinite(mu_hex) and np.isfinite(mu_len) and np.isfinite(mu_wid):
-                    width = mu_wid if abs(mu_wid - mu_hex) < abs(mu_len - mu_hex) else mu_len
-                    height = mu_len if width == mu_wid else mu_wid
-                    area_hex = (3 * np.sqrt(3) / 8) * mu_hex ** 2
-                    volume = area_hex * height
-                    volume_text = f", Vol={volume:.2f} nm³"
+                    # Volume of hexagonal prism
+                    if unit_label == "nm" and np.isfinite(mu_hex) and np.isfinite(mu_len) and np.isfinite(mu_wid):
+                        width = mu_wid if abs(mu_wid - mu_hex) < abs(mu_len - mu_hex) else mu_len
+                        height = mu_len if width == mu_wid else mu_wid
+                        area_hex = (3 * np.sqrt(3) / 8) * mu_hex ** 2
+                        volume = area_hex * height
+                        volume_text = f", Vol={volume:.2f} nm³"
+                    else:
+                        volume_text = ""
+                    n_min = int(min(n_hex, n_len, n_wid))
+
+                    fig_hex.update_layout(title=f"Hexagon diagonal ({unit_label}): μ={mu_hex:.2f}{volume_text}, n≥{n_min}")
+                    fig_len.update_layout(title=f"Length ({unit_label}): μ={mu_len:.2f}{volume_text}, n≥{n_min}")
+                    fig_wid.update_layout(title=f"Width ({unit_label}): μ={mu_wid:.2f}{volume_text}, n≥{n_min}")
+
+                    st.plotly_chart(fig_hex, use_container_width=True)
+                    st.plotly_chart(fig_len, use_container_width=True)
+                    st.plotly_chart(fig_wid, use_container_width=True)
                 else:
-                    volume_text = ""
-                n_min = int(min(n_hex, n_len, n_wid))
+                    st.info("Insufficient classified particles for histograms.")
 
-                fig_hex.update_layout(title=f"Hexagon diagonal ({unit_label}): μ={mu_hex:.2f}{volume_text}, n≥{n_min}")
-                fig_len.update_layout(title=f"Length ({unit_label}): μ={mu_len:.2f}{volume_text}, n≥{n_min}")
-                fig_wid.update_layout(title=f"Width ({unit_label}): μ={mu_wid:.2f}{volume_text}, n≥{n_min}")
+            else:  # Cube / rectangular prism
+                all_len = np.concatenate([r["lengths_nm"] for r in results]) if results else np.array([])
+                all_wid = np.concatenate([r["widths_nm"] for r in results]) if results else np.array([])
+                all_hgt = np.concatenate([r.get("heights_nm", []) for r in results]) if results else np.array([])
+                if all_len.size and all_wid.size and all_hgt.size:
+                    range_len = st.slider(
+                        f"Length range ({unit_label})",
+                        float(all_len.min()),
+                        float(all_len.max()),
+                        (float(all_len.min()), float(all_len.max())),
+                    )
+                    range_wid = st.slider(
+                        f"Width range ({unit_label})",
+                        float(all_wid.min()),
+                        float(all_wid.max()),
+                        (float(all_wid.min()), float(all_wid.max())),
+                    )
+                    range_hgt = st.slider(
+                        f"Height range ({unit_label})",
+                        float(all_hgt.min()),
+                        float(all_hgt.max()),
+                        (float(all_hgt.min()), float(all_hgt.max())),
+                    )
+                    nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
 
-                st.plotly_chart(fig_hex, use_container_width=True)
-                st.plotly_chart(fig_len, use_container_width=True)
-                st.plotly_chart(fig_wid, use_container_width=True)
-            else:
-                st.info("Insufficient classified particles for histograms.")
+                    fig_len, mu_len, n_len = histogram_with_fit(all_len, nbins, range_len, f"Length ({unit_label})", unit_label)
+                    fig_wid, mu_wid, n_wid = histogram_with_fit(all_wid, nbins, range_wid, f"Width ({unit_label})", unit_label)
+                    fig_hgt, mu_hgt, n_hgt = histogram_with_fit(all_hgt, nbins, range_hgt, f"Height ({unit_label})", unit_label)
 
-        else:  # Cube / rectangular prism
-            all_len = np.concatenate([r["lengths_nm"] for r in results]) if results else np.array([])
-            all_wid = np.concatenate([r["widths_nm"] for r in results]) if results else np.array([])
-            all_hgt = np.concatenate([r.get("heights_nm", []) for r in results]) if results else np.array([])
-            if all_len.size and all_wid.size and all_hgt.size:
-                range_len = st.slider(
-                    f"Length range ({unit_label})",
-                    float(all_len.min()),
-                    float(all_len.max()),
-                    (float(all_len.min()), float(all_len.max())),
-                )
-                range_wid = st.slider(
-                    f"Width range ({unit_label})",
-                    float(all_wid.min()),
-                    float(all_wid.max()),
-                    (float(all_wid.min()), float(all_wid.max())),
-                )
-                range_hgt = st.slider(
-                    f"Height range ({unit_label})",
-                    float(all_hgt.min()),
-                    float(all_hgt.max()),
-                    (float(all_hgt.min()), float(all_hgt.max())),
-                )
-                nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
+                    if unit_label == "nm" and np.isfinite(mu_len) and np.isfinite(mu_wid) and np.isfinite(mu_hgt):
+                        volume = mu_len * mu_wid * mu_hgt
+                        volume_text = f", Vol={volume:.2f} nm³"
+                    else:
+                        volume_text = ""
+                    n_min = int(min(n_len, n_wid, n_hgt))
 
-                fig_len, mu_len, n_len = histogram_with_fit(all_len, nbins, range_len, f"Length ({unit_label})", unit_label)
-                fig_wid, mu_wid, n_wid = histogram_with_fit(all_wid, nbins, range_wid, f"Width ({unit_label})", unit_label)
-                fig_hgt, mu_hgt, n_hgt = histogram_with_fit(all_hgt, nbins, range_hgt, f"Height ({unit_label})", unit_label)
+                    fig_len.update_layout(title=f"Length ({unit_label}): μ={mu_len:.2f}{volume_text}, n≥{n_min}")
+                    fig_wid.update_layout(title=f"Width ({unit_label}): μ={mu_wid:.2f}{volume_text}, n≥{n_min}")
+                    fig_hgt.update_layout(title=f"Height ({unit_label}): μ={mu_hgt:.2f}{volume_text}, n≥{n_min}")
 
-                if unit_label == "nm" and np.isfinite(mu_len) and np.isfinite(mu_wid) and np.isfinite(mu_hgt):
-                    volume = mu_len * mu_wid * mu_hgt
-                    volume_text = f", Vol={volume:.2f} nm³"
+                    st.plotly_chart(fig_len, use_container_width=True)
+                    st.plotly_chart(fig_wid, use_container_width=True)
+                    st.plotly_chart(fig_hgt, use_container_width=True)
                 else:
-                    volume_text = ""
-                n_min = int(min(n_len, n_wid, n_hgt))
-
-                fig_len.update_layout(title=f"Length ({unit_label}): μ={mu_len:.2f}{volume_text}, n≥{n_min}")
-                fig_wid.update_layout(title=f"Width ({unit_label}): μ={mu_wid:.2f}{volume_text}, n≥{n_min}")
-                fig_hgt.update_layout(title=f"Height ({unit_label}): μ={mu_hgt:.2f}{volume_text}, n≥{n_min}")
-
-                st.plotly_chart(fig_len, use_container_width=True)
-                st.plotly_chart(fig_wid, use_container_width=True)
-                st.plotly_chart(fig_hgt, use_container_width=True)
-            else:
-                st.info("Insufficient classified particles for histograms.")
+                    st.info("Insufficient classified particles for histograms.")
+        elif processing_errors:
+            st.info("No files were processed successfully. Please review the errors above.")
     else:
-        st.info("Upload one or more `.dm3` files to begin.")
+        st.info("Upload one or more `.dm3` or `.tif/.tiff` files to begin.")
 
 
 # When run as `python tools/spherical_tem.py`, start the Streamlit app.
