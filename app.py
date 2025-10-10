@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 
 REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
+sys.path.insert(0, REPO_ROOT)   
 
 def _repo_last_updated(repo_path: str) -> str:
     """Return a human-readable timestamp for the last git commit in ``repo_path``."""
@@ -61,13 +62,16 @@ st.sidebar.title("Tools")
 tool_registry = {
     "Batch Convert": ("tools.batch_convert", "run"),
     "Brightness": ("tools.analyze_single_sif", "run"),
-    "Saturation Series": ("tools.SaturationSeries", "run"),
+
     "Dye Colocalization": ("tools.colocalization", "run"),
-    "Shelling Injection Table": ("tools.shelling_table", "run"),
+    "Get Spectra": ("tools.get_spectra", "run"),
     "Monomer Estimation": ("tools.monomers", "run"),
     "Process Movie": ("tools.read_movie", "run"),
+    "Saturation Series": ("tools.SaturationSeries", "run"),
+    "Shelling Injection Table": ("tools.shelling_table", "run"),
+
     # "Plot CSVs": ("tools.plot_csv", "run"),  # commented like your original
-    "Spherical NP TEM": ("tools.spherical_tem", "run"),
+    "TEM Size Analysis": ("tools.spherical_tem", "run"),
 }
 
 show_traces = st.sidebar.toggle(
