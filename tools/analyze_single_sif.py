@@ -100,6 +100,7 @@ def run():
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:
                                                                 - UCNP for high SNR (sklearn peakfinder)
                                                                 - dye for low SNR (sklearn blob detection)''')
+        min_distance = st.number_input("Minimum Distance", min_value=1, value=5, help='Min distance between PSFs')
         cmap = st.selectbox("Colormap", options=['plasma', 'gray', "magma", 'viridis', 'hot', 'hsv'])
         show_fits = st.checkbox("Show fits", value=True)
         normalization = st.checkbox("Log Image Scaling")
@@ -118,7 +119,11 @@ def run():
 
     if st.session_state.analyze_clicked and uploaded_files:
         try:
-            processed_data, combined_df = process_files(uploaded_files, region, threshold=threshold, signal=signal)
+            processed_data, combined_df = process_files(uploaded_files, 
+                                                        region, 
+                                                        threshold=threshold, 
+                                                        signal=signal,
+                                                       min_distance = min_distance)
 
             if len(uploaded_files) > 1:
                 file_options = [f.name for f in uploaded_files]
