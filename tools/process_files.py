@@ -30,7 +30,8 @@ def process_files(uploaded_files, region, threshold=1, signal="UCNP", pix_size_u
                                                   threshold=threshold,
                                                signal = signal,
                                                pix_size_um = pix_size_um,
-                                               sig_threshold=sig_threshold               
+                                               sig_threshold=sig_threshold,
+                                               min_distance = min_distance
                                                 )
             processed_data[uploaded_file.name] = {
                 "df": df,
