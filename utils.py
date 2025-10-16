@@ -42,7 +42,7 @@ def HWT_aesthetic():
     sns.despine()
     return palette 
 
-def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3):
+def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3, min_distance = 5):
     image_data, metadata = sif_parser.np_open(sif, ignore_corrupt=True)
     image_data = image_data[0]  # (H, W)
 
@@ -80,7 +80,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
     threshold_abs = np.mean(smoothed_image) + threshold * np.std(smoothed_image)
 
     if signal == 'UCNP':
-        coords = peak_local_max(smoothed_image, min_distance=5, threshold_abs=threshold_abs)
+        coords = peak_local_max(smoothed_image, min_distance=min_distance, threshold_abs=threshold_abs)
     else:
         blobs = blob_log(smoothed_image, min_sigma=1, max_sigma=3, num_sigma=5, threshold=5 * threshold)
         coords = blobs[:, :2]
