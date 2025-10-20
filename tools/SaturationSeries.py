@@ -9,28 +9,6 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 import pandas as pd
 import matplotlib.pyplot as plt
-import streamlit.components.v1 as components
-LIVE2D_HTML = """
-<script src="https://cdn.jsdelivr.net/npm/live2d-widget@3.1.4/lib/L2Dwidget.min.js"></script>
-<script>
-    L2Dwidget.init({
-        "model": {
-            "jsonPath": "https://cdn.jsdelivr.net/gh/Eikanya/Live2d-model/Live2D/Senko_Norm/senko.model.json",
-            "scale": 1
-        },
-        "display": {
-            "position": "left",
-            "width": 120,
-            "height": 240,
-            "hOffset": 20,
-            "vOffset": 0
-        },
-        "mobile": { "show": true, "scale": 0.5 },
-        "react": { "opacityDefault": 0.7, "opacityOnHover": 0.2 }
-    });
-</script>
-"""
-
 
 
 def convertToPowerDensity60x(current, sigma = 0.388): # Current in mA As of JUNE 27th 2023
@@ -236,13 +214,7 @@ def process_all_quadrants(_uploaded_files, threshold, signal):
 # --- Keep your build_brightness_heatmap function here ---
 # --- Add the new plot_brightness_vs_current function here ---
 def run():
-
-    # --- ADD THE WIDGET TO THE SIDEBAR ---  # <--- ADD THIS BLOCK
-    with st.sidebar:
-        st.markdown("### 🤖")
-        components.html(LIVE2D_HTML, height=400)
-    # --- END WIDGET BLOCK ---
-    
+ 
     col1, col2 = st.columns([1, 2])
     
     @st.cache_data
