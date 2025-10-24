@@ -167,9 +167,9 @@ with st.sidebar.expander("Diagnostics", expanded=False):
 available_labels = list(tool_registry.keys())
 label_to_key = {label: key for label, key in tool_registry.items()}
 tool_label = st.sidebar.radio("Analyze:", available_labels, index=0)
-# ---- Add Live2D Widget to Sidebar ----
-with st.sidebar:
-    components.html(LIVE2D_HTML, height=400)
+# # ---- Add Live2D Widget to Sidebar ----
+# with st.sidebar: # joao tried to add an anime girl but it failed. he said he's going to try again...
+#     components.html(LIVE2D_HTML, height=400)
 # -------------------------------------
 col1, col2 = st.columns([1, 2])
 
