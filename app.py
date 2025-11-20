@@ -93,7 +93,7 @@ tool_registry = {
     "Shelling Injection Table": ("tools.shelling_table", "run"),
 
     # "Plot CSVs": ("tools.plot_csv", "run"),  # commented like your original
-    "TEM Size Analysis": ("tools.spherical_tem", "run"),
+    "*BETA* TEM Size Analysis": ("tools.spherical_tem", "run"),
 }
 
 show_traces = st.sidebar.toggle(
