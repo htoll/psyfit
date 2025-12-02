@@ -117,7 +117,7 @@ def run():
   
       df = pd.DataFrame({
           "Injection": inj_numbers,
-          "Time (min)": inj_times,
+          "Time (min)": inj_times.round().astype(int),
           "Estimated radius (nm)": np.round(est_radius, 3),
           "NaTFA (mL)": tfa_added,
           "YAc (mL)": yac_added,
