@@ -32,14 +32,14 @@ def run():
           initial_radius = st.number_input(
               "Initial core radius (nm)",
               min_value=0.0,
-              value=13.7/2,
+              value=8/2,
               step=0.05,
               format="%0.2f",
           )
           final_radius = st.number_input(
               "Target final radius (nm)",
               min_value=0.0,
-              value=19/2,
+              value=12/2,
               step=0.05,
               format="%0.2f",
           )
