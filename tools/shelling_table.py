@@ -50,7 +50,7 @@ def run():
               value=200,
               step=1,
               help=(
-                  "Estimated nanoparticle volume (nm³) grown per mL of YAc precursor added. Experimentally, this can vary from ~150-400."
+                  "Estimated nanoparticle volume (nm³) grown per mL of LnOA precursor added. Experimentally, this can vary from ~150-400."
               ),
           )
           injection_time = st.number_input(
@@ -86,7 +86,7 @@ def run():
   
       inj_numbers = np.arange(1, num_injections + 1)
       est_radius = np.array([initial_radius + i * delta for i in range(num_injections)])
-      inj_times = np.array([injection_time * (i + 1) for i in range(num_injections)], dtype=float)
+      inj_times = np.array([injection_time * i for i in range(num_injections)], dtype=float)
   
       volume_added = np.zeros(num_injections - 1)
       for v in range(num_injections - 1):
