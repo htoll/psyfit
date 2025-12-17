@@ -36,30 +36,27 @@ from scipy.stats import norm
 from skimage.measure import regionprops, label
 from skimage.morphology import (
     remove_small_objects,
+    remove_small_holes,  
     binary_closing,
     disk, 
     h_maxima)
 from skimage.segmentation import watershed
 from streamlit_plotly_events import plotly_events
 from sklearn.cluster import KMeans
+from matplotlib.colors import ListedColormap
+import zipfile
 from sklearn.mixture import GaussianMixture
+import pandas as pd
 
-# Optional import of ncempy (for reading dm3 files)
-try:  # pragma: no cover - simply a convenience check
-    from ncempy.io import dm as ncem_dm
-except Exception:  # pragma: no cover
-    ncem_dm = None
-
-
+import dm3_lib as pyDM3reader
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
-
-
 @dataclass
 class DM3Image:
     data: np.ndarray
     nm_per_px: float
+
 
 
 # ---------------------------------------------------------------------------
@@ -67,11 +64,28 @@ class DM3Image:
 # ---------------------------------------------------------------------------
 
 
+def _find_dimension_tags(tags: dict) -> list:
+    """Recursively find all 'Dimension' tag groups in the metadata."""
+    found = []
+    if isinstance(tags, dict):
+        for key, value in tags.items():
+            if key == "Dimension" and isinstance(value, dict):
+                # A Dimension group contains axis info keyed by '0', '1', etc.
+                # We add the whole group to our list of candidates.
+                found.append(value)
+            elif isinstance(value, dict):
+                found.extend(_find_dimension_tags(value))
+            elif isinstance(value, list):
+                for item in value:
+                    found.extend(_find_dimension_tags(item))
+    return found
+
+
 def try_read_dm3(file_bytes: bytes) -> DM3Image:
     """Read a dm3 file into a :class:`DM3Image` instance."""
 
-    if ncem_dm is None:  # pragma: no cover - runtime check in UI
-        raise RuntimeError("ncempy is not installed. Please install it (pip install ncempy).")
+    if pyDM3reader is None:  # pragma: no cover - runtime check in UI
+        raise RuntimeError("dm3_lib is not installed. Please install it (pip install dm3_lib).")
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".dm3")
     try:
@@ -79,34 +93,70 @@ def try_read_dm3(file_bytes: bytes) -> DM3Image:
         tmp.flush()
         tmp.close()
 
-        with ncem_dm.fileDM(tmp.name, verbose=False) as rdr:
-            im = rdr.getDataset(0)
-            data = np.array(im["data"], dtype=np.float32)
+        # pyDM3reader (dm3_lib) reads from a file path.
+        dm3_file = pyDM3reader.DM3(tmp.name)
+        data = np.array(dm3_file.imagedata, dtype=np.float32)
+        
+        # Initialize defaults
+        pixel_size = 0
+        pixel_unit = ""
 
-            nm_per_px = np.nan
-            md = rdr.allTags
-            candidates = [
-                ("ImageList.1.ImageData.Calibrations.Dimension.0.Scale", 1e9),
-                ("ImageList.1.ImageData.Calibrations.Dimension.1.Scale", 1e9),
-                ("pixelSize.x", 1e9),
-                ("pixelSize", 1e9),
-                ("xscale", 1e9),
-                ("ImageList.2.ImageData.Calibrations.Dimension.0.Scale", 1e9),
-                ("ImageList.2.ImageData.Calibrations.Dimension.1.Scale", 1e9),
-            ]
-            for key, factor in candidates:
-                try:
-                    val = md
-                    for k in key.split("."):
-                        val = val[k]
-                    if isinstance(val, (int, float)):
-                        nm_per_px = float(val) * factor
-                        break
-                except Exception:
-                    continue
+        # 1. Try standard attribute provided by the library
+        if hasattr(dm3_file, "pxsize"):
+            pixel_size, pixel_unit = dm3_file.pxsize
+
+        # 2. If missing, try to dig into the tags using the existing helper function
+        if pixel_size == 0 and hasattr(dm3_file, "tags"):
+            # Find all "Dimension" groups in the metadata
+            dim_groups = _find_dimension_tags(dm3_file.tags)
+            
+            for group in dim_groups:
+                # 'group' corresponds to the "Dimension" tag. 
+                # In dm3_lib, arrays often appear as dicts with keys '0', '1', etc.
+                # We check the first dimension (usually X-axis, index '0')
+                if '0' in group and isinstance(group['0'], dict):
+                    dim_data = group['0']
+                    scale = dim_data.get('Scale', 0)
+                    units = dim_data.get('Units', '')
+                    if scale > 0:
+                        pixel_size = scale
+                        pixel_unit = units
+                        break # Stop if we found a valid scale
+
+        # 3. Fallback: Check for specific "Pixel Size (um)" tag found in your file
+        # This manually searches the "ImageTags" dictionary if it exists.
+        if pixel_size == 0 and hasattr(dm3_file, "tags"):
+             root_tags = dm3_file.tags
+             # Navigate roughly: Root -> ImageTags -> Pixel Size (um)
+             # Note: Structure depends on exact file version, we search somewhat safely
+             if 'ImageTags' in root_tags:
+                 img_tags = root_tags['ImageTags']
+                 if 'Pixel Size (um)' in img_tags:
+                     pixel_size = img_tags['Pixel Size (um)']
+                     pixel_unit = 'µm' # Explicitly set microns based on tag name
+
+        # 4. Convert to nanometers for the application
+        nm_per_px = float("nan")
+        if pixel_size > 0:
+            # Clean up unit string (remove null bytes or weird formatting)
+            pixel_unit = str(pixel_unit).strip().replace('\x00', '')
+            
+            if pixel_unit == "m":
+                nm_per_px = pixel_size * 1e9
+            elif pixel_unit == "nm":
+                nm_per_px = pixel_size
+            elif pixel_unit in ["µm", "um", "micron", "microns"]:
+                nm_per_px = pixel_size * 1e3
+            else:
+                # Assume nm if unit is weird but size is small, or just pass raw
+                # But for safety, let's assume raw if unknown unit, or maybe user has nm
+                nm_per_px = pixel_size # Default fallback
 
         return DM3Image(data=data, nm_per_px=nm_per_px)
-    finally:  # pragma: no cover - best effort cleanup
+    except Exception as e:
+        st.warning(f"Failed to read DM3 file with dm3_lib: {e}")
+        return DM3Image(data=np.array([[]]), nm_per_px=float("nan"))
+    finally:
         try:
             os.unlink(tmp.name)
         except Exception:
@@ -150,6 +200,10 @@ def gmm_threshold(data: np.ndarray, nbins: Optional[int] = None, sample: int = 2
     if len(flat) > sample:
         idx = np.random.choice(len(flat), sample, replace=False)
         flat = flat[idx]
+    
+    if flat.size < 2:
+        return float(np.median(data)) if data.size > 0 else 0.0
+
     gm = GaussianMixture(n_components=2, random_state=42)
     gm.fit(flat.reshape(-1, 1))
     mu = np.sort(gm.means_.flatten())
@@ -176,37 +230,16 @@ def segment_and_measure_shapes(
     min_size_value: float,
     measurement_unit: str,
     min_area_px: int = 5,
-) -> Dict[str, np.ndarray]:
-    """Segment particles and measure their dimensions.
-
-    Parameters
-    ----------
-    data: ndarray
-        The image data.
-    threshold: float
-        Threshold value for creating a binary mask.
-    nm_per_px: float
-        Pixel to nanometre scaling.
-    shape_type: str
-        'Sphere', 'Hexagon', or 'Cube'.
-    min_size_value: float
-        Minimum accepted feature size expressed in ``measurement_unit``.
-    measurement_unit: str
-        Unit label for size measurements (``"nm"`` or ``"px"``).
-    min_area_px: int
-        Minimum area (in pixels) for removing small objects.
-
-    Returns
-    -------
-    Dict with measurement arrays and PNG overlays.
-    """
+) -> Dict[str, any]:
+    """Segment particles and measure their dimensions."""
 
     # Binary image and watershed segmentation
     im_bi = data < threshold
+    # Robustness: Fill internal holes common in dark TEM particles
+    im_bi = remove_small_holes(im_bi, area_threshold=min_area_px)
     im_bi = binary_closing(im_bi, disk(3))
 
     dist = distance_transform_edt(im_bi)
-    # Use h-maxima transform to mimic MATLAB's imextendedmin
     hmax = h_maxima(dist, 2)
     markers = label(hmax)
     labels_ws = watershed(-dist, markers=markers, mask=im_bi)
@@ -220,7 +253,7 @@ def segment_and_measure_shapes(
     lengths_nm: List[float] = []
     widths_nm: List[float] = []
 
-    # Determine scaling and exclusion zone based on available calibration
+    # Scaling and exclusion
     if measurement_unit == "nm" and np.isfinite(nm_per_px) and nm_per_px > 0:
         scale_factor = nm_per_px
         exclusion_zone_px = 2 / nm_per_px
@@ -229,9 +262,13 @@ def segment_and_measure_shapes(
         exclusion_zone_px = 0.0
     img_h, img_w = data.shape
 
-    fig, ax = plt.subplots()
-    ax.imshow(data, cmap="gray")
-    ax.axis("off")
+    # Visualization: Contrast stretching for better visibility
+    fig = go.Figure()
+    fig.add_trace(go.Image(z=data))#, colormap="gray"))
+
+    # Store shapes to be added to the figure
+    fig_shapes = []
+    fig_annotations = []
 
     for p in regionprops(labels_ws):
         minr, minc, maxr, maxc = p.bbox
@@ -251,76 +288,89 @@ def segment_and_measure_shapes(
         aspect = maj / minr_axis if minr_axis > 0 else 0.0
         extent = area / ((maxr - minr) * (maxc - minc)) if (maxr - minr) * (maxc - minc) > 0 else 0.0
         solidity = getattr(p, "solidity", 0.0)
-        cy, cx = p.centroid  # note: regionprops returns (row, col)
+        cy, cx = p.centroid
 
         if shape_type == "Sphere":
-
             diam_px = (maj + minr_axis) / 2
             d_val = diam_px * scale_factor
             if d_val < min_size_value:
                 continue
             diameters_nm.append(d_val)
-            circ_patch = plt.Circle((cx, cy), diam_px / 2, fill=False, color="r", linewidth=1)
-            ax.add_patch(circ_patch)
-        else:  # Hexagon or Cube (rectangular)
+            fig_shapes.append(
+                dict(type="circle", x0=cx-diam_px/2, y0=cy-diam_px/2, x1=cx+diam_px/2, y1=cy+diam_px/2, 
+                     line=dict(color="rgba(255, 0, 0, 0.5)", width=2))
+            )
+        else:
+            # Heuristic classification for Hexagons vs. Cubes/Rectangles
+            # This part can be refined based on more geometric properties
+            is_hex = solidity > 0.85 and extent > 0.6
+            is_rect = 1.2 < aspect < 1.8 and solidity > 0.8
+
             if 1.2 < aspect < 1.8 and solidity > 0.8:
-                # Rectangle
                 length_val = maj * scale_factor
                 width_val = minr_axis * scale_factor
                 if length_val < min_size_value or width_val < min_size_value:
                     continue
                 lengths_nm.append(length_val)
                 widths_nm.append(width_val)
-                rect = plt.Rectangle(
-                    (minc, minr),
-                    maxc - minc,
-                    maxr - minr,
-                    fill=False,
-                    color="r",
-                    linewidth=1,
+                fig_shapes.append(
+                    dict(type="rect", x0=minc, y0=minr, x1=maxc, y1=maxr,
+                         line=dict(color="rgba(255, 0, 0, 0.5)", width=2))
                 )
-                ax.add_patch(rect)
             elif solidity > 0.85 and extent > 0.6:
-                # Potential hexagon
                 d = (maj + minr_axis) / 2
                 d_val = d * scale_factor
                 if d_val < min_size_value:
                     continue
                 hex_axes_nm.append(d_val)
                 radius = d / 2
-                theta = np.linspace(0, 2 * np.pi, 7)
-                x = cx + radius * np.cos(theta)
-                y = cy + radius * np.sin(theta)
-                ax.plot(x, y, "y-", linewidth=1)
+                # Create a path for a hexagon
+                path = f"M {cx+radius} {cy} " + " ".join([f"L {cx+radius*np.cos(t)} {cy+radius*np.sin(t)}" for t in np.linspace(np.pi/3, 2*np.pi-np.pi/3, 5)]) + " Z"
+                fig_shapes.append(
+                    dict(type="path", path=path, line=dict(color="rgba(255, 255, 0, 0.5)", width=2))
+                )
             else:
-                # Mark other shapes lightly for visual debugging
                 diam_px = (maj + minr_axis) / 2
                 d_val = diam_px * scale_factor
                 if d_val >= min_size_value:
-                    circ_patch = plt.Circle((cx, cy), diam_px / 2, fill=False, color="b", linewidth=1)
-                    ax.add_patch(circ_patch)
+                    fig_shapes.append(
+                        dict(type="circle", x0=cx-diam_px/2, y0=cy-diam_px/2, x1=cx+diam_px/2, y1=cy+diam_px/2,
+                             line=dict(color="rgba(0, 0, 255, 0.5)", width=2))
+                    )
 
-    buf_ann = io.BytesIO()
-    fig.savefig(buf_ann, format="png", bbox_inches="tight", pad_inches=0)
-    plt.close(fig)
+    fig.update_layout(
+        shapes=fig_shapes,
+        margin=dict(l=0, r=0, b=0, t=0),
+    )
+    fig.update_xaxes(visible=False, range=[0, img_w])
+    fig.update_yaxes(visible=False, range=[img_h, 0]) # Invert y-axis for image coordinates
 
-    fig_ws, ax_ws = plt.subplots()
-    ax_ws.imshow(labels_ws, cmap="gray")
-    ax_ws.axis("off")
-    buf_ws = io.BytesIO()
-    fig_ws.savefig(buf_ws, format="png", bbox_inches="tight", pad_inches=0)
-    plt.close(fig_ws)
-
-    out: Dict[str, np.ndarray] = {
+    # Create a white-background watershed image
+    # Generate a colormap with a white background
+    rand_cmap = np.random.rand(labels_ws.max() + 1, 3)
+    rand_cmap[0] = [1, 1, 1]  # Set background (label 0) to white
+    cmap_ws = ListedColormap(rand_cmap)
+    fig_ws = go.Figure(data=go.Heatmap(
+    z=labels_ws,
+    colorscale='Rainbow',  # 'Rainbow' is a good high-contrast built-in choice
+    zmin=0,
+    zmax=labels_ws.max(),
+    showscale=False
+    ))
+    # Fix orientation to match standard image coordinates (0,0 at top-left)
+    fig_ws.update_yaxes(autorange='reversed')
+    fig_ws.update_layout(width=img_w, height=img_h, margin=dict(l=0, r=0, b=0, t=0))
+    fig_ws.update_xaxes(visible=False)
+    fig_ws.update_yaxes(visible=False, autorange="reversed")
+    out: Dict[str, any] = {
         "diameters_nm": np.array(diameters_nm, dtype=np.float32),
         "hex_axes_nm": np.array(hex_axes_nm, dtype=np.float32),
         "lengths_nm": np.array(lengths_nm, dtype=np.float32),
         "widths_nm": np.array(widths_nm, dtype=np.float32),
-        "annotated_png": buf_ann.getvalue(),
-        "watershed_png": buf_ws.getvalue(),
+        "annotated_fig": fig,    # Return figure object
+        "watershed_fig": fig_ws, # Return figure object
     }
 
-    # For cubic particles we treat height equal to width (2‑D approximation)
     if shape_type == "Cube":
         out["heights_nm"] = np.array(widths_nm, dtype=np.float32)
 
@@ -365,8 +415,9 @@ def histogram_with_fit(
     if n >= 3:
         mu, std = norm.fit(vals)
         xline = np.linspace(xrange[0], xrange[1], 300)
-        yline = norm.pdf(xline, mu, std) * n * (centers[1] - centers[0])
-        fig.add_trace(go.Scatter(x=xline, y=yline, mode="lines", line=dict(color="red")))
+        bin_width = centers[1] - centers[0] if len(centers) > 1 else 1
+        yline = norm.pdf(xline, mu, std) * n * bin_width
+        fig.add_trace(go.Scatter(x=xline, y=yline, mode="lines", line=dict(color="red"), name=f"μ={mu:.2f}, σ={std:.2f}"))
     else:
         mu = float("nan")
 
@@ -377,13 +428,68 @@ def histogram_with_fit(
 # ---------------------------------------------------------------------------
 # Streamlit UI
 # ---------------------------------------------------------------------------
+method = "GMM"
+
+
+def get_common_prefix(names: List[str]) -> str:
+    """Find the common prefix among a list of strings."""
+    if not names:
+        return "analysis"
+    shortest = min(names, key=len)
+    for i, char in enumerate(shortest):
+        if any(name[i] != char for name in names):
+            return shortest[:i].rstrip(" _-") or "analysis"
+    return shortest.rstrip(" _-") or "analysis"
+
+
+@st.cache_data
+def analyze_image(file_bytes: bytes, method: str, shape_type: str, min_shape_size_input: float, nbins_int: int, manual_threshold: float | None) -> dict:
+    """Cached function to perform the full analysis of a single image."""
+    dm3 = try_read_dm3(file_bytes)
+    data = dm3.data
+    nm_per_px = dm3.nm_per_px
+
+    if data.size == 0:
+        return {"error": "Image data is empty."}
+
+    if np.isfinite(nm_per_px) and nm_per_px > 0:
+        measurement_unit = "nm"
+    else:
+        measurement_unit = "px"
+        nm_per_px = float("nan")
+
+    # Threshold selection
+    if method == "Manual":
+        if manual_threshold is not None:
+            chosen_threshold = manual_threshold
+        else:
+            chosen_threshold = float(np.median(data))
+    elif method == "K-means":
+        chosen_threshold = kmeans_threshold(data)
+    else:  # GMM
+        chosen_threshold = gmm_threshold(data, nbins_int)
+
+    seg = segment_and_measure_shapes(
+        data=data,
+        threshold=chosen_threshold,
+        nm_per_px=nm_per_px,
+        shape_type=shape_type,
+        min_size_value=float(min_shape_size_input),
+        measurement_unit=measurement_unit,
+        min_area_px=5,
+    )
+    
+    # Add chosen threshold to results for display
+    seg["chosen_threshold"] = chosen_threshold
+
+    return seg
 
 
 def run() -> None:  # pragma: no cover - Streamlit entry point
     st.title("TEM Particle Characterization (.dm3)")
 
-    if ncem_dm is None:
-        st.error("`ncempy` is not installed. Please run: `pip install ncempy`")
+    if pyDM3reader is None:
+        st.error("`dm3_lib` is not installed. Please run: `pip install dm3_lib`")
         return
 
     st.caption(
@@ -397,11 +503,11 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
         files = st.file_uploader("Upload .dm3 file(s)", accept_multiple_files=True, type=["dm3"])
 
     with col_right:
-        method = st.selectbox(
-            "Threshold method",
-            ["GMM", "K-means", "Manual"],
-            index=0,
-        )
+        # method = st.selectbox(
+        #     "Threshold method",
+        #     ["GMM", "K-means", "Manual"],
+        #     index=0,
+        
         shape_type = st.selectbox("Shape type", ["Sphere", "Hexagon", "Cube"], index=0)
         nbins_int = st.slider("Intensity histogram bins", 20, 200, 60, step=5)
         min_shape_size_input = st.number_input(
@@ -420,74 +526,34 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
     missing_scale_files: List[str] = []
 
     if files:
-        with st.spinner("Processing …"):
+        with st.status("Processing images...", expanded=True) as status:
             for i, f in enumerate(files, start=1):
-                dm3 = try_read_dm3(f.read())
-                data = dm3.data
-                nm_per_px = dm3.nm_per_px
-
-                if np.isfinite(nm_per_px) and nm_per_px > 0:
-                    measurement_unit = "nm"
-                    min_size_value = float(min_shape_size_input)
-                else:
-                    measurement_unit = "px"
-                    min_size_value = float(min_shape_size_input)
+                status.update(label=f"Processing image {i}/{len(files)}: {f.name}")
+                
+                # Use the cached analysis function
+                seg = analyze_image(f.read(), method, shape_type, min_shape_size_input, nbins_int, st.session_state.manual_threshold)
+                
+                if seg.get("unit", "px") == "px":
                     missing_scale_files.append(f.name)
-                    nm_per_px = float("nan")
 
-                # Threshold selection
-                if method == "Manual":
-                    fig_h = go.Figure()
-                    centers, counts = histogram_for_intensity(data, nbins_int)
-                    fig_h.add_trace(go.Bar(x=centers, y=counts))
-                    fig_h.update_layout(
-                        title="Intensity histogram (click to set threshold)",
-                        xaxis_title="Intensity",
-                        yaxis_title="Frequency",
-                    )
-                    clicked = plotly_events(fig_h, click_event=True, hover_event=False, select_event=False, key=f"click_{i}")
-                    if clicked:
-                        st.session_state.manual_threshold = float(clicked[-1]["x"])
-                    st.session_state.manual_threshold = st.number_input(
-                        "Manual threshold (intensity)",
-                        value=float(st.session_state.manual_threshold)
-                        if st.session_state.manual_threshold is not None
-                        else float(np.median(data)),
-                        format="%.6f",
-                        key=f"manual_thr_{i}",
-                    )
-                    chosen_threshold = float(st.session_state.manual_threshold)
-                elif method == "K-means":
-                    chosen_threshold = kmeans_threshold(data)
-                    st.info(f"K-means threshold = **{chosen_threshold:.4f}**")
-                else:  # GMM
-                    chosen_threshold = gmm_threshold(data, nbins_int)
-                    st.info(f"GMM threshold = **{chosen_threshold:.4f}**")
-
-                seg = segment_and_measure_shapes(
-                    data=data,
-                    threshold=chosen_threshold,
-                    nm_per_px=nm_per_px,
-                    shape_type=shape_type,
-                    min_size_value=min_size_value,
-                    measurement_unit=measurement_unit,
-                    min_area_px=5,
-                )
                 seg["name"] = f.name
                 results.append(seg)
+            status.update(label="Processing complete!", state="complete", expanded=False)
 
         # Dropdown to select image for display
         if results:
             names = [r["name"] for r in results]
             sel_name = st.selectbox("Select image to display", names)
             sel = next(r for r in results if r["name"] == sel_name)
-
+            
+            st.info(f"Computed threshold = **{sel.get('chosen_threshold', 0):.4f}**")
             tab1, tab2 = st.tabs(["Annotated", "Watershed"])
             with tab1:
-                st.image(sel["annotated_png"], caption=f"Annotated segmentation preview ({sel['unit']})", use_column_width=True)
+                st.caption(f"Annotated segmentation preview ({sel['unit']})")
+                st.plotly_chart(sel["annotated_fig"], use_container_width=True)
             with tab2:
-                st.image(sel["watershed_png"], caption="Watershed labels", use_column_width=True)
-
+                st.caption("Watershed labels (randomly colored)")
+                st.plotly_chart(sel["watershed_fig"], use_container_width=True)
         if missing_scale_files:
             missing_list = "\n".join(f"• {name}" for name in sorted(set(missing_scale_files)))
             st.warning(
@@ -520,12 +586,20 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
                 nbins = st.slider("Histogram bins", 10, 150, 50, step=5)
                 fig, mu, n = histogram_with_fit(all_d, nbins, range_slider, f"Diameter ({unit_label})", unit_label)
                 if unit_label == "nm" and np.isfinite(mu):
+                    sample_name = get_common_prefix([r["name"] for r in results])
                     volume = (4 / 3) * np.pi * (mu / 2) ** 3
-                    title_suffix = f"μ={mu:.2f}, Vol={volume:.2f} nm³, n={n}"
+                    title_text = f"{sample_name}<br><sup>Vol={volume:.2f} nm³, n={n}</sup>"
                 else:
-                    title_suffix = f"μ={mu:.2f}, n={n}"
-                fig.update_layout(title=f"Diameter ({unit_label}): {title_suffix}")
+                    title_text = f"Diameter ({unit_label}): μ={mu:.2f}, n={n}"
+                fig.update_layout(title_text=title_text)
                 st.plotly_chart(fig, use_container_width=True)
+
+                # Download buttons
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.download_button("Download PNG", fig.to_image(format="png"), f"{sample_name}_diameter.png", "image/png")
+                with col2:
+                    st.download_button("Download CSV", pd.DataFrame({'diameter': all_d}).to_csv(index=False), f"{sample_name}_diameter.csv", "text/csv")
             else:
                 st.info("No particles detected.")
 
@@ -631,4 +705,3 @@ def run() -> None:  # pragma: no cover - Streamlit entry point
 # When run as `python tools/spherical_tem.py`, start the Streamlit app.
 if __name__ == "__main__":  # pragma: no cover - manual execution convenience
     run()
-
