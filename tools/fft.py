@@ -26,7 +26,18 @@ if not hasattr(st_image, 'image_to_url'):
                 return ""
     st_image.image_to_url = image_to_url
     
+from scipy.ndimage import gaussian_filter
+from skimage.feature import peak_local_max
+from streamlit_drawable_canvas import st_canvas
+from PIL import Image
 
+# Optional import of ncempy
+try:
+    from ncempy.io import dm as ncem_dm
+    from ncempy.io import emd as ncem_emd
+except ImportError:
+    ncem_dm = None
+    ncem_emd = None
 
 # --- DATA STRUCTURES ---
 @dataclass
