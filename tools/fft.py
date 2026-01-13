@@ -140,6 +140,7 @@ def process_fft_image(roi_data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 # --- MAIN APP ---
 def run():
     st.set_page_config(layout="wide", page_title="TEM FFT Analysis")
+
     st.title("Estimating Lattice Spacing from TEM Images")
     
     if "last_file_id" not in st.session_state: st.session_state.last_file_id = None
