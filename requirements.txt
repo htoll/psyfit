@@ -1,5 +1,5 @@
 streamlit
-streamlit_drawable_canvas 
+streamlit-drawable-canvas>=0.9.3 
 streamlit_plotly_events
 pandas
 numpy
@@ -27,3 +27,6 @@ imageio-ffmpeg
 
 #dm3 reader for tem images
 git+https://github.com/piraynal/pyDM3reader.git
+
+ncempy
+
