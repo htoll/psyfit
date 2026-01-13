@@ -1,5 +1,4 @@
 """Interactive TEM FFT Analysis Tool - Compact Dashboard."""
-st.set_page_config(layout="wide", page_title="TEM FFT Analysis")
 
 from __future__ import annotations
 
@@ -23,6 +22,8 @@ try:
 except ImportError:
     ncem_dm = None
     ncem_emd = None
+    
+st.set_page_config(layout="wide", page_title="TEM FFT Analysis")
 
 
 # --- DATA STRUCTURES ---
