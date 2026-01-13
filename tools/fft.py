@@ -195,6 +195,12 @@ def run():
     CANVAS_WIDTH = 350 
     CANVAS_HEIGHT = int(CANVAS_WIDTH * (img_rgb.shape[0] / img_rgb.shape[1]))
     
+    # --- FIX: Resize image for display performance on Cloud ---
+    # We keep the raw data in 'tem_img.data' for the math, 
+    # but we downsample the visual background to save bandwidth.
+    pil_image_full = Image.fromarray(img_rgb)
+    pil_image_display = pil_image_full.resize((CANVAS_WIDTH, CANVAS_HEIGHT), resample=Image.Resampling.LANCZOS)
+
     # --- 3-COLUMN DASHBOARD ---
     c_left, c_mid, c_right = st.columns([1, 1, 1])
 
@@ -204,7 +210,7 @@ def run():
             fill_color="rgba(255, 255, 255, 0.2)",
             stroke_width=2,
             stroke_color="#FFFFFF",
-            background_image=Image.fromarray(img_rgb),
+            background_image=pil_image_display, # <--- Pass the resized image here
             update_streamlit=True,
             height=CANVAS_HEIGHT,
             width=CANVAS_WIDTH,
