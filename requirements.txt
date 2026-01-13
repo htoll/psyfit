@@ -1,4 +1,6 @@
 streamlit
+streamlit_drawable_canvas 
+streamlit_plotly_events
 pandas
 numpy
 matplotlib
