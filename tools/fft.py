@@ -16,7 +16,6 @@ from skimage.feature import peak_local_max
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image
 
-# Optional import of ncempy
 try:
     from ncempy.io import dm as ncem_dm
     from ncempy.io import emd as ncem_emd
@@ -189,9 +188,7 @@ def run():
     CANVAS_WIDTH = 350 
     CANVAS_HEIGHT = int(CANVAS_WIDTH * (img_rgb.shape[0] / img_rgb.shape[1]))
     
-    # --- FIX: Resize image for display performance on Cloud ---
-    # We keep the raw data in 'tem_img.data' for the math, 
-    # but we downsample the visual background to save bandwidth.
+    #  downsample the visual background to save bandwidth.
     pil_image_full = Image.fromarray(img_rgb)
     pil_image_display = pil_image_full.resize((CANVAS_WIDTH, CANVAS_HEIGHT), resample=Image.Resampling.LANCZOS)
 
