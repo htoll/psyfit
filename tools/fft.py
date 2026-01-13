@@ -11,7 +11,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-st.set_page_config(layout="wide", page_title="TEM FFT Analysis")
+#st.set_page_config(layout="wide", page_title="TEM FFT Analysis")
 
 import streamlit.elements.image as st_image
 
