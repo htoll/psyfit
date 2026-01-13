@@ -206,6 +206,8 @@ def run():
 
     # --- 1. LEFT: INPUT IMAGE ---
     with c_left:
+        st.write("Debug Preview:")
+        st.image(img_rgb, caption="If you see this, the data is valid.")
         canvas_result = st_canvas(
             fill_color="rgba(255, 255, 255, 0.2)",
             stroke_width=2,
