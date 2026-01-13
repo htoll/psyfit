@@ -1,4 +1,5 @@
 """Interactive TEM FFT Analysis Tool - Compact Dashboard."""
+st.set_page_config(layout="wide", page_title="TEM FFT Analysis")
 
 from __future__ import annotations
 
@@ -139,7 +140,6 @@ def process_fft_image(roi_data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 # --- MAIN APP ---
 def run():
-    st.set_page_config(layout="wide", page_title="TEM FFT Analysis")
 
     st.title("Estimating Lattice Spacing from TEM Images")
     
