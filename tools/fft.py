@@ -1,5 +1,4 @@
 """Interactive TEM FFT Analysis Tool - Compact Dashboard."""
-
 from __future__ import annotations
 
 import os
@@ -11,18 +10,21 @@ import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from scipy.ndimage import gaussian_filter
-from skimage.feature import peak_local_max
-from streamlit_drawable_canvas import st_canvas
-from PIL import Image
+
 st.set_page_config(layout="wide", page_title="TEM FFT Analysis")
 
-try:
-    from ncempy.io import dm as ncem_dm
-    from ncempy.io import emd as ncem_emd
-except ImportError:
-    ncem_dm = None
-    ncem_emd = None
+import streamlit.elements.image as st_image
+
+if not hasattr(st_image, 'image_to_url'):
+    try:
+        from streamlit.elements.lib.image_utils import image_to_url
+    except ImportError:
+        try:
+            from streamlit.elements.image import image_to_url
+        except ImportError:
+            def image_to_url(image, width, clamp, channels, output_format, image_id, allow_emoji):
+                return ""
+    st_image.image_to_url = image_to_url
     
 
 
