@@ -15,6 +15,7 @@ from scipy.ndimage import gaussian_filter
 from skimage.feature import peak_local_max
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image
+st.set_page_config(layout="wide", page_title="TEM FFT Analysis")
 
 try:
     from ncempy.io import dm as ncem_dm
@@ -23,7 +24,6 @@ except ImportError:
     ncem_dm = None
     ncem_emd = None
     
-st.set_page_config(layout="wide", page_title="TEM FFT Analysis")
 
 
 # --- DATA STRUCTURES ---
