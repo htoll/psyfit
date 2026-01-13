@@ -16,12 +16,6 @@ from skimage.feature import peak_local_max
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image
 
-import streamlit.elements.image as st_image
-from streamlit.elements.lib.image_utils import image_to_url
-
-if not hasattr(st_image, 'image_to_url'):
-    st_image.image_to_url = image_to_url
-
 # Optional import of ncempy
 try:
     from ncempy.io import dm as ncem_dm
@@ -206,8 +200,6 @@ def run():
 
     # --- 1. LEFT: INPUT IMAGE ---
     with c_left:
-        st.write("Debug Preview:")
-        st.image(img_rgb, caption="If you see this, the data is valid.")
         canvas_result = st_canvas(
             fill_color="rgba(255, 255, 255, 0.2)",
             stroke_width=2,
