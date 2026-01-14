@@ -1,11 +1,13 @@
+
+st.set_page_config(
+  page_title="Shelling Injection Table")
+
 import math
 import numpy as np
 import pandas as pd
 import streamlit as st
   
-# --- Page config ---
-st.set_page_config(
-  page_title="Shelling Injection Table")
+
 def highlight_cells(val, row_name):
     if row_name == "% Volume Injected" and float(val) > 10:
         return "background-color: lightcoral"
