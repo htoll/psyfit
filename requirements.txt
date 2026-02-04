@@ -25,3 +25,4 @@ imageio-ffmpeg
 
 #dm3 reader for tem images
 git+https://github.com/piraynal/pyDM3reader.git
+
