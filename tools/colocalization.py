@@ -214,7 +214,6 @@ def _compute_coloc_mask(df_u: pd.DataFrame, df_d: pd.DataFrame, radius_px: int):
 # --- Main App ---
 
 def run():
-    st.set_page_config(layout="wide") # Helps with narrow screen issues
 
     with st.sidebar:
         st.header("Inputs")
