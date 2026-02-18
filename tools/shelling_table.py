@@ -58,11 +58,11 @@ def run():
               value=20,
               step=1,
           )
-          initial_rxn_vol = st.number_input(
-              "Initial reaction volume (mL)",
+          initial_core_vol = st.number_input(
+              "Initial volume cores dissolve in(mL)",
               min_value=0.1,
-              value=10.0,
-              step=0.1,
+              value=50.0,
+              step=1,
           )
   
       submitted = st.form_submit_button("Calculate")
@@ -113,13 +113,15 @@ def run():
                   f"Injection {q+1}: risks temperature fluctuation \n"
               )
           prev_vol = total_vol[q]
+
+
   
       df = pd.DataFrame({
           "Injection": inj_numbers,
           "Time (min)": inj_times.round().astype(int),
           "Estimated radius (nm)": np.round(est_radius, 3),
           "NaTFA (mL)": tfa_added,
-          "YAc (mL)": yac_added,
+          "LnOA (mL)": yac_added,
           "Total Rxn Volume (mL)": total_vol,
           "% Volume Injected": pct_injected,
       })
@@ -131,6 +133,7 @@ def run():
       return df_t, warnings
   
   if submitted:
+    initial_rxn_vol = 10 #6 mL ODE 4 mL OA
     try:
         df_t, warnings = compute_injection_plan(
             delta=delta,
@@ -168,6 +171,11 @@ def run():
         )
 
         st.subheader("Injection Table")
+        #calculate volume of core to add:
+        ref_mL_per_nmcubed = 2.7 / (4.7**3) #standard protocol is 2.7 mL for a 9.2 nm core
+        ref_stock = 50 #reference stock is 50 mL
+        vol_core = ref_mL_per_nmcubed * initial_radius**3 * (initial_core_vol / ref_stock)
+        st.badge(f'Initial conditions: {vol_core} mL core \n 4 mL OA \n 6 mL ODE')
 
         st.dataframe(styled, use_container_width=True)
 
