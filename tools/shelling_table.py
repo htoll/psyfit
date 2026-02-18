@@ -59,12 +59,12 @@ def run():
               step=1,
           )
           initial_core_vol = st.number_input(
-              "Initial volume cores dissolve in(mL)",
+              "Initial volume hexanes cores dissolved in (mL, typically 6 or 50 mL)",
               min_value=0.1,
               value=50.0,
               step=1.0,
           )
-  
+      normalize_injections = st.checkbox('Normalize if initial injection > 1 mL')
       submitted = st.form_submit_button("Calculate")
   
   
@@ -99,6 +99,18 @@ def run():
       tfa_added = np.zeros(num_injections)
       for t in range(num_injections - 1):
           tfa_added[t + 1] = round(yac_added[t] / 2.0, 2)
+
+
+            #calculate volume of core to add:
+      ref_mL_per_nmcubed = 2.7 / (4.7**3) #standard protocol is 2.7 mL for a 9.2 nm core
+      ref_stock = 50 #reference stock is 50 mL
+      vol_core = ref_mL_per_nmcubed * initial_radius**3 * (initial_core_vol / ref_stock)
+                                
+      if normalize_injections:
+        if yac_added[0] > 1:
+          yac_added = yac_added/yac_added[0]
+          tfa_added = tfa_added /yac_added[0]
+          vol_core = vol_core / yac_added[0]
   
       total_vol = np.zeros(num_injections)
       pct_injected = np.zeros(num_injections)
@@ -130,12 +142,12 @@ def run():
       df_t = df.set_index("Injection").T
       df_t.index.name = None  # hide row index label
       df_t.columns = [f"Injection {int(c)}" for c in df_t.columns]  # prettier column headers
-      return df_t, warnings
+      return df_t, warnings, vol_core
   
   if submitted:
     initial_rxn_vol = 10 #6 mL ODE 4 mL OA
     try:
-        df_t, warnings = compute_injection_plan(
+        df_t, warnings, vol_core  = compute_injection_plan(
             delta=delta,
             initial_radius=initial_radius,
             final_radius=final_radius,
@@ -171,11 +183,8 @@ def run():
         )
 
         st.subheader("Injection Table")
-        #calculate volume of core to add:
-        ref_mL_per_nmcubed = 2.7 / (4.7**3) #standard protocol is 2.7 mL for a 9.2 nm core
-        ref_stock = 50 #reference stock is 50 mL
-        vol_core = ref_mL_per_nmcubed * initial_radius**3 * (initial_core_vol / ref_stock)
-        st.markdown(f'Initial conditions: {np.round(vol_core, decimals=2)} mL core \n 4 mL OA \n 6 mL ODE')
+
+        st.markdown(f'Initial conditions: {np.round(vol_core, decimals=2)} mL core with 4 mL OA and 6 mL ODE')
 
         st.dataframe(styled, use_container_width=True)
 
