@@ -95,23 +95,23 @@ def run():
       yac_added = np.zeros(num_injections)
       for y in range(num_injections - 1):
           yac_added[y] = round(volume_added[y] / nm_per_mL, 2)
-  
+
+
+      #calculate volume of core to add:
+      ref_mL_per_nmcubed = 2.7 / (4.7**3) #standard protocol is 2.7 mL for a 9.2 nm core
+      ref_stock = 50 #reference stock is 50 mL
+      vol_core = ref_mL_per_nmcubed * initial_radius**3 * (initial_core_vol / ref_stock)
+
+      if normalize_injections and yac_added[0] > 1:
+        norm_factor = yac_added[0]
+        yac_added = yac_added / norm_factor
+        vol_core = vol_core / norm_factor
+
+                                
       tfa_added = np.zeros(num_injections)
       for t in range(num_injections - 1):
           tfa_added[t + 1] = round(yac_added[t] / 2.0, 2)
 
-
-            #calculate volume of core to add:
-      ref_mL_per_nmcubed = 2.7 / (4.7**3) #standard protocol is 2.7 mL for a 9.2 nm core
-      ref_stock = 50 #reference stock is 50 mL
-      vol_core = ref_mL_per_nmcubed * initial_radius**3 * (initial_core_vol / ref_stock)
-                                
-      if normalize_injections:
-        if yac_added[0] > 1:
-          yac_added = yac_added/yac_added[0]
-          tfa_added = tfa_added /yac_added[0]
-          vol_core = vol_core / yac_added[0]
-  
       total_vol = np.zeros(num_injections)
       pct_injected = np.zeros(num_injections)
       prev_vol = float(initial_rxn_vol)
