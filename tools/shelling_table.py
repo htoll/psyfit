@@ -62,7 +62,7 @@ def run():
               "Initial volume cores dissolve in(mL)",
               min_value=0.1,
               value=50.0,
-              step=1,
+              step=1.0,
           )
   
       submitted = st.form_submit_button("Calculate")
