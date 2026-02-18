@@ -175,7 +175,7 @@ def run():
         ref_mL_per_nmcubed = 2.7 / (4.7**3) #standard protocol is 2.7 mL for a 9.2 nm core
         ref_stock = 50 #reference stock is 50 mL
         vol_core = ref_mL_per_nmcubed * initial_radius**3 * (initial_core_vol / ref_stock)
-        st.markdown(f'Initial conditions: {vol_core} mL core \n 4 mL OA \n 6 mL ODE')
+        st.markdown(f'Initial conditions: {np.round(vol_core)} mL core \n 4 mL OA \n 6 mL ODE')
 
         st.dataframe(styled, use_container_width=True)
 
