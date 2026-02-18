@@ -64,7 +64,7 @@ def run():
               value=50.0,
               step=1.0,
           )
-      normalize_injections = st.checkbox('Normalize if initial injection > 1 mL')
+      normalize_injections = st.checkbox('Normalize injections and core volume', help = 'If initial injection is >1 mL or < 0.4 mL)
       submitted = st.form_submit_button("Calculate")
   
   
@@ -102,7 +102,7 @@ def run():
       ref_stock = 50 #reference stock is 50 mL
       vol_core = ref_mL_per_nmcubed * initial_radius**3 * (initial_core_vol / ref_stock)
 
-      if normalize_injections and yac_added[0] > 1:
+      if normalize_injections and (yac_added[0] > 1 or yac_added[0] < 0.4):
         norm_factor = yac_added[0]
         yac_added = yac_added / norm_factor
         vol_core = vol_core / norm_factor
