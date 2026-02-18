@@ -64,7 +64,7 @@ def run():
               value=50.0,
               step=1.0,
           )
-      normalize_injections = st.checkbox('Normalize injections and core volume', help = 'If initial injection is >1 mL or < 0.4 mL)
+      normalize_injections = st.checkbox('Normalize injections and core volume', help = 'If initial injection is >1 mL or < 0.4 mL')
       submitted = st.form_submit_button("Calculate")
   
   
