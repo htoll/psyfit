@@ -287,7 +287,7 @@ def plot_brightness(
         rs = (2 * np.maximum(df["sigx_fit"].to_numpy(), df["sigy_fit"].to_numpy()) / pix_size_um).astype(float)
         br = (df["brightness_integrated"].to_numpy() / 1000.0).astype(float)
 
-        custom = np.stack([br], axis=1)
+        custom = np.stack([br, df["sigx_fit"].to_numpy(), df["sigy_fit"].to_numpy()], axis=1)
         fig.add_trace(go.Scatter(
             x=xs,
             y=ys,
