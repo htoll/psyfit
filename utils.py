@@ -262,9 +262,7 @@ def plot_brightness(
     # store original cps values for accurate hover information
     img_custom = np.expand_dims(img, axis=-1)
     fig.data[0].customdata = img_custom
-    fig.data[0].hovertemplate = (
-        "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata[0]:.1f}<extra></extra>"
-    )
+    fig.data[0].hovertemplate = ("x=%{x:.2f}px<br>y=%{y:.2f}px<br>brightness=%{customdata[0]:.1f} kpps<br>sigx=%{customdata[1]:.2f}<br>sigy=%{customdata[2]:.2f}<extra></extra>")
     fig.update_layout(
         margin=dict(l=0, r=0, t=30, b=0),
         dragmode=dragmode,
