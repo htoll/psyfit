@@ -33,7 +33,7 @@ def _hash_file(uf) -> str:
 
 def _build_proc_key(sif_files, region_ucnp, region_dye, threshold, ucnp_id, dye_id):
     names_hashes = tuple(sorted((f.name, _hash_file(f)) for f in (sif_files or [])))
-    return (names_hashes, str(region_ucnp), str(region_dye), int(threshold), str(ucnp_id), str(dye_id))
+    return (names_hashes, str(region_ucnp), str(region_dye), threshold, str(ucnp_id), str(dye_id))
 
 def _extract_common_stem(uploaded_files):
     if not uploaded_files:
@@ -226,7 +226,7 @@ def run():
 
         st.divider()
         st.header("Fitting")
-        threshold = st.number_input("Threshold", min_value=0, value=2)
+        threshold = st.number_input("Threshold", min_value=0, value=2,  step=0.05)
         region_ucnp = st.selectbox("Region (UCNP)", options=["1","2","3","4","all"], index=0)
         region_dye  = st.selectbox("Region (Dye)",  options=["1","2","3","4","all"], index=0)
         radius_px = st.number_input("Colocalization radius (pixels)", min_value=1, value=2)
