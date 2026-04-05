@@ -125,7 +125,7 @@ def run():
                                                         threshold=threshold, 
                                                         signal=signal,
                                                        min_distance = min_distance,
-                                                       piz_size_um = piz_size_um)
+                                                       pix_size_um = pix_size_um)
 
             if len(uploaded_files) > 1:
                 file_options = [f.name for f in uploaded_files]
