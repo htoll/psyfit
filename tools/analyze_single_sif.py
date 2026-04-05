@@ -101,6 +101,7 @@ def run():
                                                                 - UCNP for high SNR (sklearn peakfinder)
                                                                 - dye for low SNR (sklearn blob detection)''')
         min_distance = st.number_input("Minimum Distance", min_value=1, value=5, help='Min distance between PSFs (px)')
+        piz_size_um = st.number_input("Pixel Size (µm)", min_value = 0.01, value = 0.1)
         cmap = st.selectbox("Colormap", options=['plasma', 'gray', "magma", 'viridis', 'hot', 'hsv'])
         show_fits = st.checkbox("Show fits", value=True)
         normalization = st.checkbox("Log Image Scaling")
@@ -123,7 +124,8 @@ def run():
                                                         region, 
                                                         threshold=threshold, 
                                                         signal=signal,
-                                                       min_distance = min_distance)
+                                                       min_distance = min_distance,
+                                                       piz_size_um = piz_size_um)
 
             if len(uploaded_files) > 1:
                 file_options = [f.name for f in uploaded_files]
