@@ -33,6 +33,7 @@ def process_files(uploaded_files, region, threshold=1, signal="UCNP", pix_size_u
                                                sig_threshold=sig_threshold,
                                                min_distance = min_distance
                                                 )
+            df["file_stem"] = os.path.splitext(uploaded_file.name)[0]
             processed_data[uploaded_file.name] = {
                 "df": df,
                 "image": image_data_cps,
