@@ -341,7 +341,7 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
     """
     fig_width, fig_height = 4, 4
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-    scale = fig_width / 5
+    scale = fig_width / 3
 
     brightness_vals = df['brightness_integrated'].values
 
@@ -354,7 +354,11 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
         return fig
 
     # Use the min/max values to define histogram bin edges
-    bins = np.linspace(min_val, max_val, num_bins)
+    if num_bins == 'auto':
+        bins = 'auto'
+    else:
+        # Your original integer-based bin logic
+        bins = np.linspace(min_val, max_val, int(num_bins))
 
     counts, edges, _ = ax.hist(brightness_vals, bins=bins, color='#88CCEE', edgecolor='#88CCEE', alpha=0.7)
     bin_centers = 0.5 * (edges[:-1] + edges[1:])
@@ -390,7 +394,7 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
     # Now draw histogram bars on top
     counts, edges, _ = ax.hist(
         brightness_vals,
-        bins=np.linspace(min_val, max_val, num_bins),
+        bins=bins,
         color='#88CCEE',
         edgecolor='#88CCEE',
         alpha=0.7,
