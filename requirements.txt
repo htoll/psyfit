@@ -1,28 +1,34 @@
-streamlit
-pandas
+# Core Data & Science
 numpy
-matplotlib
-scikit-learn
+pandas
 scipy
-seaborn
-plotly
-pydeck
+scikit-learn
+
+# Image Processing
 scikit-image
 opencv-python-headless
 tifffile
-git+https://github.com/fujiisoup/sif_parser.git
-streamlit==1.48.0
-
-streamlit>=1.34
-ncempy>=1.10
-scikit-image
-scikit-learn
-plotly>=5.19
-kaleido>=0.2.1
-streamlit-plotly-events>=0.0.6
 imageio
 imageio-ffmpeg
 
-#dm3 reader for tem images
-git+https://github.com/piraynal/pyDM3reader.git
+# Visualization
+matplotlib
+seaborn
+plotly>=5.19
+pydeck
+kaleido>=0.2.1
 
+# Streamlit / Web App
+# Note: 1.48.0 is not yet released (current stable is ~1.42). 
+# Using >=1.34 ensures compatibility with the features you likely need.
+streamlit>=1.34
+streamlit-plotly-events>=0.0.6
+
+# Microscopy & Specialized Formats
+ncempy>=1.10
+h5py
+
+# Git Dependencies
+# Parsers for SIF and DM3 files
+git+https://github.com/fujiisoup/sif_parser.git
+git+https://github.com/piraynal/pyDM3reader.git
