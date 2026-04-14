@@ -265,19 +265,37 @@ def plot_brightness(
     fig.data[0].hovertemplate = (
         "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata[0]:.1f}<extra></extra>"
     )
+    cbar_title_text = "pps" if not normalization else "log10(pps)"
     fig.update_layout(
         margin=dict(l=0, r=0, t=30, b=0),
         dragmode=dragmode,
+        xaxis_title="<b>X (px)</b>",
+        yaxis_title="<b>Y (px)</b>",
+        xaxis=dict(
+            title_font=dict(size=18, color="black"),
+            tickfont=dict(size=14, color="black"),
+            constrain="domain"  
+        ),
+        yaxis=dict(
+            title_font=dict(size=18, color="black"),
+            tickfont=dict(size=14, color="black")#, family="Arial Black") # Bold ticks
+        ),
         coloraxis_colorbar=dict(
-            title="pps" if not normalization else "log10(pps)",
+            title=dict(
+                text=f"<b>{cbar_title_text}</b>",
+                font=dict(size=18, color="black")
+            ),
+            tickfont=dict(size=14, color="black"),
+            x=0.9,          # Default is ~1.02. Decrease this to move it closer.
+            xpad=0,          # Removes extra internal padding
+            xanchor="left",
             yanchor="middle",
             y=0.5,
             lenmode="fraction",
             len=0.8,
             thickness=20,
-        ),
-        xaxis_title="X (px)",
-        yaxis_title="Y (px)"
+        )
+        
     )
 
     xs = ys = rs = br = None
@@ -343,7 +361,7 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
     """
     fig_width, fig_height = 4, 4
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-    scale = fig_width / 5
+    scale = fig_width / 3
 
     brightness_vals = df['brightness_integrated'].values
 
@@ -356,7 +374,11 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
         return fig
 
     # Use the min/max values to define histogram bin edges
-    bins = np.linspace(min_val, max_val, num_bins)
+    if num_bins == 'auto':
+        bins = 'auto'
+    else:
+        # Your original integer-based bin logic
+        bins = np.linspace(min_val, max_val, int(num_bins))
 
     counts, edges, _ = ax.hist(brightness_vals, bins=bins, color='#88CCEE', edgecolor='#88CCEE', alpha=0.7)
     bin_centers = 0.5 * (edges[:-1] + edges[1:])
@@ -392,7 +414,7 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
     # Now draw histogram bars on top
     counts, edges, _ = ax.hist(
         brightness_vals,
-        bins=np.linspace(min_val, max_val, num_bins),
+        bins=bins,
         color='#88CCEE',
         edgecolor='#88CCEE',
         alpha=0.7,
