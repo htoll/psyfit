@@ -8,6 +8,15 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 import plotly.express as px
 import plotly.graph_objects as go
+from scipy.stats import norm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+
+blue_ch_color = 'dodgerblue'
+green_ch_color = 'forestgreen'
+red_ch_color = 'tomato'
+nir_ch_color = 'darkorange'
+
 
 def build_brightness_heatmap(processed_data, weight_col="brightness_integrated", shape_hint=None):
     """
@@ -101,7 +110,7 @@ def run():
                                                                 - UCNP for high SNR (sklearn peakfinder)
                                                                 - dye for low SNR (sklearn blob detection)''')
         min_distance = st.number_input("Minimum Distance", min_value=1, value=5, help='Min distance between PSFs (px)')
-        cmap = st.selectbox("Colormap", options=['plasma', 'gray', "magma", 'viridis', 'hot', 'hsv'])
+        cmap = st.selectbox("Colormap", options=[ 'gray', 'plasma', "magma", 'viridis', 'hot', 'hsv'])
         show_fits = st.checkbox("Show fits", value=True)
         normalization = st.checkbox("Log Image Scaling")
         save_format = st.selectbox("Download format", options=["svg", "png", "jpeg"]).lower()
@@ -110,9 +119,13 @@ def run():
             value=False,
             help="Aggregates brightness across all detections from all uploaded .sif files.",
         )
+        mcl_toggle = st.toggle("All channel MCL brightness", help="Overrides region to 'all' and splits analysis by quadrant.")
 
     if st.button("Analyze"):
         st.session_state.analyze_clicked = True
+
+    if mcl_toggle:
+        region = "all"
 
     brightness_col, hist_col = st.columns([3, 1])
     mime_map = {"svg": "image/svg+xml", "png": "image/png", "jpeg": "image/jpeg"}
@@ -124,6 +137,17 @@ def run():
                                                         threshold=threshold, 
                                                         signal=signal,
                                                        min_distance = min_distance)
+            if mcl_toggle and combined_df is not None and not combined_df.empty:
+                # Assign quadrants based on pixel coordinates
+                conditions = [
+                    (combined_df['y_pix'] > 256) & (combined_df['x_pix'] < 256),  # Blue
+                    (combined_df['y_pix'] > 256) & (combined_df['x_pix'] > 256),  # Green
+                    (combined_df['y_pix'] < 256) & (combined_df['x_pix'] < 256),  # Red
+                    (combined_df['y_pix'] < 256) & (combined_df['x_pix'] > 256)   # NIR
+                ]
+                choices = ['Blue', 'Green', 'Red', 'NIR']
+                combined_df['quadrant'] = np.select(conditions, choices, default='Border')
+
 
             if len(uploaded_files) > 1:
                 file_options = [f.name for f in uploaded_files]
@@ -146,6 +170,24 @@ def run():
                     cmap=cmap,
                     interactive=True,
                 )
+                if mcl_toggle:
+                    if hasattr(fig_image, "savefig"):
+                        # Matplotlib annotations
+                        ax = fig_image.gca()
+                        ax.axhline(256, color='white', linestyle='--', alpha=0.6)
+                        ax.axvline(256, color='white', linestyle='--', alpha=0.6)
+                        ax.text(128, 384, 'Blue', color='cyan', fontsize=14, ha='center', weight='bold')
+                        ax.text(384, 384, 'Green', color='lime', fontsize=14, ha='center', weight='bold')
+                        ax.text(128, 128, 'Red', color='red', fontsize=14, ha='center', weight='bold')
+                        ax.text(384, 128, 'NIR', color='pink', fontsize=14, ha='center', weight='bold')
+                    else:
+                        # Plotly annotations
+                        fig_image.add_hline(y=256, line_dash="dash", line_color="white", opacity=0.6)
+                        fig_image.add_vline(x=256, line_dash="dash", line_color="white", opacity=0.6)
+                        fig_image.add_annotation(x=128, y=500, text="Blue", showarrow=False, font=dict(color=blue_ch_color, size=20, weight='bold'))
+                        fig_image.add_annotation(x=384, y=500, text="Green", showarrow=False, font=dict(color=green_ch_color, size=20, weight='bold'))
+                        fig_image.add_annotation(x=128, y=245, text="Red", showarrow=False, font=dict(color=red_ch_color, size=20, weight='bold'))
+                        fig_image.add_annotation(x=384, y=245, text="NIR", showarrow=False, font=dict(color=nir_ch_color, size=20, weight='bold'))
 
                 with brightness_col:
                     if hasattr(fig_image, "savefig"):
@@ -198,57 +240,82 @@ def run():
                         default_min_val = float(np.min(brightness_vals))
                         default_max_val = float(np.max(brightness_vals))
 
-                        user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
-                        user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
+
 
                         try:
-                            user_min = float(user_min_val_str)
-                            user_max = float(user_max_val_str)
+                            user_min = float(default_min_val)
+                            user_max = float(default_max_val)
                         except ValueError:
                             st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
                             return
 
-                        num_bins = st.number_input("# Bins:", value=50)
+                        
 
                         if user_min < user_max:
-                            fig_hist, _, _ = plot_histogram(
-                                combined_df,
-                                min_val=user_min,
-                                max_val=user_max,
-                                num_bins=num_bins,
-                            )
-                            if hasattr(fig_hist, "savefig"):
+                            if mcl_toggle:
+                                import matplotlib.pyplot as plt
+                                # Create a 4-panel subplot for the channels
+                                fig_hist, axes = plt.subplots(4, 1, figsize=(4, 8), sharex=True)
+                                channels = ['Blue', 'Green', 'Red', 'NIR']
+                                colors = [blue_ch_color, green_ch_color, red_ch_color, nir_ch_color]
+                                
+                                for ax, channel, color in zip(axes, channels, colors):
+                                    # Filter data for this specific channel
+                                    chan_data = combined_df[(combined_df['quadrant'] == channel) & 
+                                                            (combined_df['brightness_integrated'] >= user_min) & 
+                                                            (combined_df['brightness_integrated'] <= user_max)]['brightness_integrated'].values
+                                    
+                                    if len(chan_data) == 0:
+                                        ax.text(0.5, 0.5, f"No {channel} emission", ha='center', va='center', transform=ax.transAxes)
+                                        ax.set_yticks([])
+                                      #  st.warning(f"No emission detected in the {channel} channel.")
+                                        continue
+                                        
+                                    # Plot histogram (removed density=True to show raw counts)
+                                    # We capture 'bins' to calculate the bin width for scaling the fit
+                                    counts, bins, _ = ax.hist(chan_data, bins='auto', color=color, alpha=0.6, density=False)
+                                    ax.set_ylabel(channel, color=color, weight='bold')
+                                    
+                                    # Gaussian fit
+                                    if len(chan_data) > 1:
+                                        mu, std = norm.fit(chan_data)
+                                        x_fit = np.linspace(user_min, user_max, 100)
+                                        
+                                        # Scale the PDF to match raw counts: PDF * Total Data Points * Bin Width
+                                        bin_width = bins[1] - bins[0]
+                                        p = norm.pdf(x_fit, mu, std) * len(chan_data) * bin_width
+                                        
+                                        ax.plot(x_fit, p, 'k', linewidth=1.5)
+                                        ax.set_title(f"μ={mu:.2e} ± {std:.2e} pps", fontsize=16, pad=2)
+                                
+                                axes[-1].set_xlabel('Brightness (pps)')
+                                fig_hist.tight_layout()
                                 st.pyplot(fig_hist, use_container_width=True)
+                                
+                                # Download button for the MCL histogram
                                 hist_buffer = io.BytesIO()
                                 fig_hist.savefig(hist_buffer, format=save_format)
                                 st.download_button(
-                                    label=f"Download histogram ({save_format})",
+                                    label=f"Download MCL hist ({save_format})",
                                     data=hist_buffer.getvalue(),
-                                    file_name=f"combined_histogram.{save_format}",
+                                    file_name=f"mcl_histogram.{save_format}",
                                     mime=mime_map[save_format],
                                 )
+                                
                             else:
-                                fig_hist.update_layout(height=400)
-                                fmt_h = save_format.lower()
-                                if fmt_h not in {"png", "jpeg", "jpg", "svg", "webp"}:
-                                    fmt_h = "png"
-                                st.plotly_chart(
-                                    fig_hist,
-                                    use_container_width=True,
-                                    config={
-                                        "displaylogo": False,
-                                        "modeBarButtonsToRemove": ["select2d", "lasso2d", "toggleSpikelines"],
-                                        "toImageButtonOptions": {"format": fmt_h},
-                                    },
+                                fig_hist, _, _ = plot_histogram(
+                                    combined_df,
+                                    min_val=user_min,
+                                    max_val=user_max,
+                                    num_bins='auto',
                                 )
-                                st.download_button(
-                                    label="Download histogram (HTML)",
-                                    data=fig_hist.to_html().encode("utf-8"),
-                                    file_name="combined_histogram.html",
-                                    mime="text/html",
-                                )
+                                st.pyplot(fig_hist, use_container_width=True)
                         else:
                             st.warning("Min greater than max.")
+                        
+                        user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
+                        user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
+                       # num_bins = st.number_input("# Bins:", value=20)
             else:
                 st.error(f"Data for file '{selected_file_name}' not found.")
 
@@ -299,7 +366,12 @@ def run():
                     ax_hm.set_title("Brightness Heatmap (All SIFs)")
                     ax_hm.set_xlabel("X (px)")
                     ax_hm.set_ylabel("Y (px)")
-                    cbar = fig_hm.colorbar(im, ax=ax_hm, fraction=0.046, pad=0.04)
+
+                    divider = make_axes_locatable(ax_hm)
+                    cax = divider.append_axes("right", size="1%", pad=0.01)
+
+
+                    cbar = fig_hm.colorbar(im, cax=cax)
                     cbar.set_label("Summed brightness (pps)")
 
                     st.pyplot(fig_hm)
