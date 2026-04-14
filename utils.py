@@ -181,6 +181,7 @@ def gaussian(x, amp, mu, sigma):
 
 
 
+
 def plot_brightness(
     image_data_cps,
     df,
@@ -262,20 +263,40 @@ def plot_brightness(
     # store original cps values for accurate hover information
     img_custom = np.expand_dims(img, axis=-1)
     fig.data[0].customdata = img_custom
-    fig.data[0].hovertemplate = ("x=%{x:.2f}px<br>y=%{y:.2f}px<br>brightness=%{customdata[0]:.1f}")
+    fig.data[0].hovertemplate = (
+        "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata[0]:.1f}<extra></extra>"
+    )
+    cbar_title_text = "pps" if not normalization else "log10(pps)"
     fig.update_layout(
         margin=dict(l=0, r=0, t=30, b=0),
         dragmode=dragmode,
+        xaxis_title="<b>X (px)</b>",
+        yaxis_title="<b>Y (px)</b>",
+        xaxis=dict(
+            title_font=dict(size=18, color="black"),
+            tickfont=dict(size=14, color="black"),
+            constrain="domain"  
+        ),
+        yaxis=dict(
+            title_font=dict(size=18, color="black"),
+            tickfont=dict(size=14, color="black")#, family="Arial Black") # Bold ticks
+        ),
         coloraxis_colorbar=dict(
-            title="pps" if not normalization else "log10(pps)",
+            title=dict(
+                text=f"<b>{cbar_title_text}</b>",
+                font=dict(size=18, color="black")
+            ),
+            tickfont=dict(size=14, color="black"),
+            x=0.9,          # Default is ~1.02. Decrease this to move it closer.
+            xpad=0,          # Removes extra internal padding
+            xanchor="left",
             yanchor="middle",
             y=0.5,
             lenmode="fraction",
             len=0.8,
             thickness=20,
-        ),
-        xaxis_title="X (px)",
-        yaxis_title="Y (px)"
+        )
+        
     )
 
     xs = ys = rs = br = None
@@ -325,6 +346,8 @@ def plot_brightness(
     fig.update_yaxes(range=[-0.5, h - 0.5], scaleanchor="x", scaleratio=1, showgrid=False, zeroline=False)
 
     return fig
+
+
 
 
 
