@@ -65,6 +65,7 @@ tool_registry = {
     "Batch Convert": ("tools.batch_convert", "run"),
     "Brightness (WF)": ("tools.analyze_single_sif", "run"),
     "Brightness (Conf)": ("tools.confocal_brightness", "run"),
+    "Confocal Visualization": ("tools.confocal_visualizer", "run"),
     "Dye Colocalization": ("tools.colocalization", "run"),
     "Get Spectra": ("tools.get_spectra", "run"),
     "Monomer Estimation": ("tools.monomers", "run"),
