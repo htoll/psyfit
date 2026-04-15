@@ -194,6 +194,7 @@ def gaussian(x, amp, mu, sigma):
 def plot_brightness(
     image_data_cps,
     df,
+    img_meta=None,
     show_fits=True,
     plot_brightness_histogram=False,   
     normalization=False,
