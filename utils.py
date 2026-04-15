@@ -226,13 +226,16 @@ def plot_brightness(
         cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.ax.tick_params(labelsize=10*scale)
         cbar.set_label('pps', fontsize=10*scale)
+        if img_meta:
+            gain = img_meta.get('gainDAC', 'N/A')
+            exposure = img_meta.get('exposure_time_sec', 'N/A')
+            cycles = img_meta.get('accumulated_cycles', 'N/A')
+        else:
+            gain = exposure = cycles = 'N/A'
 
         if show_fits and df is not None and not df.empty:
-            gain = df['gainDAC'].iloc[0] if 'gainDAC' in df.columns else 'N/A'
-            exposure = df['exposure_time_sec'].iloc[0] if 'exposure_time_sec' in df.columns else 'N/A'
-            cycles = df['accumulated_cycles'].iloc[0] if 'accumulated_cycles' in df.columns else 'N/A'
-            
-            ax.set_title(f"gainDAC: {gain} | Exposure: {exposure} s | Cycles: {cycles}", 
+
+            ax.set_title(f"EM Gain: {gain} | Exposure: {exposure*1000} ms | Cycles: {cycles}", 
                          fontweight='bold', color='black', fontsize=12)
             for _, row in df.iterrows():
                 x_px = row['x_pix']
