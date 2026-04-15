@@ -222,6 +222,12 @@ def plot_brightness(
         cbar.set_label('pps', fontsize=10*scale)
 
         if show_fits and df is not None and not df.empty:
+            gain = df['gainDAC'].iloc[0]
+            exposure = df['exposure_time_sec'].iloc[0]
+            cycles = df['accumulated_cycles'].iloc[0]
+            
+            ax.set_title(f"gainDAC: {gain} | Exposure: {exposure} s | Cycles: {cycles}", 
+                         fontweight='bold', color='black', fontsize=12)
             for _, row in df.iterrows():
                 x_px = row['x_pix']
                 y_px = row['y_pix']
@@ -305,6 +311,17 @@ def plot_brightness(
 
     xs = ys = rs = br = None
     if df is not None and not df.empty:
+        gain = df['gainDAC'].iloc[0]
+        exposure = df['exposure_time_sec'].iloc[0]
+        cycles = df['accumulated_cycles'].iloc[0]
+        fig.update_layout(
+            title=dict(
+                text=f"<b>gainDAC: {gain} | Exposure: {exposure} s | Cycles: {cycles}</b>",
+                font=dict(color="black", size=16),
+                x=0.5,             # Centers the title
+                xanchor="center"
+            )
+        )
         xs = df["x_pix"].to_numpy()
         ys = df["y_pix"].to_numpy()
         rs = (2 * np.maximum(df["sigx_fit"].to_numpy(), df["sigy_fit"].to_numpy()) / pix_size_um).astype(float)
