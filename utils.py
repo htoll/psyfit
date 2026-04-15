@@ -4,6 +4,7 @@ import pandas as pd
 from skimage.feature import peak_local_max
 from skimage.feature import blob_log
 
+
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 
@@ -18,6 +19,7 @@ from scipy.ndimage import zoom
 from scipy.ndimage import gaussian_filter
 from scipy.optimize import curve_fit
 from scipy.optimize import least_squares
+from scipy.stats import norm
 
 from datetime import date
 
@@ -419,16 +421,17 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
 
     # Gaussian fit
     mu, sigma = None, None
-    p0 = [np.max(counts), np.mean(brightness_vals), np.std(brightness_vals)]
-    try:
-        popt, _ = curve_fit(gaussian, bin_centers, counts, p0=p0)
-        mu, sigma = popt[1], popt[2]
+    if len(brightness_vals) > 1:
+        mu, sigma = norm.fit(brightness_vals)
         x_fit = np.linspace(edges[0], edges[-1], 500)
-        y_fit = gaussian(x_fit, *popt)
-        ax.plot(x_fit, y_fit, color='black', linewidth=0.75, linestyle='--', label=r"μ = {mu:.0f} ± {sigma:.0f} pps".format(mu=mu, sigma=sigma))
+        
+        # Scale the PDF to match raw counts: PDF * Total Data Points * Bin Width
+        bin_width = edges[1] - edges[0]
+        y_fit = norm.pdf(x_fit, mu, sigma) * len(brightness_vals) * bin_width
+        
+        ax.plot(x_fit, y_fit, color='black', linewidth=0.75, linestyle='--', 
+                label=f"μ = {mu:.0f} ± {sigma:.0f} pps")
         ax.legend(fontsize=10 * scale)
-    except RuntimeError:
-        pass  # Fail gracefully if fit doesn't converge
 
     palette = HWT_aesthetic()
     region_colors = palette[:4]
