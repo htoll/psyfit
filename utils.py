@@ -183,7 +183,7 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
         'accumulated_cycles': accumulate_cycles
     }
     df = pd.DataFrame(results)
-    return df, image_data_cps
+    return df, image_data_cps, metadata_dict
     
 def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
