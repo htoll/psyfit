@@ -169,8 +169,8 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
                 'brightness_fit': brightness_fit,
                 'brightness_integrated': brightness_integrated,
                 'gainDAC': gainDAC,
-                'exposure_time_sec' = exposure_time,
-                'accumulated_cycles' = accumulate_cycles
+                'exposure_time_sec': exposure_time,
+                'accumulated_cycles': accumulate_cycles
 
             })
 
