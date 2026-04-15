@@ -290,7 +290,7 @@ def run():
                                         p = norm.pdf(x_fit, mu, std) * len(chan_data) * bin_width
                                         
                                         ax.plot(x_fit, p, 'k', linewidth=1.5)
-                                        ax.set_title(f"μ={mu:.2e} ± {std:.2e} pps\n σ/μ={sigma_over_mu_percent}%", fontsize=16, pad=2)
+                                        ax.set_title(f"μ={mu:.2e} ± {std:.2e} pps\n σ/μ={sigma_over_mu_percent:.1f}%", fontsize=16, pad=2)
                                 
                                 axes[-1].set_xlabel('Brightness (pps)')
                                 fig_hist.tight_layout()
