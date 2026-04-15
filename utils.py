@@ -326,7 +326,7 @@ def plot_brightness(
         cycles = df['accumulated_cycles'].iloc[0] if 'accumulated_cycles' in df.columns else 'N/A'
         fig.update_layout(
             title=dict(
-                text=f"<b>gainDAC: {gain} | Exposure: {exposure} s | Cycles: {cycles}</b>",
+                text=f"<b>EM Gain: {gain} | Exposure: {exposure*1000} ms | Cycles: {cycles}</b>",
                 font=dict(color="black", size=16),
                 x=0.5,             # Centers the title
                 xanchor="center"
