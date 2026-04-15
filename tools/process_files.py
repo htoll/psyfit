@@ -37,6 +37,7 @@ def process_files(uploaded_files, region, threshold=1, signal="UCNP", pix_size_u
             processed_data[uploaded_file.name] = {
                 "df": df,
                 "image": image_data_cps,
+                "metadata": img_meta
             }
             all_dfs.append(df)
             
