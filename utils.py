@@ -177,6 +177,11 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
         except RuntimeError:
             continue
 
+    metadata_dict = {
+        'gainDAC': gainDAC,
+        'exposure_time_sec': exposure_time,
+        'accumulated_cycles': accumulate_cycles
+    }
     df = pd.DataFrame(results)
     return df, image_data_cps
     
