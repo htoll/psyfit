@@ -222,9 +222,9 @@ def plot_brightness(
         cbar.set_label('pps', fontsize=10*scale)
 
         if show_fits and df is not None and not df.empty:
-            gain = df['gainDAC'].iloc[0]
-            exposure = df['exposure_time_sec'].iloc[0]
-            cycles = df['accumulated_cycles'].iloc[0]
+            gain = df['gainDAC'].iloc[0] if 'gainDAC' in df.columns else 'N/A'
+            exposure = df['exposure_time_sec'].iloc[0] if 'exposure_time_sec' in df.columns else 'N/A'
+            cycles = df['accumulated_cycles'].iloc[0] if 'accumulated_cycles' in df.columns else 'N/A'
             
             ax.set_title(f"gainDAC: {gain} | Exposure: {exposure} s | Cycles: {cycles}", 
                          fontweight='bold', color='black', fontsize=12)
@@ -311,9 +311,9 @@ def plot_brightness(
 
     xs = ys = rs = br = None
     if df is not None and not df.empty:
-        gain = df['gainDAC'].iloc[0]
-        exposure = df['exposure_time_sec'].iloc[0]
-        cycles = df['accumulated_cycles'].iloc[0]
+        gain = df['gainDAC'].iloc[0] if 'gainDAC' in df.columns else 'N/A'
+        exposure = df['exposure_time_sec'].iloc[0] if 'exposure_time_sec' in df.columns else 'N/A'
+        cycles = df['accumulated_cycles'].iloc[0] if 'accumulated_cycles' in df.columns else 'N/A'
         fig.update_layout(
             title=dict(
                 text=f"<b>gainDAC: {gain} | Exposure: {exposure} s | Cycles: {cycles}</b>",
