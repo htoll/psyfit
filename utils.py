@@ -311,8 +311,7 @@ def plot_brightness(
 
     xs = ys = rs = br = None
     if df is not None and not df.empty:
-        st.write("Columns inside df right now:", df.columns.tolist())
-        st.dataframe(df.head(2))
+
         gain = df['gainDAC'].iloc[0] if 'gainDAC' in df.columns else 'N/A'
         exposure = df['exposure_time_sec'].iloc[0] if 'exposure_time_sec' in df.columns else 'N/A'
         cycles = df['accumulated_cycles'].iloc[0] if 'accumulated_cycles' in df.columns else 'N/A'
