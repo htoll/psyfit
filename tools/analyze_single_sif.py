@@ -303,7 +303,7 @@ def run():
                                         y_fit = pdf * len(chan_data) * bin_width
                                         
                                         # Use n_components from the sidebar
-                                        ax.plot(x_fit, y_fit, color='black', linewidth=1, label=f"{gmm_components}-comp GMM")
+                                        ax.plot(x_fit, y_fit, color='black', linewidth=1.5, alpha =0.8)
                                     
                                         # 2. Extract Primary Peak Stats for Title
                                         idx = np.argmax(gmm.weights_)
