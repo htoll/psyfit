@@ -105,6 +105,8 @@ def run():
         └─┴─┘
         """
         region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
+        gmm_components = st.sidebar.number_input("GMM Components", min_value=1, value=2)
+
 
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:
                                                                 - UCNP for high SNR (sklearn peakfinder)
@@ -173,7 +175,6 @@ def run():
                     cmap=cmap,
                     interactive=True,
                 )
-                gmm_components = st.sidebar.number_input("GMM Components", min_value=1, value=2)
                 if mcl_toggle:
 
                     if hasattr(fig_image, "savefig"):
@@ -282,17 +283,21 @@ def run():
                                     ax.set_ylabel(channel, color=color, weight='bold')
                                     
                                     # Gaussian fit
-                                    if len(chan_data) > 1:
+                                    if len(chan_data) > int(gmm_components):
+                                        n_comp = int(gmm_components)
                                         X_chan = chan_data.reshape(-1, 1)
                                         gmm = GaussianMixture(n_components=int(gmm_components), random_state=42).fit(X_chan)
+
+                                        #id primary peak
                                         idx = np.argmax(gmm.weights_)
                                         mu = gmm.means_.flatten()[idx]
                                         std = np.sqrt(gmm.covariances_.flatten()[idx])
                                         sigma_over_mu_percent = (std / mu) * 100 if mu != 0 else 0
                                         n_points = len(chan_data) # Total points in this channel's fit
                                         
-                                        x_fit = np.linspace(user_min, user_max, 100).reshape(-1, 1)
-                                        pdf = np.exp(gmm.score_samples(x_fit))
+                                        x_fit = np.linspace(user_min, user_max, 200).reshape(-1, 1)
+                                        log_prob = gmm.score_samples(x_fit)
+                                        pdf = np.exp(log_prob)
                                         
                                         bin_width = bins[1] - bins[0]
                                         p = pdf * n_points * bin_width
