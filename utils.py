@@ -445,7 +445,7 @@ def plot_histogram(df,
         n_points = len(brightness_vals)
 
         ax.set_title(
-            f"μ={mu_primary:.2e} ± {sigma_primary:.2e} pps | n={n_points}\nσ/μ={sigma_over_mu:.1f}%",
+            f"μ={mu_primary:.2e} ± {sigma_primary:.2e} pps\nσ/μ={sigma_over_mu:.1f}% | n={n_points}",
             fontsize=10 * scale, 
             pad=10
         )
