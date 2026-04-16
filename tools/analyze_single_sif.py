@@ -173,8 +173,8 @@ def run():
                     cmap=cmap,
                     interactive=True,
                 )
+                gmm_components = st.sidebar.number_input("GMM Components", min_value=1, value=2)
                 if mcl_toggle:
-                    gmm_components = st.text_input("GMM Components", value="2")
 
                     if hasattr(fig_image, "savefig"):
                         # Matplotlib annotations
@@ -283,16 +283,28 @@ def run():
                                     
                                     # Gaussian fit
                                     if len(chan_data) > 1:
-                                        mu, std = norm.fit(chan_data)
-                                        sigma_over_mu_percent = std/mu *100
-                                        x_fit = np.linspace(user_min, user_max, 100)
+                                        X_chan = chan_data.reshape(-1, 1)
+                                        gmm = GaussianMixture(n_components=int(gmm_components), random_state=42).fit(X_chan)
+                                        idx = np.argmax(gmm.weights_)
+                                        mu = gmm.means_.flatten()[idx]
+                                        std = np.sqrt(gmm.covariances_.flatten()[idx])
+                                        sigma_over_mu_percent = (std / mu) * 100 if mu != 0 else 0
+                                        n_points = len(chan_data) # Total points in this channel's fit
                                         
-                                        # Scale the PDF to match raw counts: PDF * Total Data Points * Bin Width
+                                        x_fit = np.linspace(user_min, user_max, 100).reshape(-1, 1)
+                                        pdf = np.exp(gmm.score_samples(x_fit))
+                                        
                                         bin_width = bins[1] - bins[0]
-                                        p = norm.pdf(x_fit, mu, std) * len(chan_data) * bin_width
+                                        p = pdf * n_points * bin_width
                                         
                                         ax.plot(x_fit, p, 'k', linewidth=1.5)
-                                        ax.set_title(f"μ={mu:.2e} ± {std:.2e} pps\n σ/μ={sigma_over_mu_percent:.1f}%", fontsize=16, pad=2)
+                                        # Note: mu/std now return arrays, you might want to display the primary peak
+                                        mu = gmm.means_.flatten()[0] 
+                                        ax.set_title(
+                                                    f"μ={mu:.2e} ± {std:.2e} pps | n={n_points}\nσ/μ={sigma_over_mu_percent:.1f}%", 
+                                                    fontsize=16, 
+                                                    pad=2
+                                                    )
                                 
                                 axes[-1].set_xlabel('Brightness (pps)')
                                 fig_hist.tight_layout()
@@ -314,7 +326,7 @@ def run():
                                     min_val=user_min,
                                     max_val=user_max,
                                     num_bins='auto',
-                                    n_components = gmm_components
+                                    n_components = int(gmm_components)
                                     
                                 )
                                 st.pyplot(fig_hist, use_container_width=True)
