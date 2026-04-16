@@ -315,7 +315,7 @@ def run():
                                         # 3. Set Title
                                         ax.set_title(
                                             f"μ={mu_primary:.2e} ± {sigma_primary:.2e} pps \nσ/μ={sigma_over_mu:.1f}%| n={n_points}",
-                                            fontsize=10 * scale, 
+                                            fontsize=16, 
                                             pad=10
                                         )
                                         
