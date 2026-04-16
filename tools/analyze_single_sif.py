@@ -289,33 +289,36 @@ def run():
                                     ax.set_ylabel(channel, color=color, weight='bold')
                                     
                                     # Gaussian fit
+                                    mu, sigma = None, None
                                     if len(chan_data) > int(gmm_components):
-                                        n_comp = int(gmm_components)
-                                        X_chan = chan_data.reshape(-1, 1)
-                                        gmm = GaussianMixture(n_components=int(gmm_components), random_state=42).fit(X_chan)
-
-                                        #id primary peak
+                                        X = brightness_vals.reshape(-1, 1)
+                                        gmm = GaussianMixture(n_components=n_components, random_state=42).fit(X)
+                                        
+                                        # 1. Plotting data
+                                        x_fit = np.linspace(edges[0], edges[-1], 500).reshape(-1, 1)
+                                        pdf = np.exp(gmm.score_samples(x_fit))
+                                        bin_width = edges[1] - edges[0]
+                                        y_fit = pdf * len(brightness_vals) * bin_width
+                                        ax.plot(x_fit, y_fit, color='black', linewidth=1, label=f"{n_components}-comp GMM")
+                                
+                                        # 2. Extract Primary Peak Stats for Title
                                         idx = np.argmax(gmm.weights_)
-                                        mu = gmm.means_.flatten()[idx]
-                                        std = np.sqrt(gmm.covariances_.flatten()[idx])
-                                        sigma_over_mu_percent = (std / mu) * 100 if mu != 0 else 0
-                                        n_points = len(chan_data) # Total points in this channel's fit
-                                        
-                                        x_fit = np.linspace(user_min, user_max, 200).reshape(-1, 1)
-                                        log_prob = gmm.score_samples(x_fit)
-                                        pdf = np.exp(log_prob)
-                                        
-                                        bin_width = bins[1] - bins[0]
-                                        p = pdf * n_points * bin_width
-                                        
-                                        ax.plot(x_fit, p, 'k', linewidth=1.5)
-                                        # Note: mu/std now return arrays, you might want to display the primary peak
-                                        mu = gmm.means_.flatten()[0] 
+                                        mu_primary = gmm.means_.flatten()[idx]
+                                        sigma_primary = np.sqrt(gmm.covariances_.flatten()[idx])
+                                        sigma_over_mu = (sigma_primary / mu_primary * 100) if mu_primary != 0 else 0
+                                        n_points = len(brightness_vals)
+                                
+                                        # 3. Set Title
                                         ax.set_title(
-                                                    f"μ={mu_primary:.2e} ± {sigma_primary:.2e} pps\nσ/μ={sigma_over_mu:.1f}% | n={n_points}",
-                                                    fontsize=16, 
-                                                    pad=2
-                                                    )
+                                            f"μ={mu_primary:.2e} ± {sigma_primary:.2e} pps | n={n_points}\nσ/μ={sigma_over_mu:.1f}%",
+                                            fontsize=10 * scale, 
+                                            pad=10
+                                        )
+                                        
+                                        # Parameters for return (all components)
+                                        mu = gmm.means_.flatten()
+                                        sigma = np.sqrt(gmm.covariances_.flatten())
+                                        ax.legend(fontsize=8 * scale)
                                 
                                 axes[-1].set_xlabel('Brightness (pps)')
                                 fig_hist.tight_layout()
