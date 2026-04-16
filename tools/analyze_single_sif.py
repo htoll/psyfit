@@ -292,7 +292,7 @@ def run():
                                     mu, sigma = None, None
                                     if len(chan_data) > int(gmm_components):
                                         X = brightness_vals.reshape(-1, 1)
-                                        gmm = GaussianMixture(n_components=n_components, random_state=42).fit(X)
+                                        gmm = GaussianMixture(n_components=gmm_components, random_state=42).fit(X)
                                         
                                         # 1. Plotting data
                                         x_fit = np.linspace(edges[0], edges[-1], 500).reshape(-1, 1)
