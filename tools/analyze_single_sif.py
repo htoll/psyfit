@@ -289,28 +289,32 @@ def run():
                                     ax.set_ylabel(channel, color=color, weight='bold')
                                     
                                     # Gaussian fit
-                                    mu, sigma = None, None
                                     if len(chan_data) > int(gmm_components):
-                                        X = brightness_vals.reshape(-1, 1)
-                                        gmm = GaussianMixture(n_components=gmm_components, random_state=42).fit(X)
+                                        # Use chan_data here, NOT brightness_vals
+                                        X_chan = chan_data.reshape(-1, 1)
+                                        gmm = GaussianMixture(n_components=int(gmm_components), random_state=42).fit(X_chan)
                                         
-                                        # 1. Plotting data
-                                        x_fit = np.linspace(edges[0], edges[-1], 500).reshape(-1, 1)
+                                        # 1. Generate plot data using 'bins' (the variable returned by ax.hist)
+                                        x_fit = np.linspace(bins[0], bins[-1], 500).reshape(-1, 1)
                                         pdf = np.exp(gmm.score_samples(x_fit))
-                                        bin_width = edges[1] - edges[0]
-                                        y_fit = pdf * len(brightness_vals) * bin_width
-                                        ax.plot(x_fit, y_fit, color='black', linewidth=1, label=f"{n_components}-comp GMM")
-                                
+                                        
+                                        # Scale PDF to match raw counts
+                                        bin_width = bins[1] - bins[0]
+                                        y_fit = pdf * len(chan_data) * bin_width
+                                        
+                                        # Use n_components from the sidebar
+                                        ax.plot(x_fit, y_fit, color='black', linewidth=1, label=f"{gmm_components}-comp GMM")
+                                    
                                         # 2. Extract Primary Peak Stats for Title
                                         idx = np.argmax(gmm.weights_)
                                         mu_primary = gmm.means_.flatten()[idx]
                                         sigma_primary = np.sqrt(gmm.covariances_.flatten()[idx])
                                         sigma_over_mu = (sigma_primary / mu_primary * 100) if mu_primary != 0 else 0
-                                        n_points = len(brightness_vals)
-                                
+                                        n_points = len(chan_data)
+                                    
                                         # 3. Set Title
                                         ax.set_title(
-                                            f"μ={mu_primary:.2e} ± {sigma_primary:.2e} pps | n={n_points}\nσ/μ={sigma_over_mu:.1f}%",
+                                            f"μ={mu_primary:.2e} ± {sigma_primary:.2e} pps \nσ/μ={sigma_over_mu:.1f}%| n={n_points}",
                                             fontsize=10 * scale, 
                                             pad=10
                                         )
