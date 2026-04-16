@@ -5,10 +5,16 @@ from utils import integrate_sif, plot_brightness, plot_histogram
 from tools.process_files import process_files
 from matplotlib.colors import LogNorm
 import numpy as np
-from scipy.ndimage import gaussian_filter
+
 import plotly.express as px
 import plotly.graph_objects as go
+
 from scipy.stats import norm
+from scipy.ndimage import gaussian_filter
+
+
+from sklearn.mixture import GaussianMixture
+
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
