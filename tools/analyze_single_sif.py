@@ -312,7 +312,7 @@ def run():
                                         # Note: mu/std now return arrays, you might want to display the primary peak
                                         mu = gmm.means_.flatten()[0] 
                                         ax.set_title(
-                                                    f"μ={mu:.2e} ± {std:.2e} pps | n={n_points}\nσ/μ={sigma_over_mu_percent:.1f}%", 
+                                                    f"μ={mu_primary:.2e} ± {sigma_primary:.2e} pps\nσ/μ={sigma_over_mu:.1f}% | n={n_points}",
                                                     fontsize=16, 
                                                     pad=2
                                                     )
