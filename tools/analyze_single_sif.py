@@ -174,6 +174,8 @@ def run():
                     interactive=True,
                 )
                 if mcl_toggle:
+                    gmm_components = st.text_input("GMM Components", value="2")
+
                     if hasattr(fig_image, "savefig"):
                         # Matplotlib annotations
                         ax = fig_image.gca()
@@ -312,6 +314,8 @@ def run():
                                     min_val=user_min,
                                     max_val=user_max,
                                     num_bins='auto',
+                                    n_components = gmm_components
+                                    
                                 )
                                 st.pyplot(fig_hist, use_container_width=True)
                         else:
