@@ -7,6 +7,7 @@ from skimage.feature import blob_log
 
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
+from sklearn.mixture import GaussianMixture
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
@@ -384,7 +385,13 @@ def plot_brightness(
 
 
 
-def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None):
+def plot_histogram(df, 
+                   min_val=None, 
+                   max_val=None, 
+                   num_bins='auto', 
+                   thresholds=None,
+                   n_components = 2
+                  ):
     """
     Plots the brightness histogram with a Gaussian fit and optional vertical thresholds.
     
@@ -422,16 +429,19 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
     # Gaussian fit
     mu, sigma = None, None
     if len(brightness_vals) > 1:
-        mu, sigma = norm.fit(brightness_vals)
-        x_fit = np.linspace(edges[0], edges[-1], 500)
+        # Reshape for sklearn: (N_samples, N_features)
+        X = brightness_vals.reshape(-1, 1)
+        gmm = GaussianMixture(n_components=n_components, random_state=42).fit(X)
         
-        # Scale the PDF to match raw counts: PDF * Total Data Points * Bin Width
         bin_width = edges[1] - edges[0]
-        y_fit = norm.pdf(x_fit, mu, sigma) * len(brightness_vals) * bin_width
+        y_fit = pdf * len(brightness_vals) * bin_width
         
-        ax.plot(x_fit, y_fit, color='black', linewidth=0.75, linestyle='--', 
-                label=f"μ = {mu:.0f} ± {sigma:.0f} pps")
-        ax.legend(fontsize=10 * scale)
+        ax.plot(x_fit, y_fit, color='black', linewidth=1, label=f"{n_components}-comp GMM")
+        
+        # Extract params to return
+        mu = gmm.means_.flatten()
+        sigma = np.sqrt(gmm.covariances_.flatten())
+        ax.legend(fontsize=8 * scale)
 
     palette = HWT_aesthetic()
     region_colors = palette[:4]
