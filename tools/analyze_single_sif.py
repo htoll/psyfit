@@ -322,7 +322,6 @@ def run():
                                         # Parameters for return (all components)
                                         mu = gmm.means_.flatten()
                                         sigma = np.sqrt(gmm.covariances_.flatten())
-                                        ax.legend(fontsize=12)
                                 
                                 axes[-1].set_xlabel('Brightness (pps)')
                                 fig_hist.tight_layout()
