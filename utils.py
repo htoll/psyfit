@@ -428,10 +428,10 @@ def plot_histogram(df,
 
     # Gaussian fit
     mu, sigma = None, None
-    if len(brightness_vals) > 1:
-        # Reshape for sklearn: (N_samples, N_features)
+    if len(brightness_vals) > n_components:
         X = brightness_vals.reshape(-1, 1)
         gmm = GaussianMixture(n_components=n_components, random_state=42).fit(X)
+        
         x_fit = np.linspace(edges[0], edges[-1], 500).reshape(-1, 1)
         pdf = np.exp(gmm.score_samples(x_fit))
         
@@ -440,7 +440,7 @@ def plot_histogram(df,
         
         ax.plot(x_fit, y_fit, color='black', linewidth=1, label=f"{n_components}-comp GMM")
         
-        # Extract params to return
+        # Parameters for return
         mu = gmm.means_.flatten()
         sigma = np.sqrt(gmm.covariances_.flatten())
         ax.legend(fontsize=8 * scale)
