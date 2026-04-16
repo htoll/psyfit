@@ -434,16 +434,21 @@ def plot_histogram(df,
         
         x_fit = np.linspace(edges[0], edges[-1], 500).reshape(-1, 1)
         pdf = np.exp(gmm.score_samples(x_fit))
-        
         bin_width = edges[1] - edges[0]
         y_fit = pdf * len(brightness_vals) * bin_width
-        
         ax.plot(x_fit, y_fit, color='black', linewidth=1, label=f"{n_components}-comp GMM")
-        
-        # Parameters for return
-        mu = gmm.means_.flatten()
-        sigma = np.sqrt(gmm.covariances_.flatten())
-        ax.legend(fontsize=8 * scale)
+
+        idx = np.argmax(gmm.weights_)
+        mu_primary = gmm.means_.flatten()[idx]
+        sigma_primary = np.sqrt(gmm.covariances_.flatten()[idx])
+        sigma_over_mu = (sigma_primary / mu_primary * 100) if mu_primary != 0 else 0
+        n_points = len(brightness_vals)
+
+        ax.set_title(
+            f"μ={mu_primary:.2e} ± {sigma_primary:.2e} pps | n={n_points}\nσ/μ={sigma_over_mu:.1f}%",
+            fontsize=10 * scale, 
+            pad=10
+        )
 
     palette = HWT_aesthetic()
     region_colors = palette[:4]
