@@ -432,6 +432,8 @@ def plot_histogram(df,
         # Reshape for sklearn: (N_samples, N_features)
         X = brightness_vals.reshape(-1, 1)
         gmm = GaussianMixture(n_components=n_components, random_state=42).fit(X)
+        x_fit = np.linspace(edges[0], edges[-1], 500).reshape(-1, 1)
+        pdf = np.exp(gmm.score_samples(x_fit))
         
         bin_width = edges[1] - edges[0]
         y_fit = pdf * len(brightness_vals) * bin_width
