@@ -59,13 +59,13 @@ def run():
               value=20,
               step=1,
           )
-          initial_rxn_vol = st.number_input(
-              "Initial reaction volume (mL)",
+          initial_core_vol = st.number_input(
+              "Initial volume hexanes cores dissolved in (mL, typically 6 or 50 mL)",
               min_value=0.1,
-              value=10.0,
-              step=0.1,
+              value=50.0,
+              step=1.0,
           )
-  
+      normalize_injections = st.checkbox('Normalize injections and core volume', help = 'If initial injection is >1 mL or < 0.4 mL')
       submitted = st.form_submit_button("Calculate")
   
   
@@ -96,11 +96,23 @@ def run():
       yac_added = np.zeros(num_injections)
       for y in range(num_injections - 1):
           yac_added[y] = round(volume_added[y] / nm_per_mL, 2)
-  
+
+
+      #calculate volume of core to add:
+      ref_mL_per_nmcubed = 2.7 / (4.7**3) #standard protocol is 2.7 mL for a 9.2 nm core
+      ref_stock = 50 #reference stock is 50 mL
+      vol_core = ref_mL_per_nmcubed * initial_radius**3 * (initial_core_vol / ref_stock)
+
+      if normalize_injections and (yac_added[0] > 1 or yac_added[0] < 0.4):
+        norm_factor = yac_added[0]
+        yac_added = yac_added / norm_factor
+        vol_core = vol_core / norm_factor
+
+                                
       tfa_added = np.zeros(num_injections)
       for t in range(num_injections - 1):
           tfa_added[t + 1] = round(yac_added[t] / 2.0, 2)
-  
+
       total_vol = np.zeros(num_injections)
       pct_injected = np.zeros(num_injections)
       prev_vol = float(initial_rxn_vol)
@@ -114,13 +126,15 @@ def run():
                   f"Injection {q+1}: risks temperature fluctuation \n"
               )
           prev_vol = total_vol[q]
+
+
   
       df = pd.DataFrame({
           "Injection": inj_numbers,
           "Time (min)": inj_times.round().astype(int),
           "Estimated radius (nm)": np.round(est_radius, 3),
           "NaTFA (mL)": tfa_added,
-          "YAc (mL)": yac_added,
+          "LnOA (mL)": yac_added,
           "Total Rxn Volume (mL)": total_vol,
           "% Volume Injected": pct_injected,
       })
@@ -129,11 +143,12 @@ def run():
       df_t = df.set_index("Injection").T
       df_t.index.name = None  # hide row index label
       df_t.columns = [f"Injection {int(c)}" for c in df_t.columns]  # prettier column headers
-      return df_t, warnings
+      return df_t, warnings, vol_core
   
   if submitted:
+    initial_rxn_vol = 10 #6 mL ODE 4 mL OA
     try:
-        df_t, warnings = compute_injection_plan(
+        df_t, warnings, vol_core  = compute_injection_plan(
             delta=delta,
             initial_radius=initial_radius,
             final_radius=final_radius,
@@ -144,7 +159,7 @@ def run():
         numeric_rows = [
             "Estimated radius (nm)",
             "NaTFA (mL)",
-            "YAc (mL)",
+            "LnOA (mL)",
             "Total Rxn Volume (mL)",
             "% Volume Injected",
         ]
@@ -169,6 +184,8 @@ def run():
         )
 
         st.subheader("Injection Table")
+
+        st.markdown(f'Initial conditions: {np.round(vol_core, decimals=2)} mL core with 4 mL OA and 6 mL ODE')
 
         st.dataframe(styled, use_container_width=True)
 

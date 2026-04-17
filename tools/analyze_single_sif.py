@@ -5,10 +5,25 @@ from utils import integrate_sif, plot_brightness, plot_histogram
 from tools.process_files import process_files
 from matplotlib.colors import LogNorm
 import numpy as np
-from scipy.ndimage import gaussian_filter
+
 import plotly.express as px
 import plotly.graph_objects as go
 from scipy.stats import norm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+
+blue_ch_color = 'dodgerblue'
+green_ch_color = 'forestgreen'
+red_ch_color = 'tomato'
+nir_ch_color = 'darkorange'
+
+
+from scipy.stats import norm
+from scipy.ndimage import gaussian_filter
+
+
+from sklearn.mixture import GaussianMixture
+
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
@@ -105,11 +120,18 @@ def run():
         └─┴─┘
         """
         region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
+        gmm_components = st.sidebar.number_input("GMM Components", min_value=1, value=2)
+
 
         signal = st.selectbox("Signal", options=["UCNP", "dye"], help='''Changes detection method:
                                                                 - UCNP for high SNR (sklearn peakfinder)
                                                                 - dye for low SNR (sklearn blob detection)''')
         min_distance = st.number_input("Minimum Distance", min_value=1, value=5, help='Min distance between PSFs (px)')
+<<<<<<< HEAD
+=======
+        pix_size_um = st.number_input("Pixel Size (µm)", min_value = 0.01, value = 0.1)
+
+>>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
         cmap = st.selectbox("Colormap", options=[ 'gray', 'plasma', "magma", 'viridis', 'hot', 'hsv'])
         show_fits = st.checkbox("Show fits", value=True)
         normalization = st.checkbox("Log Image Scaling")
@@ -136,7 +158,12 @@ def run():
                                                         region, 
                                                         threshold=threshold, 
                                                         signal=signal,
+<<<<<<< HEAD
                                                        min_distance = min_distance)
+=======
+                                                       min_distance = min_distance,
+                                                       pix_size_um = pix_size_um)
+>>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
             if mcl_toggle and combined_df is not None and not combined_df.empty:
                 # Assign quadrants based on pixel coordinates
                 conditions = [
@@ -171,6 +198,10 @@ def run():
                     interactive=True,
                 )
                 if mcl_toggle:
+<<<<<<< HEAD
+=======
+
+>>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
                     if hasattr(fig_image, "savefig"):
                         # Matplotlib annotations
                         ax = fig_image.gca()
@@ -277,6 +308,7 @@ def run():
                                     ax.set_ylabel(channel, color=color, weight='bold')
                                     
                                     # Gaussian fit
+<<<<<<< HEAD
                                     if len(chan_data) > 1:
                                         mu, std = norm.fit(chan_data)
                                         x_fit = np.linspace(user_min, user_max, 100)
@@ -287,6 +319,41 @@ def run():
                                         
                                         ax.plot(x_fit, p, 'k', linewidth=1.5)
                                         ax.set_title(f"μ={mu:.2e} ± {std:.2e} pps", fontsize=16, pad=2)
+=======
+                                    if len(chan_data) > int(gmm_components):
+                                        # Use chan_data here, NOT brightness_vals
+                                        X_chan = chan_data.reshape(-1, 1)
+                                        gmm = GaussianMixture(n_components=int(gmm_components), random_state=42).fit(X_chan)
+                                        
+                                        # 1. Generate plot data using 'bins' (the variable returned by ax.hist)
+                                        x_fit = np.linspace(bins[0], bins[-1], 500).reshape(-1, 1)
+                                        pdf = np.exp(gmm.score_samples(x_fit))
+                                        
+                                        # Scale PDF to match raw counts
+                                        bin_width = bins[1] - bins[0]
+                                        y_fit = pdf * len(chan_data) * bin_width
+                                        
+                                        # Use n_components from the sidebar
+                                        ax.plot(x_fit, y_fit, color='black', linewidth=1.5, alpha =0.8)
+                                    
+                                        # 2. Extract Primary Peak Stats for Title
+                                        idx = np.argmax(gmm.weights_)
+                                        mu_primary = gmm.means_.flatten()[idx]
+                                        sigma_primary = np.sqrt(gmm.covariances_.flatten()[idx])
+                                        sigma_over_mu = (sigma_primary / mu_primary * 100) if mu_primary != 0 else 0
+                                        n_points = len(chan_data)
+                                    
+                                        # 3. Set Title
+                                        ax.set_title(
+                                            f"μ={mu_primary:.2e} ± {sigma_primary:.2e} pps \nσ/μ={sigma_over_mu:.1f}%| n={n_points}",
+                                            fontsize=16, 
+                                            pad=10
+                                        )
+                                        
+                                        # Parameters for return (all components)
+                                        mu = gmm.means_.flatten()
+                                        sigma = np.sqrt(gmm.covariances_.flatten())
+>>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
                                 
                                 axes[-1].set_xlabel('Brightness (pps)')
                                 fig_hist.tight_layout()
@@ -308,6 +375,11 @@ def run():
                                     min_val=user_min,
                                     max_val=user_max,
                                     num_bins='auto',
+<<<<<<< HEAD
+=======
+                                    n_components = int(gmm_components)
+                                    
+>>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
                                 )
                                 st.pyplot(fig_hist, use_container_width=True)
                         else:

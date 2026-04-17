@@ -4,8 +4,10 @@ import pandas as pd
 from skimage.feature import peak_local_max
 from skimage.feature import blob_log
 
+
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
+from sklearn.mixture import GaussianMixture
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
@@ -18,6 +20,7 @@ from scipy.ndimage import zoom
 from scipy.ndimage import gaussian_filter
 from scipy.optimize import curve_fit
 from scipy.optimize import least_squares
+from scipy.stats import norm
 
 from datetime import date
 
@@ -167,23 +170,34 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
                 'sigx_fit': sigx_fit,
                 'sigy_fit': sigy_fit,
                 'brightness_fit': brightness_fit,
-                'brightness_integrated': brightness_integrated
+                'brightness_integrated': brightness_integrated,
+                'gainDAC': gainDAC,
+                'exposure_time_sec': exposure_time,
+                'accumulated_cycles': accumulate_cycles
+
             })
 
         except RuntimeError:
             continue
 
+    metadata_dict = {
+        'gainDAC': gainDAC,
+        'exposure_time_sec': exposure_time,
+        'accumulated_cycles': accumulate_cycles
+    }
     df = pd.DataFrame(results)
-    return df, image_data_cps
+    return df, image_data_cps, metadata_dict
     
 def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
 
 
+
 def plot_brightness(
     image_data_cps,
     df,
+    img_meta=None,
     show_fits=True,
     plot_brightness_histogram=False,   
     normalization=False,
@@ -215,8 +229,17 @@ def plot_brightness(
         cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.ax.tick_params(labelsize=10*scale)
         cbar.set_label('pps', fontsize=10*scale)
+        if img_meta:
+            gain = img_meta.get('gainDAC', 'N/A')
+            exposure = img_meta.get('exposure_time_sec', 'N/A')
+            cycles = img_meta.get('accumulated_cycles', 'N/A')
+        else:
+            gain = exposure = cycles = 'N/A'
 
         if show_fits and df is not None and not df.empty:
+
+            ax.set_title(f"EM Gain: {gain} | Exposure: {exposure*1000} ms | Cycles: {cycles}", 
+                         fontweight='bold', color='black', fontsize=12)
             for _, row in df.iterrows():
                 x_px = row['x_pix']
                 y_px = row['y_pix']
@@ -300,12 +323,24 @@ def plot_brightness(
 
     xs = ys = rs = br = None
     if df is not None and not df.empty:
+
+        gain = df['gainDAC'].iloc[0] if 'gainDAC' in df.columns else 'N/A'
+        exposure = df['exposure_time_sec'].iloc[0] if 'exposure_time_sec' in df.columns else 'N/A'
+        cycles = df['accumulated_cycles'].iloc[0] if 'accumulated_cycles' in df.columns else 'N/A'
+        fig.update_layout(
+            title=dict(
+                text=f"<b>EM Gain: {gain} | Exposure: {exposure*1000} ms | Cycles: {cycles}</b>",
+                font=dict(color="black", size=16),
+                x=0.5,             # Centers the title
+                xanchor="center"
+            )
+        )
         xs = df["x_pix"].to_numpy()
         ys = df["y_pix"].to_numpy()
         rs = (2 * np.maximum(df["sigx_fit"].to_numpy(), df["sigy_fit"].to_numpy()) / pix_size_um).astype(float)
         br = (df["brightness_integrated"].to_numpy() / 1000.0).astype(float)
 
-        custom = np.stack([br], axis=1)
+        custom = np.stack([br, df["sigx_fit"].to_numpy(), df["sigy_fit"].to_numpy()], axis=1)
         fig.add_trace(go.Scatter(
             x=xs,
             y=ys,
@@ -313,7 +348,7 @@ def plot_brightness(
             marker=dict(size=1, opacity=0),
             name="Fits",
             customdata=custom,
-            hovertemplate="x=%{x:.2f}px<br>y=%{y:.2f}px<br>brightness=%{customdata[0]:.1f} kpps<extra></extra>",
+            hovertemplate="x=%{x:.2f}px<br>y=%{y:.2f}px<br>brightness=%{customdata[0]:.1f} kpps<br>sigx=%{customdata[1]:.2f}<br>sigy=%{customdata[2]:.2f}<extra></extra>",
             showlegend=False,
         ))
 
@@ -348,7 +383,15 @@ def plot_brightness(
 
 
 
-def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None):
+
+
+def plot_histogram(df, 
+                   min_val=None, 
+                   max_val=None, 
+                   num_bins='auto', 
+                   thresholds=None,
+                   n_components = 2
+                  ):
     """
     Plots the brightness histogram with a Gaussian fit and optional vertical thresholds.
     
@@ -385,16 +428,27 @@ def plot_histogram(df, min_val=None, max_val=None, num_bins=20, thresholds=None)
 
     # Gaussian fit
     mu, sigma = None, None
-    p0 = [np.max(counts), np.mean(brightness_vals), np.std(brightness_vals)]
-    try:
-        popt, _ = curve_fit(gaussian, bin_centers, counts, p0=p0)
-        mu, sigma = popt[1], popt[2]
-        x_fit = np.linspace(edges[0], edges[-1], 500)
-        y_fit = gaussian(x_fit, *popt)
-        ax.plot(x_fit, y_fit, color='black', linewidth=0.75, linestyle='--', label=r"μ = {mu:.0f} ± {sigma:.0f} pps".format(mu=mu, sigma=sigma))
-        ax.legend(fontsize=10 * scale)
-    except RuntimeError:
-        pass  # Fail gracefully if fit doesn't converge
+    if len(brightness_vals) > n_components:
+        X = brightness_vals.reshape(-1, 1)
+        gmm = GaussianMixture(n_components=n_components, random_state=42).fit(X)
+        
+        x_fit = np.linspace(edges[0], edges[-1], 500).reshape(-1, 1)
+        pdf = np.exp(gmm.score_samples(x_fit))
+        bin_width = edges[1] - edges[0]
+        y_fit = pdf * len(brightness_vals) * bin_width
+        ax.plot(x_fit, y_fit, color='black', linewidth=1, label=f"{n_components}-comp GMM")
+
+        idx = np.argmax(gmm.weights_)
+        mu_primary = gmm.means_.flatten()[idx]
+        sigma_primary = np.sqrt(gmm.covariances_.flatten()[idx])
+        sigma_over_mu = (sigma_primary / mu_primary * 100) if mu_primary != 0 else 0
+        n_points = len(brightness_vals)
+
+        ax.set_title(
+            f"μ={mu_primary:.2e} ± {sigma_primary:.2e} pps\nσ/μ={sigma_over_mu:.1f}% | n={n_points}",
+            fontsize=10 * scale, 
+            pad=10
+        )
 
     palette = HWT_aesthetic()
     region_colors = palette[:4]

@@ -25,7 +25,7 @@ def process_files(uploaded_files, region, threshold=1, signal="UCNP", pix_size_u
             f.write(uploaded_file.getbuffer())
         
         try:
-            df, image_data_cps = integrate_sif(file_path, 
+            df, image_data_cps, img_meta = integrate_sif(file_path, 
                                                region=region,
                                                   threshold=threshold,
                                                signal = signal,
@@ -33,9 +33,11 @@ def process_files(uploaded_files, region, threshold=1, signal="UCNP", pix_size_u
                                                sig_threshold=sig_threshold,
                                                min_distance = min_distance
                                                 )
+            df["file_stem"] = os.path.splitext(uploaded_file.name)[0]
             processed_data[uploaded_file.name] = {
                 "df": df,
                 "image": image_data_cps,
+                "metadata": img_meta
             }
             all_dfs.append(df)
             
