@@ -1,110 +1,109 @@
+"""Interactive TEM particle analysis tool.
+
+This Streamlit app reads `.dm3` and `.emd` files and measures particle sizes.
+It supports spherical, hexagonal-prism, cubic and octahedral nanoparticles and
+provides visual checks of the segmentation quality.
+
+Main features
+─────────────
+* Upload `.dm3` **or** `.emd` (Velox HDF5) images.
+* Robust adaptive pre-processing before watershed segmentation.
+* Shape-aware 2-D projection classification.
+* Fast static overlay of detected shapes on the original grayscale image.
+* Size-distribution histograms with Gaussian fits, SD, and n.
+* Combined CSV / PNG export.
+"""
+
+from __future__ import annotations
+
 import io
 import math
 import os
-import re  # Added for pairing logic
+import re
+import json
 import tempfile
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 
+import matplotlib.patches as patches
+import matplotlib.pyplot as plt
 import numpy as np
-import plotly.graph_objects as go
+import pandas as pd
 import streamlit as st
-from scipy.ndimage import distance_transform_edt
-from scipy.spatial.distance import cdist  # Added for colocalization
+from scipy.ndimage import (
+    distance_transform_edt,
+    gaussian_filter,
+    laplace,
+    median_filter,
+)
 from scipy.stats import norm
-from skimage.measure import regionprops, label
+from skimage import exposure
+from skimage.feature import peak_local_max
+from skimage.filters import threshold_li, threshold_otsu
+from skimage.measure import label, regionprops
 from skimage.morphology import (
-    remove_small_objects,
-    remove_small_holes,
     binary_closing,
+    binary_opening,
     disk,
-    h_maxima,
+    remove_small_holes,
+    remove_small_objects,
 )
 from skimage.segmentation import watershed
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
-from matplotlib.colors import ListedColormap
-import pandas as pd
 
+# Optional — emd support requires h5py
+try:
+    import h5py
+    _HAS_H5PY = True
+except ImportError:
+    h5py = None
+    _HAS_H5PY = False
+
+# Optional — dm3 support
 try:
     import dm3_lib as pyDM3reader
+    _HAS_DM3 = True
 except ImportError:
     pyDM3reader = None
+    _HAS_DM3 = False
 
 
-
-
-# ---------------------------------------------------------------------------
-# Pairing Logic (From Previous Request)
-# ---------------------------------------------------------------------------
-
-def _split_ucnp_dye(files: List[Any], ucnp_id="976", dye_id="638") -> Tuple[List[Any], List[Any]]:
-    """Split uploaded files into UCNP vs Dye sets based on filename tokens."""
-    u_tok = str(ucnp_id).lower().strip()
-    d_tok = str(dye_id).lower().strip()
-    ucnp, dye = [], []
-
-    for f in files:
-        name = f.name if hasattr(f, "name") else str(f)
-        lname = name.lower()
-        has_ucnp = u_tok in lname if u_tok else False
-        has_dye = d_tok in lname if d_tok else False
-
-        if has_ucnp and not has_dye:
-            ucnp.append(f)
-        elif has_dye and not has_ucnp:
-            dye.append(f)
-        elif has_ucnp and has_dye:
-            st.warning(f"Filename matches both tokens — skipping: {name}")
-        else:
-            # If strictly neither, we can treat as generic or skip. 
-            # For this specific workflow, we skip to avoid pairing errors.
-            pass 
-            
-    return ucnp, dye
-
-def _match_ucnp_dye_files(ucnps: List[Any], dyes: List[Any]) -> List[Tuple[Any, Any]]:
-    """Robustly matches UCNP and Dye files by treating them as a single timeline."""
-    def get_seq_index(file_obj) -> int:
-        name = file_obj.name if hasattr(file_obj, "name") else str(file_obj)
-        matches = re.findall(r'\d+', name)
-        return int(matches[-1]) if matches else -1
-
-    all_files = []
-    for f in ucnps:
-        all_files.append({'file': f, 'type': 'u', 'idx': get_seq_index(f)})
-    for f in dyes:
-        all_files.append({'file': f, 'type': 'd', 'idx': get_seq_index(f)})
-
-    all_files.sort(key=lambda x: x['idx'])
-
-    pairs: List[Tuple[Any, Any]] = []
-    i = 0
-    while i < len(all_files) - 1:
-        current = all_files[i]
-        next_f = all_files[i+1]
-        idx_diff = abs(current['idx'] - next_f['idx'])
-        
-        if (current['type'] != next_f['type']) and (idx_diff <= 1):
-            u_file = current['file'] if current['type'] == 'u' else next_f['file']
-            d_file = next_f['file'] if next_f['type'] == 'd' else current['file']
-            pairs.append((u_file, d_file))
-            i += 2 
-        else:
-            i += 1
-    return pairs
-
-
-# ---------------------------------------------------------------------------
-# Data structures & File Reading
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# Data structures
+# ═══════════════════════════════════════════════════════════════════════════
 @dataclass
-class DM3Image:
+class TEMImage:
+    """Container for a single TEM image with calibration."""
     data: np.ndarray
-    nm_per_px: float
+    nm_per_px: float  # NaN when calibration is missing
 
+def _clear_cache():
+        st.cache_data.clear()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Unit conversion
+# ═══════════════════════════════════════════════════════════════════════════
+def _unit_to_nm(pixel_size: float, unit_str: str) -> float:
+    """Convert *pixel_size* in arbitrary *unit_str* to nanometres."""
+    u = str(unit_str).strip().replace("\x00", "").lower()
+    conversions = {
+        "m": 1e9, "mm": 1e6,
+        "µm": 1e3, "um": 1e3, "micron": 1e3, "microns": 1e3,
+        "nm": 1.0,
+        "å": 0.1, "a": 0.1, "angstrom": 0.1,
+        "pm": 1e-3,
+    }
+    factor = conversions.get(u, None)
+    if factor is not None:
+        return pixel_size * factor
+    return pixel_size  # assume nm if unknown
+
+# ═══════════════════════════════════════════════════════════════════════════
+# File reading — DM3
+# ═══════════════════════════════════════════════════════════════════════════
 def _find_dimension_tags(tags: dict) -> list:
-    found = []
+    found: list = []
     if isinstance(tags, dict):
         for key, value in tags.items():
             if key == "Dimension" and isinstance(value, dict):
@@ -113,74 +112,347 @@ def _find_dimension_tags(tags: dict) -> list:
                 found.extend(_find_dimension_tags(value))
             elif isinstance(value, list):
                 for item in value:
-                    found.extend(_find_dimension_tags(item))
+                    if isinstance(item, dict):
+                        found.extend(_find_dimension_tags(item))
     return found
 
-def try_read_dm3(file_bytes: bytes) -> DM3Image:
-    if pyDM3reader is None:
-        raise RuntimeError("dm3_lib is not installed.")
+
+def try_read_dm3(file_bytes: bytes) -> TEMImage:
+    if not _HAS_DM3:
+        raise RuntimeError("dm3_lib is not installed.  pip install dm3_lib")
+
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".dm3")
     try:
         tmp.write(file_bytes)
         tmp.flush()
         tmp.close()
+
         dm3_file = pyDM3reader.DM3(tmp.name)
-        data = np.array(dm3_file.imagedata, dtype=np.float32)
-        pixel_size = 0
-        pixel_unit = ""
+        data = np.array(dm3_file.imagedata, dtype=np.float64)
+
+        pixel_size: float = 0.0
+        pixel_unit: str = ""
+
+        # 1. Check direct pxsize attribute
         if hasattr(dm3_file, "pxsize"):
-            pixel_size, pixel_unit = dm3_file.pxsize
+            try:
+                ps = dm3_file.pxsize
+                if isinstance(ps, (list, tuple)) and len(ps) >= 2:
+                    pixel_size, pixel_unit = float(ps[0]), str(ps[1])
+                elif isinstance(ps, (int, float)):
+                    pixel_size = float(ps)
+            except Exception:
+                pass
+
+        # 2. Check dimension tags for Scale and Units
         if pixel_size == 0 and hasattr(dm3_file, "tags"):
-            dim_groups = _find_dimension_tags(dm3_file.tags)
-            for group in dim_groups:
-                if '0' in group and isinstance(group['0'], dict):
-                    dim_data = group['0']
-                    scale = dim_data.get('Scale', 0)
-                    units = dim_data.get('Units', '')
+            for grp in _find_dimension_tags(dm3_file.tags):
+                if "0" in grp and isinstance(grp["0"], dict):
+                    dim = grp["0"]
+                    scale = float(dim.get("Scale", 0))
+                    units = str(dim.get("Units", ""))
                     if scale > 0:
-                        pixel_size = scale
-                        pixel_unit = units
+                        pixel_size, pixel_unit = scale, units
                         break
+
+        # 3. Check legacy "Pixel Size (um)" tag
         if pixel_size == 0 and hasattr(dm3_file, "tags"):
-             root_tags = dm3_file.tags
-             if 'ImageTags' in root_tags:
-                 img_tags = root_tags['ImageTags']
-                 if 'Pixel Size (um)' in img_tags:
-                     pixel_size = img_tags['Pixel Size (um)']
-                     pixel_unit = 'µm'
+            rt = dm3_file.tags
+            if isinstance(rt, dict) and "ImageTags" in rt:
+                it = rt["ImageTags"]
+                if isinstance(it, dict) and "Pixel Size (um)" in it:
+                    pixel_size = float(it["Pixel Size (um)"])
+                    pixel_unit = "µm"
 
-        nm_per_px = float("nan")
-        if pixel_size > 0:
-            pixel_unit = str(pixel_unit).strip().replace('\x00', '')
-            if pixel_unit == "m":
-                nm_per_px = pixel_size * 1e9
-            elif pixel_unit == "nm":
-                nm_per_px = pixel_size
-            elif pixel_unit in ["µm", "um", "micron", "microns"]:
-                nm_per_px = pixel_size * 1e3
-            else:
-                nm_per_px = pixel_size 
-
-        return DM3Image(data=data, nm_per_px=nm_per_px)
-    except Exception as e:
-        return DM3Image(data=np.array([[]]), nm_per_px=float("nan"))
+        nm_per_px = _unit_to_nm(pixel_size, pixel_unit) if pixel_size > 0 else float("nan")
+        return TEMImage(data=data, nm_per_px=nm_per_px)
+        
+    except Exception as exc:
+        st.warning(f"DM3 read error: {exc}")
+        return TEMImage(data=np.zeros((1, 1), dtype=np.float64), nm_per_px=float("nan"))
     finally:
         try:
             os.unlink(tmp.name)
+        except OSError:
+            pass
+# ═══════════════════════════════════════════════════════════════════════════
+# File reading — DM3
+# ═══════════════════════════════════════════════════════════════════════════
+def _find_dimension_tags(tags: dict) -> list:
+    found: list = []
+    if isinstance(tags, dict):
+        for key, value in tags.items():
+            if key == "Dimension" and isinstance(value, dict):
+                found.append(value)
+            elif isinstance(value, dict):
+                found.extend(_find_dimension_tags(value))
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        found.extend(_find_dimension_tags(item))
+    return found
+
+def try_read_emd(file_bytes: bytes) -> TEMImage:
+    if not _HAS_H5PY:
+        raise RuntimeError("h5py is not installed.  pip install h5py")
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".emd")
+    try:
+        tmp.write(file_bytes)
+        tmp.flush()
+        tmp.close()
+
+        with h5py.File(tmp.name, "r") as h5:
+            datasets = []
+            
+            # Recursively collect all datasets
+            def collect_datasets(name, node):
+                if isinstance(node, h5py.Dataset):
+                    datasets.append((name, node))
+            
+            h5.visititems(collect_datasets)
+            
+            # Filter for likely image data: 
+            # 1. Must have at least 2 dimensions
+            # 2. Both spatial dimensions must be > 1 to avoid picking up 1D spectra shaped as (N, 1)
+            valid_ds = [x for x in datasets if x[1].ndim >= 2 and x[1].shape[0] > 1 and x[1].shape[1] > 1]
+            
+            if not valid_ds:
+                valid_ds = [x for x in datasets if x[1].ndim >= 2]
+                
+            if not valid_ds:
+                st.warning("No 2-D datasets found in EMD file.")
+                return TEMImage(np.zeros((1, 1), np.float64), float("nan"))
+
+            # Rank them: Prioritize Velox standard image structures, then by total pixel count
+            def rank_ds(item):
+                name, node = item
+                is_velox_img = "Data/Image" in name and name.endswith("/Data")
+                size = int(np.prod(node.shape[:2]))
+                return (1 if is_velox_img else 0, size)
+
+            best_name, best_ds = max(valid_ds, key=rank_ds)
+            data = np.array(best_ds, dtype=np.float64)
+            
+            # Handle 3D+ arrays (Image Stacks, Data Cubes, or RGB)
+            if data.ndim >= 3:
+                if data.shape[-1] in (3, 4):  # RGB/RGBA image
+                    data = np.mean(data[..., :3], axis=-1)
+                else:
+                    # Multi-frame stack: take the first frame
+                    while data.ndim > 2:
+                        data = data[0]
+
+            # --- METADATA EXTRACTION ---
+            nm_per_px = float("nan")
+            
+            # Strategy 1: Velox Metadata JSON sidecar
+            meta_name = best_name.rsplit("/", 1)[0] + "/Metadata"
+            if meta_name in h5:
+                try:
+                    meta_arr = np.array(h5[meta_name])
+                    if meta_arr.dtype.kind in ('S', 'O'): # Array of strings
+                        meta_str = "".join([x.decode('utf-8', errors='ignore') if isinstance(x, bytes) else str(x) for x in meta_arr.flatten()])
+                    else: # Array of bytes/ints
+                        meta_str = meta_arr.tobytes().decode('utf-8', errors='ignore')
+                    
+                    # Regex search to safely grab the width from the embedded JSON text
+                    match = re.search(r'"PixelSize"\s*:\s*\{\s*"width"\s*:\s*([0-9\.eE+-]+)', meta_str, re.IGNORECASE)
+                    if match:
+                        nm_per_px = float(match.group(1)) * 1e9  # Velox strictly stores pixel size in meters
+                except Exception:
+                    pass
+                    
+
+                
+        return TEMImage(data=data, nm_per_px=nm_per_px)
+        
+    except Exception as exc:
+        st.warning(f"EMD read error: {exc}")
+        return TEMImage(np.zeros((1, 1), np.float64), float("nan"))
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+# ═══════════════════════════════════════════════════════════════════════════
+# File reading — EMD (Velox / HDF5)
+# ═══════════════════════════════════════════════════════════════════════════
+def extract_pixel_size_nm(meta_str: str, default: float = float("nan")) -> float:
+    """Parse pixel size (nm/pixel) from EMD metadata JSON/string."""
+    def _find_pixelsize_in_obj(obj):
+        if isinstance(obj, dict):
+            if "PixelSize" in obj:
+                ps = obj["PixelSize"]
+                if isinstance(ps, dict):
+                    w = ps.get("width")
+                    h = ps.get("height")
+                    vals = []
+                    for v in (w, h):
+                        if v is None: continue
+                        try:
+                            vals.append(float(v))
+                        except Exception:
+                            pass
+                    if vals:
+                        v_m = sum(vals) / len(vals)
+                        return v_m * 1e9 # meters to nm
+            for v in obj.values():
+                res = _find_pixelsize_in_obj(v)
+                if res is not None:
+                    return res
+        elif isinstance(obj, list):
+            for v in obj:
+                res = _find_pixelsize_in_obj(v)
+                if res is not None:
+                    return res
+        return None
+
+    # 1. Try to parse as JSON
+    try:
+        meta = json.loads(meta_str)
+        val = _find_pixelsize_in_obj(meta)
+        if val is not None:
+            return val
+    except Exception:
+        pass
+
+    # 2. Regex fallback (for string-formatted scientific notation)
+    ps_pattern = re.compile(
+        r'"PixelSize"\s*:\s*\{[^}]*"width"\s*:\s*"([^"]+)"\s*,\s*"height"\s*:\s*"([^"]+)"[^}]*\}',
+        re.IGNORECASE
+    )
+    m = ps_pattern.search(meta_str)
+    if m:
+        try:
+            w, h = float(m.group(1)), float(m.group(2))
+            return ((w + h) / 2.0) * 1e9
         except Exception:
             pass
 
+    # 3. Regex fallback (for raw float scientific notation)
+    ps_pattern2 = re.compile(
+        r'"PixelSize"\s*:\s*\{[^}]*"width"\s*:\s*([0-9\.eE+-]+)\s*,\s*"height"\s*:\s*([0-9\.eE+-]+)[^}]*\}',
+        re.IGNORECASE
+    )
+    m2 = ps_pattern2.search(meta_str)
+    if m2:
+        try:
+            w, h = float(m2.group(1)), float(m2.group(2))
+            return ((w + h) / 2.0) * 1e9
+        except Exception:
+            pass
 
-# ---------------------------------------------------------------------------
-# Segmentation and measurement
-# ---------------------------------------------------------------------------
+    return default
 
+
+def _search_hdf5_datasets(group, collected: list, depth: int = 0) -> None:
+    """Fallback recursive search for non-Velox EMDs."""
+    if depth > 20: return
+    for key in group:
+        item = group[key]
+        if isinstance(item, h5py.Dataset):
+            if item.ndim >= 2:
+                collected.append(item)
+        elif isinstance(item, h5py.Group):
+            _search_hdf5_datasets(item, collected, depth + 1)
+
+
+def try_read_emd(file_bytes: bytes) -> TEMImage:
+    if not _HAS_H5PY:
+        raise RuntimeError("h5py is not installed.  pip install h5py")
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".emd")
+    try:
+        tmp.write(file_bytes)
+        tmp.flush()
+        tmp.close()
+
+        with h5py.File(tmp.name, "r") as h5:
+            # --- Primary Strategy: Velox Format (From Labmate) ---
+            if "Data" in h5 and "Image" in h5["Data"]:
+                img_group = h5["Data"]["Image"]
+                keys = list(img_group.keys())
+                if keys:
+                    first_key = keys[0]
+                    data_group = img_group[first_key]
+                    
+                    # 1. Extract Data
+                    img_stack = data_group["Data"][()]
+                    if img_stack.ndim == 3:
+                        data = img_stack[:, :, 0].astype(np.float64)
+                    elif img_stack.ndim == 2:
+                        data = img_stack.astype(np.float64)
+                    else:
+                        data = img_stack[0].astype(np.float64)
+                        
+                    # 2. Extract Metadata
+                    nm_per_px = float("nan")
+                    if "Metadata" in data_group:
+                        meta_raw = data_group["Metadata"][()]
+                        meta_str = meta_raw.tobytes().decode("utf-8", errors="ignore")
+                        nm_per_px = extract_pixel_size_nm(meta_str, default=float("nan"))
+                        
+                    return TEMImage(data=data, nm_per_px=nm_per_px)
+
+            # --- Secondary Strategy: Fallback generic search (for Berkeley EMDs) ---
+            datasets: list = []
+            _search_hdf5_datasets(h5, datasets)
+            if not datasets:
+                st.warning("No 2-D datasets found in EMD file.")
+                return TEMImage(np.zeros((1, 1), np.float64), float("nan"))
+
+            best = max(datasets, key=lambda d: int(np.prod(d.shape[:2])))
+            data = np.array(best, dtype=np.float64)
+            if data.ndim == 3:
+                data = np.mean(data[..., :3], axis=2) if data.shape[2] in (3, 4) else data[0]
+            if data.ndim > 2:
+                data = data.reshape(data.shape[0], data.shape[1])
+
+            # Try to find standard HDF5 attributes
+            nm_per_px = float("nan")
+            for attr_name in ("pixelSize", "PixelSize", "pixel_size"):
+                if attr_name in best.attrs:
+                    val = float(best.attrs[attr_name])
+                    unit_str = str(best.attrs.get(f"{attr_name}Unit", "m"))
+                    nm_per_px = _unit_to_nm(val, unit_str)
+                    break
+
+            return TEMImage(data=data, nm_per_px=nm_per_px)
+            
+    except Exception as exc:
+        st.warning(f"EMD read error: {exc}")
+        return TEMImage(np.zeros((1, 1), np.float64), float("nan"))
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+def read_tem_file(file_bytes: bytes, filename: str) -> TEMImage:
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".dm3":
+        return try_read_dm3(file_bytes)
+    elif ext == ".emd":
+        return try_read_emd(file_bytes)
+    else:
+        st.error(f"Unsupported file type: {ext}")
+        return TEMImage(np.zeros((1, 1), np.float64), float("nan"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Threshold helpers
+# ═══════════════════════════════════════════════════════════════════════════
 def robust_percentile_cut(data: np.ndarray, p: float = 99.5) -> np.ndarray:
-    flat = data.reshape(-1)
-    cutoff = np.percentile(flat, p)
-    return flat[flat <= cutoff]
+    flat = data.ravel()
+    return flat[flat <= np.percentile(flat, p)]
 
-def histogram_for_intensity(data: np.ndarray, nbins: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
+
+def histogram_for_intensity(
+    data: np.ndarray, nbins: Optional[int] = None
+) -> Tuple[np.ndarray, np.ndarray]:
     vals = robust_percentile_cut(data, 99.5)
     if nbins is None:
         nbins = max(10, int(round(math.sqrt(len(vals)) / 2)))
@@ -188,411 +460,741 @@ def histogram_for_intensity(data: np.ndarray, nbins: Optional[int] = None) -> Tu
     centers = edges[:-1] + np.diff(edges) / 2
     return centers, counts
 
-def kmeans_threshold(data: np.ndarray, sample: int = 200_000) -> float:
-    flat = data.reshape(-1)
-    if len(flat) > sample:
-        idx = np.random.choice(len(flat), sample, replace=False)
-        flat = flat[idx]
+
+def kmeans_threshold(data: np.ndarray, sample: int = 50_000) -> float:
+    flat = data.ravel().astype(np.float64)
+    if flat.size > sample:
+        flat = flat[np.random.choice(flat.size, sample, replace=False)]
     km = KMeans(n_clusters=2, n_init="auto", random_state=42)
-    labels = km.fit_predict(flat.reshape(-1, 1))
-    c1_max = flat[labels == 0].max()
-    c2_max = flat[labels == 1].max()
-    return float(min(c1_max, c2_max))
+    labs = km.fit_predict(flat.reshape(-1, 1))
+    return float(min(flat[labs == 0].max(), flat[labs == 1].max()))
 
-def gmm_threshold(data: np.ndarray, nbins: Optional[int] = None, sample: int = 200_000) -> float:
-    flat = data.reshape(-1)
-    if len(flat) > sample:
-        idx = np.random.choice(len(flat), sample, replace=False)
-        flat = flat[idx]
+
+def gmm_threshold(data: np.ndarray, nbins: Optional[int] = None,
+                   sample: int = 50_000) -> float:
+    flat = data.ravel().astype(np.float64)
+    if flat.size > sample:
+        flat = flat[np.random.choice(flat.size, sample, replace=False)]
     if flat.size < 2:
-        return float(np.median(data)) if data.size > 0 else 0.0
-    gm = GaussianMixture(n_components=2, random_state=42)
+        return float(np.median(data)) if data.size else 0.0
+    gm = GaussianMixture(n_components=3, random_state=42)
     gm.fit(flat.reshape(-1, 1))
-    mu = np.sort(gm.means_.flatten())
-    left_mu, right_mu = mu[0], mu[1]
+    mu = np.sort(gm.means_.ravel())
     centers, counts = histogram_for_intensity(flat, nbins)
-    in_range = (centers >= left_mu) & (centers <= right_mu)
-    if not np.any(in_range):
-        return float((left_mu + right_mu) / 2)
-    sub_centers = centers[in_range]
-    sub_counts = counts[in_range]
-    return float(sub_centers[np.argmin(sub_counts)])
+    mask = (centers >= mu[0]) & (centers <= mu[1])
+    if not np.any(mask):
+        return float((mu[0] + mu[1]) / 2)
+    return float(centers[mask][np.argmin(counts[mask])])
 
-def segment_and_measure_shapes(
+
+def auto_threshold(data: np.ndarray) -> float:
+    candidates: List[float] = []
+    try:
+        candidates.append(gmm_threshold(data))
+    except Exception:
+        pass
+    try:
+        candidates.append(float(threshold_otsu(data)))
+    except Exception:
+        pass
+    try:
+        candidates.append(float(threshold_li(data)))
+    except Exception:
+        pass
+    return candidates[0] if candidates else float(np.median(data))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Robust pre-processing
+# ═══════════════════════════════════════════════════════════════════════════
+def preprocess_image(data: np.ndarray) -> np.ndarray:
+    """Adaptive pre-processing for varying noise / contrast levels."""
+    img = data.astype(np.float64)
+
+    lap = laplace(img)
+    noise_est = np.median(np.abs(lap)) * 1.4826
+
+    if noise_est > 0:
+        snr = (img.max() - img.min()) / (noise_est + 1e-12)
+        if snr < 5:
+            img = median_filter(img, size=5)
+        elif snr < 15:
+            img = median_filter(img, size=3)
+
+    img = gaussian_filter(img, sigma=1.0)
+
+    lo, hi = np.percentile(img, [0.5, 99.5])
+    if hi - lo > 0:
+        img = np.clip((img - lo) / (hi - lo), 0, 1)
+    else:
+        img = np.zeros_like(img)
+    img = exposure.equalize_adapthist(img, clip_limit=0.01)
+
+    return img
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Shape classification
+# ═══════════════════════════════════════════════════════════════════════════
+SHAPE_CHOICES = ("Sphere", "Hexagonal Prism", "Cube", "Octahedron")
+
+_COLORS: Dict[str, str] = {
+    "circle":    "lime",
+    "hexagon":   "cyan",
+    "rectangle": "yellow",
+    "square":    "orange",
+    "diamond":   "magenta",
+    "unknown":   "gray",
+}
+
+def classify_projection(prop, target_shape: str) -> str:
+    """Classify the 2-D projection of a *regionprops* object."""
+    area = float(prop.area)
+    perim = float(getattr(prop, "perimeter", 0.0)) or 1e-6
+    circ = 4.0 * np.pi * area / perim ** 2
+    solidity = float(getattr(prop, "solidity", 0.0))
+    extent = float(getattr(prop, "extent", 0.0))
+    maj = float(getattr(prop, "major_axis_length", 0.0)) or 1e-6
+    minor = float(getattr(prop, "minor_axis_length", 0.0)) or 1e-6
+    aspect = maj / minor
+
+    if target_shape == "Sphere":
+        if circ > 0.60 and aspect < 1.7:
+            return "circle"
+
+    elif target_shape == "Hexagonal Prism":
+        # Hexagons: often rounded, so relax circularity and solidity slightly
+        if circ > 0.65 and solidity > 0.85 and aspect < 1.45:
+            return "hexagon"
+        # Rectangles (side-on): elongated, boxy, but corners might be rounded (lower extent)
+        if extent > 0.65 and solidity > 0.75 and aspect > 1.15:
+            return "rectangle"
+        # Relaxed fallbacks for slightly irregular projections
+        if circ > 0.60 and solidity > 0.80 and aspect < 1.50:
+            return "hexagon"
+
+    elif target_shape == "Cube":
+        if extent > 0.68 and solidity > 0.82 and aspect < 1.45:
+            return "square"
+
+    elif target_shape == "Octahedron":
+        if solidity > 0.78 and aspect < 1.55 and extent < 0.78:
+            return "diamond"
+        if solidity > 0.72 and aspect < 1.65:
+            return "diamond"
+
+    return "unknown"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Geometry helpers for Plotting (NumPy coordinates)
+# ═══════════════════════════════════════════════════════════════════════════
+def _hexagon_vertices(cx: float, cy: float, radius: float) -> np.ndarray:
+    angles = np.pi / 3.0 * np.arange(6)
+    return np.column_stack((cx + radius * np.cos(angles), cy + radius * np.sin(angles)))
+
+def _diamond_vertices(cx: float, cy: float, half_maj: float, half_min: float, angle: float) -> np.ndarray:
+    ca, sa = np.cos(angle), np.sin(angle)
+    return np.array([
+        [cx + half_maj * ca, cy + half_maj * sa],
+        [cx - half_min * sa, cy + half_min * ca],
+        [cx - half_maj * ca, cy - half_maj * sa],
+        [cx + half_min * sa, cy - half_min * ca],
+    ])
+
+def _rotated_rect_vertices(cx: float, cy: float, half_maj: float, half_min: float, angle: float) -> np.ndarray:
+    ca, sa = np.cos(angle), np.sin(angle)
+    corners = np.array([
+        [half_maj, half_min],
+        [-half_maj, half_min],
+        [-half_maj, -half_min],
+        [half_maj, -half_min]
+    ])
+    xs = cx + corners[:, 0] * ca - corners[:, 1] * sa
+    ys = cy + corners[:, 0] * sa + corners[:, 1] * ca
+    return np.column_stack((xs, ys))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Segmentation + measurement
+# ═══════════════════════════════════════════════════════════════════════════
+def segment_and_measure(
     data: np.ndarray,
-    threshold: float,
     nm_per_px: float,
     shape_type: str,
     min_size_value: float,
     measurement_unit: str,
     min_area_px: int = 5,
-) -> Dict[str, any]:
-    """Segment particles and measure dimensions. Now exposes Centroids."""
+    thresh_offset: float = 1.0, 
+) -> Dict[str, Any]:
+    """Segment particles with robust watershed and classify shapes.
 
-    im_bi = data < threshold
-    im_bi = remove_small_holes(im_bi, area_threshold=min_area_px)
-    im_bi = binary_closing(im_bi, disk(3))
+    Returns a dict with measurement arrays, shape geometries, and metadata.
+    """
+    preprocessed = preprocess_image(data)
 
-    dist = distance_transform_edt(im_bi)
-    hmax = h_maxima(dist, 2)
-    markers = label(hmax)
-    labels_ws = watershed(-dist, markers=markers, mask=im_bi)
-    im_bi[labels_ws == 0] = 0
+    try:
+        adapted_thresh = gmm_threshold(preprocessed)
+    except Exception:
+        try:
+            adapted_thresh = float(threshold_otsu(preprocessed))
+        except Exception:
+            adapted_thresh = float(np.median(preprocessed))
+
+    adapted_thresh = adapted_thresh * 1.5 #boost adapt threshold by 50%
+    im_bi = preprocessed < (adapted_thresh * thresh_offset)
     im_bi = remove_small_objects(im_bi, min_size=min_area_px)
-    labels_ws = label(im_bi)
+    im_bi = remove_small_holes(im_bi, area_threshold=max(min_area_px*4, 64))
 
-    diameters_nm: List[float] = []
-    hex_axes_nm: List[float] = []
-    lengths_nm: List[float] = []
-    widths_nm: List[float] = []
+    # Calculate expected minimum radius in pixels
+    if measurement_unit == "nm" and np.isfinite(nm_per_px) and nm_per_px > 0:
+        min_diam_px = min_size_value / nm_per_px
+    else:
+        min_diam_px = min_size_value
+
+    expected_r_px = max(2.0, min_diam_px / 2.0)
+
+    # 1. Adaptive Closing (~15% of expected radius)
+    close_rad = max(1, int(expected_r_px * 0.15))
+    im_bi = binary_closing(im_bi, disk(close_rad))
+    im_bi = binary_opening(im_bi, disk(max(1, close_rad - 1)))
+
+    # 2. Adaptive Smoothing (~10% of expected radius)
+    dist = distance_transform_edt(im_bi)
+    sm_sigma = max(0.5, expected_r_px * 0.25)
+    dist_sm = gaussian_filter(dist, sigma=sm_sigma)
     
-    # Store centroids as (x, y) for plotting
-    centroids_px: List[Tuple[float, float]] = []
+    # 3. Adaptive Peak Distance
+    min_dist = max(2, int(expected_r_px * 0.45))
+    coords = peak_local_max(dist_sm, min_distance=min_dist, labels=im_bi)
+    
+    mask_peaks = np.zeros(dist.shape, dtype=bool)
+    if coords.size > 0:
+        mask_peaks[tuple(coords.T)] = True
+        
+    markers = label(mask_peaks)
+    labels_ws = watershed(-dist_sm, markers=markers, mask=im_bi)
+    im_bi[labels_ws == 0] = 0
 
     if measurement_unit == "nm" and np.isfinite(nm_per_px) and nm_per_px > 0:
-        scale_factor = nm_per_px
-        exclusion_zone_px = 2 / nm_per_px
+        sf = nm_per_px
+        excl_px = 2.0
     else:
-        scale_factor = 1.0
-        exclusion_zone_px = 0.0
+        sf = 1.0
+        excl_px = 2.0
+        
     img_h, img_w = data.shape
 
-    fig = go.Figure()
-    fig.add_trace(go.Image(z=data))
-
-    fig_shapes = []
-
-    for p in regionprops(labels_ws):
-        minr, minc, maxr, maxc = p.bbox
-        if (
-            minr <= exclusion_zone_px
-            or minc <= exclusion_zone_px
-            or maxr >= img_h - exclusion_zone_px
-            or maxc >= img_w - exclusion_zone_px
-        ):
-            continue
-
-        maj = getattr(p, "major_axis_length", 0.0) or 0.0
-        minr_axis = getattr(p, "minor_axis_length", 0.0) or 0.0
-        # ext = getattr(p, "extent", 0.0)
-        solidity = getattr(p, "solidity", 0.0)
-        extent = float(p.area) / ((maxr - minr) * (maxc - minc)) if (maxr - minr) * (maxc - minc) > 0 else 0.0
-        aspect = maj / minr_axis if minr_axis > 0 else 0.0
-        cy, cx = p.centroid
-
-        # Determine if valid based on size/shape
-        is_valid = False
-        
-        if shape_type == "Sphere":
-            diam_px = (maj + minr_axis) / 2
-            d_val = diam_px * scale_factor
-            if d_val >= min_size_value:
-                diameters_nm.append(d_val)
-                is_valid = True
-                fig_shapes.append(
-                    dict(type="circle", x0=cx-diam_px/2, y0=cy-diam_px/2, x1=cx+diam_px/2, y1=cy+diam_px/2, 
-                         line=dict(color="rgba(255, 0, 0, 0.5)", width=2))
-                )
-        else:
-            # Hex/Cube Logic
-            is_hex = solidity > 0.85 and extent > 0.6
-            is_rect = 1.2 < aspect < 1.8 and solidity > 0.8
-
-            if is_rect:
-                length_val = maj * scale_factor
-                width_val = minr_axis * scale_factor
-                if length_val >= min_size_value and width_val >= min_size_value:
-                    lengths_nm.append(length_val)
-                    widths_nm.append(width_val)
-                    is_valid = True
-                    fig_shapes.append(
-                        dict(type="rect", x0=minc, y0=minr, x1=maxc, y1=maxr,
-                             line=dict(color="rgba(255, 0, 0, 0.5)", width=2))
-                    )
-            elif is_hex:
-                d = (maj + minr_axis) / 2
-                d_val = d * scale_factor
-                if d_val >= min_size_value:
-                    hex_axes_nm.append(d_val)
-                    is_valid = True
-                    radius = d / 2
-                    path = f"M {cx+radius} {cy} " + " ".join([f"L {cx+radius*np.cos(t)} {cy+radius*np.sin(t)}" for t in np.linspace(np.pi/3, 2*np.pi-np.pi/3, 5)]) + " Z"
-                    fig_shapes.append(
-                        dict(type="path", path=path, line=dict(color="rgba(255, 255, 0, 0.5)", width=2))
-                    )
-            else:
-                # Fallback to circle
-                diam_px = (maj + minr_axis) / 2
-                d_val = diam_px * scale_factor
-                if d_val >= min_size_value:
-                    # Generic catch-all
-                    fig_shapes.append(
-                        dict(type="circle", x0=cx-diam_px/2, y0=cy-diam_px/2, x1=cx+diam_px/2, y1=cy+diam_px/2,
-                             line=dict(color="rgba(0, 0, 255, 0.5)", width=2))
-                    )
-                    is_valid = True # Treat as valid for "reconstruction" visualization
-
-        if is_valid:
-            centroids_px.append((cx, cy))
-
-    fig.update_layout(
-        shapes=fig_shapes,
-        margin=dict(l=0, r=0, b=0, t=0),
-    )
-    fig.update_xaxes(visible=False, range=[0, img_w])
-    fig.update_yaxes(visible=False, range=[img_h, 0]) 
-
-    # Watershed Fig
-    rand_cmap = np.random.rand(labels_ws.max() + 1, 3)
-    rand_cmap[0] = [1, 1, 1]
-    fig_ws = go.Figure(data=go.Heatmap(
-        z=labels_ws, colorscale='Rainbow', zmin=0, zmax=labels_ws.max(), showscale=False
-    ))
-    fig_ws.update_layout(width=img_w, height=img_h, margin=dict(l=0, r=0, b=0, t=0))
-    fig_ws.update_xaxes(visible=False)
-    fig_ws.update_yaxes(visible=False, autorange="reversed")
-
-    out: Dict[str, any] = {
-        "diameters_nm": np.array(diameters_nm, dtype=np.float32),
-        "hex_axes_nm": np.array(hex_axes_nm, dtype=np.float32),
-        "lengths_nm": np.array(lengths_nm, dtype=np.float32),
-        "widths_nm": np.array(widths_nm, dtype=np.float32),
-        "annotated_fig": fig,
-        "watershed_fig": fig_ws,
-        "centroids_px": np.array(centroids_px), # Added for reconstruction
-        "img_shape": (img_h, img_w)
+    measurements: Dict[str, List[float]] = {
+        "diameters":   [],  
+        "hex_widths":  [], 
+        "hex_heights": [],
+        "side_lengths": [], 
+        "oct_major":   [],
+        "oct_minor":   [],
     }
 
-    if shape_type == "Cube":
-        out["heights_nm"] = np.array(widths_nm, dtype=np.float32)
+    draw_shapes = []
 
-    out["unit"] = measurement_unit
-    out["nm_per_px"] = float(nm_per_px) if measurement_unit == "nm" else float("nan")
+    for prop in regionprops(labels_ws):
+        minr, minc, maxr, maxc = prop.bbox
+
+        if (minr <= excl_px or minc <= excl_px
+                or maxr >= img_h - excl_px or maxc >= img_w - excl_px):
+            continue
+
+        cls = classify_projection(prop, shape_type)
+        if cls == "unknown":
+            continue
+
+        cy, cx = prop.centroid
+        
+        # Map skimage orientation (0 = vertical) to standard Cartesian geometry (0 = horizontal)
+        orient = (np.pi / 2.0) - float(getattr(prop, "orientation", 0.0))
+        color = _COLORS.get(cls, "white")
+
+        if cls == "circle":
+            maj_px = float(getattr(prop, "major_axis_length", 0.0)) or 0.0
+            min_px = float(getattr(prop, "minor_axis_length", 0.0)) or 0.0
+            d_px = (maj_px + min_px) / 2.0
+            d_val = d_px * sf
+            if d_val < min_size_value or (measurement_unit == "nm" and d_val > 250.0):
+                continue
+            measurements["diameters"].append(d_val)
+            r = d_px / 2.0
+            draw_shapes.append({"type": "circle", "cx": cx, "cy": cy, "r": r, "color": color})
+
+        elif cls == "hexagon":
+            maj_px = float(getattr(prop, "major_axis_length", 0.0)) or 0.0
+            min_px = float(getattr(prop, "minor_axis_length", 0.0)) or 0.0
+            d_px = (maj_px + min_px) / 2.0
+            d_val = d_px * sf
+            if d_val < min_size_value or (measurement_unit == "nm" and d_val > 250.0):
+                continue
+            measurements["hex_widths"].append(d_val)
+            draw_shapes.append({"type": "polygon", "vertices": _hexagon_vertices(cx, cy, d_px / 2.0), "color": color})
+
+        elif cls == "rectangle":
+            maj_px = float(getattr(prop, "major_axis_length", 0.0)) or 0.0
+            min_px = float(getattr(prop, "minor_axis_length", 0.0)) or 0.0
+            length_val = maj_px * sf
+            width_val = min_px * sf
+            if length_val < min_size_value or (measurement_unit == "nm" and length_val > 250.0):
+                continue
+            measurements["hex_heights"].append(length_val)
+            draw_shapes.append({"type": "polygon", "vertices": _rotated_rect_vertices(cx, cy, maj_px / 2.0, min_px / 2.0, orient), "color": color})
+
+        elif cls == "square":
+            # Scale by sqrt(3)/2 approx 0.866 to map standard ellipse axes to true square side length
+            corr_factor_sq = 0.8660
+            maj_px = (float(getattr(prop, "major_axis_length", 0.0)) or 0.0) * corr_factor_sq
+            min_px = (float(getattr(prop, "minor_axis_length", 0.0)) or 0.0) * corr_factor_sq
+            side_px = (maj_px + min_px) / 2.0
+            side_val = side_px * sf
+            if side_val < min_size_value or (measurement_unit == "nm" and side_val > 250.0):
+                continue
+            measurements["side_lengths"].append(side_val)
+            half = side_px / 2.0
+            draw_shapes.append({"type": "polygon", "vertices": _rotated_rect_vertices(cx, cy, half, half, orient), "color": color})
+
+        elif cls == "diamond":
+            # Scale by sqrt(1.5) approx 1.2247 to map standard ellipse axes perfectly to rhombus diagonals (sharp tips)
+            corr_factor = 1.2247
+            maj_px = (float(getattr(prop, "major_axis_length", 0.0)) or 0.0) * corr_factor
+            min_px = (float(getattr(prop, "minor_axis_length", 0.0)) or 0.0) * corr_factor
+            maj_val = maj_px * sf
+            min_val = min_px * sf
+            if maj_val < min_size_value or (measurement_unit == "nm" and maj_val > 250.0):
+                continue
+            measurements["oct_major"].append(maj_val)
+            measurements["oct_minor"].append(min_val)
+            draw_shapes.append({"type": "polygon", "vertices": _diamond_vertices(cx, cy, maj_px / 2.0, min_px / 2.0, orient), "color": color})
+
+    n_labels = int(labels_ws.max()) + 1
+    rng = np.random.RandomState(42)
+    rand_cmap = rng.rand(max(n_labels, 1), 3)
+    rand_cmap[0] = [1.0, 1.0, 1.0]
+    rgb_ws = (rand_cmap[labels_ws] * 255).astype(np.uint8)
+
+    out: Dict[str, Any] = {
+        "data":           data,
+        "draw_shapes":    draw_shapes,
+        "rgb_ws":         rgb_ws,
+        "adapted_thresh": float(adapted_thresh),
+        "unit":           measurement_unit,
+        "nm_per_px":      float(nm_per_px) if measurement_unit == "nm" else float("nan"),
+    }
+    for key, vals in measurements.items():
+        out[key] = np.array(vals, dtype=np.float64)
 
     return out
+# ═══════════════════════════════════════════════════════════════════════════
+# Histogram with Gaussian Mixture Model (GMM) fit
+# ═══════════════════════════════════════════════════════════════════════════
+def histogram_with_fit(
+    values: np.ndarray,
+    title: str,
+    unit_label: str,
+    r_eff_factor: Optional[float] = None,
+    bimodal_axes: bool = False,
+    user_xlim: Optional[Tuple[float, float]] = None,
+    gmm_components: int = 2,  # <--- NEW ARGUMENT
+) -> Tuple[plt.Figure, float, float, int]:
+    
+    n_total = len(values)
 
-def get_common_prefix(names: List[str]) -> str:
-    if not names: return "analysis"
+    if user_xlim is not None and user_xlim[0] < user_xlim[1]:
+        vis_min, vis_max = user_xlim[0], user_xlim[1]
+        fit_vals = values[(values >= vis_min) & (values <= vis_max)]
+    else:
+        vis_min, vis_max = np.percentile(values, [0.5, 99.5])
+        if vis_min >= vis_max:
+            vis_min, vis_max = values.min(), values.max()
+        fit_vals = values
+        
+    n_fit = len(fit_vals)
+    fig, ax = plt.subplots(figsize=(7, 4), dpi=150)
+    mu, std = float("nan"), float("nan")
+
+    if n_total > 0:
+        visible_span = vis_max - vis_min
+        if visible_span > 0:
+            bin_width = visible_span / 40.0
+            total_span = values.max() - values.min()
+            n_bins = max(10, int(total_span / bin_width))
+            n_bins = min(500, n_bins)
+        else:
+            n_bins = 10
+            
+        counts, bins, _ = ax.hist(
+            values, 
+            bins=n_bins, 
+            color='steelblue', 
+            edgecolor='black', 
+            linewidth=0.5, 
+            alpha=0.6, 
+            density=False
+        )
+        bw = float(bins[1] - bins[0]) if len(bins) > 1 else 1.0
+        
+        if n_fit >= max(3, gmm_components):
+            X = fit_vals.reshape(-1, 1)
+            # Use the user's selected component count (capped by available data points if n_fit is very small)
+            n_comp = min(gmm_components, n_fit)
+            gmm = GaussianMixture(n_components=n_comp, random_state=42)
+            gmm.fit(X)
+            
+            x_fit = np.linspace(vis_min, vis_max, 300).reshape(-1, 1)
+            pdf = np.exp(gmm.score_samples(x_fit))
+            p = pdf * n_fit * bw
+            ax.plot(x_fit, p, 'k', linewidth=1.5, label='Combined Fit')
+            
+            if n_comp > 1:
+                for i in range(n_comp):
+                    w = gmm.weights_[i]
+                    m = gmm.means_[i][0]
+                    s = np.sqrt(gmm.covariances_[i][0][0])
+                    comp_pdf = norm.pdf(x_fit.flatten(), m, s)
+                    comp_p = w * comp_pdf * n_fit * bw
+                    ax.plot(x_fit, comp_p, '--', color='crimson', linewidth=1.2, alpha=0.8)
+            
+            if bimodal_axes and n_comp == 2:
+                order = np.argsort(gmm.means_.flatten())
+                mu_min = float(gmm.means_[order[0]][0])
+                std_min = float(np.sqrt(gmm.covariances_[order[0]][0][0]))
+                mu_maj = float(gmm.means_[order[1]][0])
+                std_maj = float(np.sqrt(gmm.covariances_[order[1]][0][0]))
+                
+                title_str = f"{title} (n={n_fit})"
+                if r_eff_factor is not None and np.isfinite(mu_maj) and mu_maj > 0:
+                    r_eff = mu_maj * r_eff_factor
+                    title_str += f" | r_eff = {r_eff:.1f} {unit_label}"
+                    
+                ax.set_title(f"{title_str}\nMinor μ={mu_min:.2f} ± {std_min:.2f} | Major μ={mu_maj:.2f} ± {std_maj:.2f}", fontsize=13, pad=2)
+                mu, std = mu_maj, std_maj  
+                
+            else:
+                dom_idx = np.argmax(gmm.weights_)
+                mu = float(gmm.means_[dom_idx][0])
+                std = float(np.sqrt(gmm.covariances_[dom_idx][0][0]))
+                
+                title_str = f"{title} (n={n_fit})"
+                if r_eff_factor is not None and np.isfinite(mu) and mu > 0:
+                    r_eff = mu * r_eff_factor
+                    title_str += f" | r_eff = {r_eff:.1f} {unit_label}"
+                    
+                ax.set_title(f"{title_str}\nDominant μ={mu:.2f} ± {std:.2f} {unit_label}", fontsize=14, pad=2)
+        else:
+            title_str = f"{title} (n={n_fit})"
+            ax.set_title(title_str, fontsize=14, pad=2)
+            
+        ax.set_xlim(vis_min, vis_max)
+            
+    else:
+        ax.set_title(f"{title} (n=0)", fontsize=14, pad=2)
+
+    ax.set_xlabel(f"Size ({unit_label})", color='black', weight='bold')
+    ax.set_ylabel("Count", color='black', weight='bold')
+    
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    
+    fig.tight_layout()
+    return fig, float(mu), float(std), n_fit
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Histogram section builders 
+# ═══════════════════════════════════════════════════════════════════════════
+def _show_sphere_histograms(results: List[Dict], unit: str, user_xlim: Optional[Tuple[float, float]] = None, gmm_components: int = 2) -> None:
+    all_d = np.concatenate([r["diameters"] for r in results])
+    if all_d.size == 0:
+        st.info("No spherical particles detected.")
+        return
+
+    prefix = _common_prefix([r["name"] for r in results])
+    fig, mu, std, n = histogram_with_fit(all_d, f"{prefix} — Diameter", unit, user_xlim=user_xlim, gmm_components=gmm_components)
+    st.pyplot(fig, use_container_width=True)
+    _download_row(fig, pd.DataFrame({"diameter": all_d}), f"{prefix}_diameter")
+
+
+def _show_hex_histograms(results: List[Dict], unit: str, user_xlim: Optional[Tuple[float, float]] = None, gmm_components: int = 2) -> None:
+    all_w = np.concatenate([r["hex_widths"] for r in results])
+    all_h = np.concatenate([r["hex_heights"] for r in results])
+    prefix = _common_prefix([r["name"] for r in results])
+
+    if all_w.size == 0 and all_h.size == 0:
+        st.info("No hexagonal-prism particles detected.")
+        return
+
+    if all_w.size > 0:
+        r_eff_hex = (9.0 * np.sqrt(3) / (32.0 * np.pi))**(1/3)
+        fig_w, mu_w, std_w, n_w = histogram_with_fit(all_w, f"{prefix} — Hex width (face-on)", unit, r_eff_factor=r_eff_hex, user_xlim=user_xlim, gmm_components=gmm_components)
+        st.pyplot(fig_w, use_container_width=True)
+        _download_row(fig_w, pd.DataFrame({"hex_width": all_w}), f"{prefix}_hex_width")
+    else:
+        st.info("No face-on hexagonal projections detected.")
+
+    if all_h.size > 0:
+        fig_h, mu_h, std_h, n_h = histogram_with_fit(all_h, f"{prefix} — Height (side-on)", unit, user_xlim=user_xlim, gmm_components=gmm_components)
+        st.pyplot(fig_h, use_container_width=True)
+        _download_row(fig_h, pd.DataFrame({"hex_height": all_h}), f"{prefix}_hex_height")
+    else:
+        st.info("No side-on rectangular projections detected.")
+
+
+def _show_cube_histograms(results: List[Dict], unit: str, user_xlim: Optional[Tuple[float, float]] = None, gmm_components: int = 2) -> None:
+    all_s = np.concatenate([r["side_lengths"] for r in results])
+    if all_s.size == 0:
+        st.info("No cubic particles detected.")
+        return
+
+    prefix = _common_prefix([r["name"] for r in results])
+    r_eff_cube = (0.75 / np.pi)**(1/3) 
+    fig, mu, std, n = histogram_with_fit(all_s, f"{prefix} — Cube side length", unit, r_eff_factor=r_eff_cube, user_xlim=user_xlim, gmm_components=gmm_components)
+    st.pyplot(fig, use_container_width=True)
+    _download_row(fig, pd.DataFrame({"side_length": all_s}), f"{prefix}_side_length")
+
+
+def _show_octahedron_histograms(results: List[Dict], unit: str, user_xlim: Optional[Tuple[float, float]] = None, gmm_components: int = 2) -> None:
+    all_maj = np.concatenate([r["oct_major"] for r in results])
+    all_min = np.concatenate([r["oct_minor"] for r in results])
+    prefix = _common_prefix([r["name"] for r in results])
+
+    if all_maj.size == 0 and all_min.size == 0:
+        st.info("No octahedral particles detected.")
+        return
+
+    all_axes = np.concatenate([all_maj, all_min])
+    r_eff_oct = (1.0 / (8.0 * np.pi))**(1/3)
+    
+    fig_axes, mu_maj, std_maj, n_axes = histogram_with_fit(
+        all_axes, f"{prefix} — Octahedron Combined Axes", unit, 
+        r_eff_factor=r_eff_oct, bimodal_axes=True, user_xlim=user_xlim, gmm_components=gmm_components
+    )
+    st.pyplot(fig_axes, use_container_width=True)
+
+    df = pd.DataFrame({"combined_axes": all_axes})
+    _download_row(fig_axes, df, f"{prefix}_octahedron_combined")
+
+def _download_row(fig: plt.Figure, df: pd.DataFrame, stem: str) -> None:
+    c1, c2 = st.columns(2)
+    with c1:
+        hist_buffer = io.BytesIO()
+        fig.savefig(hist_buffer, format="png", bbox_inches="tight", dpi=300)
+        st.download_button("⬇ PNG", hist_buffer.getvalue(), f"{stem}.png", "image/png")
+    with c2:
+        st.download_button("⬇ CSV", df.to_csv(index=False), f"{stem}.csv", "text/csv")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Streamlit helpers
+# ═══════════════════════════════════════════════════════════════════════════
+def _common_prefix(names: List[str]) -> str:
+    if not names:
+        return "analysis"
     shortest = min(names, key=len)
-    for i, char in enumerate(shortest):
-        if any(name[i] != char for name in names):
-            return shortest[:i].rstrip(" _-") or "analysis"
-    return shortest.rstrip(" _-") or "analysis"
+    for i, ch in enumerate(shortest):
+        if any(name[i] != ch for name in names):
+            return shortest[:i].rstrip(" _-.") or "analysis"
+    return shortest.rstrip(" _-.") or "analysis"
 
 
-@st.cache_data
-def analyze_image(file_bytes: bytes, filename: str, method: str, shape_type: str, min_shape_size_input: float, nbins_int: int, manual_threshold: float | None) -> dict:
-    dm3 = try_read_dm3(file_bytes)
-    data = dm3.data
-    nm_per_px = dm3.nm_per_px
 
-    if data.size == 0:
-        return {"error": "Image data is empty."}
+# ═══════════════════════════════════════════════════════════════════════════
+# Cached analysis wrapper
+# ═══════════════════════════════════════════════════════════════════════════
+@st.cache_data(show_spinner=False)
+def _analyze_one(file_bytes: bytes, filename: str, shape_type: str,
+                 min_feature_size: float, thresh_offset: float) -> Dict[str, Any]:
+    tem = read_tem_file(file_bytes, filename)
+    data = tem.data
+    nm_per_px = tem.nm_per_px
 
-    measurement_unit = "nm" if (np.isfinite(nm_per_px) and nm_per_px > 0) else "px"
-    if not np.isfinite(nm_per_px) or nm_per_px <= 0:
+    if data.size <= 1:
+        return {"error": f"Image data is empty for {filename}."}
+
+    if np.isfinite(nm_per_px) and nm_per_px > 0:
+        measurement_unit = "nm"
+        min_diam_px = min_feature_size / nm_per_px
+    else:
+        measurement_unit = "px"
         nm_per_px = float("nan")
+        min_diam_px = min_feature_size
 
-    if method == "Manual":
-        chosen_threshold = manual_threshold if manual_threshold is not None else float(np.median(data))
-    elif method == "K-means":
-        chosen_threshold = kmeans_threshold(data)
-    else:  # GMM
-        chosen_threshold = gmm_threshold(data, nbins_int)
+    min_area_px = max(1, int(np.pi * (min_diam_px / 2.0) ** 2))
 
-    seg = segment_and_measure_shapes(
+    seg = segment_and_measure(
         data=data,
-        threshold=chosen_threshold,
         nm_per_px=nm_per_px,
         shape_type=shape_type,
-        min_size_value=float(min_shape_size_input),
+        min_size_value=float(min_feature_size),
         measurement_unit=measurement_unit,
+        min_area_px=min_area_px,
+        thresh_offset=thresh_offset,
     )
-    seg["chosen_threshold"] = chosen_threshold
     seg["name"] = filename
     return seg
 
-# ---------------------------------------------------------------------------
-# Plotting: Histogram
-# ---------------------------------------------------------------------------
-def histogram_with_fit(values, nbins, xrange, title, unit_label):
-    vals = values[(values >= xrange[0]) & (values <= xrange[1])]
-    n = len(vals)
-    counts, edges = np.histogram(vals, bins=nbins)
-    centers = edges[:-1] + np.diff(edges) / 2
-    fig = go.Figure(data=[go.Bar(x=centers, y=counts, name=title)])
 
-    if n >= 3:
-        mu, std = norm.fit(vals)
-        xline = np.linspace(xrange[0], xrange[1], 300)
-        bin_width = centers[1] - centers[0] if len(centers) > 1 else 1
-        yline = norm.pdf(xline, mu, std) * n * bin_width
-        fig.add_trace(go.Scatter(x=xline, y=yline, mode="lines", line=dict(color="red"), name=f"μ={mu:.2f}, σ={std:.2f}"))
-    else:
-        mu = float("nan")
 
-    fig.update_layout(title=title, xaxis_title=f"Size ({unit_label})", yaxis_title="Count")
-    return fig, float(mu), n
 
-# ---------------------------------------------------------------------------
-# Main Streamlit App
-# ---------------------------------------------------------------------------
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Main Streamlit entry point
+# ═══════════════════════════════════════════════════════════════════════════
 def run() -> None:
-    st.set_page_config(layout="wide")
-    st.title("Paired Particle Analysis (976 vs 638)")
+    st.set_page_config(page_title="TEM Particle Characterization",
+                       layout="wide")
+    st.title("TEM Particle Characterization")
 
-    if pyDM3reader is None:
-        st.error("`dm3_lib` is not installed. Please run: `pip install dm3_lib`")
+    missing: List[str] = []
+    if not _HAS_DM3:
+        missing.append("`dm3_lib`  →  `pip install dm3_lib`")
+    if not _HAS_H5PY:
+        missing.append("`h5py`     →  `pip install h5py`")
+    if missing:
+        st.warning("Optional readers not installed:\n\n" +
+                   "\n".join(f"- {m}" for m in missing))
+
+    st.caption(
+        "Upload one or more `.dm3` or `.emd` images, choose the particle "
+        "shape, then view size distributions with Gaussian fits."
+    )
+
+    col_left, col_right = st.columns([1, 1])
+
+    accepted_types = []
+    if _HAS_DM3:
+        accepted_types.append("dm3")
+    if _HAS_H5PY:
+        accepted_types.append("emd")
+    if not accepted_types:
+        st.error("No file readers available. Install dm3_lib and/or h5py.")
         return
 
-    # Sidebar / Controls
-    with st.sidebar:
-        st.header("Settings")
-        shape_type = st.selectbox("Shape type", ["Sphere", "Hexagon", "Cube"], index=0)
-        nbins_int = st.slider("Intensity histogram bins", 20, 200, 60, step=5)
-        min_shape_size_input = st.number_input(
-            "Min shape size (nm or px)", value=4.0, step=0.5
+    with col_left:
+        files = st.file_uploader(
+            "Upload TEM image(s)",
+            accept_multiple_files=True,
+            type=accepted_types,
+            on_change=_clear_cache 
         )
-        coloc_tolerance = st.slider("Colocalization Tolerance (px)", 1.0, 50.0, 10.0, step=0.5, 
-                                    help="Max distance between centroids to consider them colocalized.")
-        
-        st.divider()
-        st.info("Files are matched by filename index. (e.g. image_07.dm3)")
 
-    if "manual_threshold" not in st.session_state:
-        st.session_state.manual_threshold = None
+    with col_right:
+        shape_type = st.selectbox("Particle shape", list(SHAPE_CHOICES),
+                                  index=0)
+        min_feature = st.number_input(
+            "Minimum feature size (nm)",
+            min_value=0.0, max_value=250.0, value=5.0, step=0.5,
+        )
 
-    files = st.file_uploader("Upload .dm3 files (both 976 and 638)", accept_multiple_files=True, type=["dm3"])
+        thresh_offset = st.slider("Threshold (Lower = Stricter Watershedding)", 0.50, 1.50, 1.00, 0.05)
+        gmm_components = st.number_input("GMM Components (Histogram Fit)", min_value=1, max_value=5, value=2, step=1)
+        use_custom_xlim = st.checkbox("Lock Histogram X-axis limits")
+        if use_custom_xlim:
+            c_min, c_max = st.columns(2)
+            with c_min:
+                xlim_min = st.number_input("X Min", value=0.0, step=1.0)
+            with c_max:
+                xlim_max = st.number_input("X Max", value=50.0, step=1.0)
+            user_xlim = (xlim_min, xlim_max)
+        else:
+            user_xlim = None
 
     if not files:
-        st.info("Please upload files.")
+        st.info(f"Upload one or more `{'` / `'.join(accepted_types)}` "
+                "files to begin.")
         return
 
-    # 1. Split and Pair
-    ucnp_files, dye_files = _split_ucnp_dye(files)
-    pairs = _match_ucnp_dye_files(ucnp_files, dye_files)
+    results: List[Dict[str, Any]] = []
+    missing_scale: List[str] = []
 
-    st.write(f"Found {len(ucnp_files)} UCNP (976) files and {len(dye_files)} Dye (638) files.")
-    st.write(f"**Identified {len(pairs)} matched pairs.**")
+    with st.status("Processing images…", expanded=True) as status:
+        for i, f in enumerate(files, 1):
+            status.update(label=f"Processing {i}/{len(files)}: {f.name}")
+            seg = _analyze_one(f.read(), f.name, shape_type, min_feature, thresh_offset)
+            if "error" in seg:
+                st.warning(seg["error"])
+                continue
+            if seg.get("unit", "px") == "px":
+                missing_scale.append(f.name)
+            results.append(seg)
+        status.update(label="Processing complete!", state="complete",
+                      expanded=False)
 
-    # 2. Process Pairs
-    all_results = []
+    if not results:
+        st.warning("No images could be processed.")
+        return
 
-    if pairs:
-        st.divider()
-        for i, (f_u, f_d) in enumerate(pairs, 1):
-            
-            # Use columns for processing status to save vertical space
-            st.markdown(f"#### Pair {i}: `{f_u.name}` & `{f_d.name}`")
-            
-            # Analyze UCNP
-            res_u = analyze_image(f_u.read(), f_u.name, "GMM", shape_type, min_shape_size_input, nbins_int, st.session_state.manual_threshold)
-            f_u.seek(0) # Reset stream
-            
-            # Analyze Dye
-            res_d = analyze_image(f_d.read(), f_d.name, "GMM", shape_type, min_shape_size_input, nbins_int, st.session_state.manual_threshold)
-            f_d.seek(0) # Reset stream
+    if missing_scale:
+        st.warning(
+            "Pixel-size metadata was **not found** for the following files.  "
+            "All measurements are reported in **pixels**:\n\n" +
+            "\n".join(f"- {n}" for n in sorted(set(missing_scale)))
+        )
 
-            all_results.append(res_u)
-            all_results.append(res_d)
+    names = [r["name"] for r in results]
+    sel_name = st.selectbox("Select image to display", names)
+    sel = next(r for r in results if r["name"] == sel_name)
 
-            # --- VISUALIZATION COLUMNS ---
-            col1, col2, col3 = st.columns(3)
-            
-            # COLUMN 1: UCNP (976)
-            with col1:
-                st.caption(f"976 (UCNP): {f_u.name}")
-                if "annotated_fig" in res_u:
-                    st.plotly_chart(res_u["annotated_fig"], use_container_width=True)
-                else:
-                    st.error("Analysis failed")
+    c1, c2 = st.columns(2)
+    with c1:
+        thresh_str = f"{sel.get('adapted_thresh', 0):.4f}"
+        #st.info(f"Adaptive threshold applied = **{thresh_str}**")
+    with c2:
+        nm_per_px_val = sel.get("nm_per_px", float("nan"))
+        if np.isfinite(nm_per_px_val):
+            st.success(f"Extracted metadata calibration = **{nm_per_px_val:.4f} nm/px**")
+        else:
+            st.warning("Extracted metadata calibration = **Uncalibrated (px)**")
 
-            # COLUMN 2: Dye (638)
-            with col2:
-                st.caption(f"638 (Dye): {f_d.name}")
-                if "annotated_fig" in res_d:
-                    st.plotly_chart(res_d["annotated_fig"], use_container_width=True)
-                else:
-                    st.error("Analysis failed")
-
-            # COLUMN 3: Reconstruction
-            with col3:
-                st.caption("Reconstruction (Colocalization)")
+    tab_ann, tab_ws = st.tabs(["🔬 Annotated", "🎨 Watershed"])
+    with tab_ann:
+        st.caption(f"Detected shapes overlaid ({sel['unit']})")
+        
+        # Fast Matplotlib rasterization avoiding Streamlit DOM limits
+        fig, ax = plt.subplots(figsize=(10, 10), dpi=150)
+        zmin, zmax = np.percentile(sel["data"], [0.1, 99.9])
+        ax.imshow(sel["data"], cmap="gray", vmin=zmin, vmax=zmax)
+        
+        for s in sel["draw_shapes"]:
+            if s["type"] == "circle":
+                ax.add_patch(patches.Circle((s["cx"], s["cy"]), s["r"], edgecolor=s["color"], facecolor='none', lw=1.5, alpha=0.5))
+            elif s["type"] == "polygon":
+                ax.add_patch(patches.Polygon(s["vertices"], closed=True, edgecolor=s["color"], facecolor='none', lw=1.5, alpha=0.5))
                 
-                pts_u = res_u.get("centroids_px", np.array([]))
-                pts_d = res_d.get("centroids_px", np.array([]))
-                
-                fig_recon = go.Figure()
-                
-                # Determine image bounds for the reconstruction plot
-                h, w = res_u.get("img_shape", (1024, 1024))
-                
-                # Plot UCNP (Grey)
-                if len(pts_u) > 0:
-                    fig_recon.add_trace(go.Scatter(
-                        x=pts_u[:, 0], y=pts_u[:, 1],
-                        mode='markers',
-                        marker=dict(color='gray', size=6, opacity=0.6),
-                        name='976 (UCNP)'
-                    ))
-                
-                # Plot Dye (Red)
-                if len(pts_d) > 0:
-                    fig_recon.add_trace(go.Scatter(
-                        x=pts_d[:, 0], y=pts_d[:, 1],
-                        mode='markers',
-                        marker=dict(color='red', size=6, opacity=0.6),
-                        name='638 (Dye)'
-                    ))
+        ax.axis("off")
+        fig.tight_layout(pad=0)
+        st.pyplot(fig)
+        plt.close(fig) # Prevent memory leak
+        
+    with tab_ws:
+        st.caption("Watershed labels (randomly coloured)")
+        st.image(sel["rgb_ws"], use_container_width=True)
 
-                # Calculate Colocalization (X)
-                coloc_count = 0
-                if len(pts_u) > 0 and len(pts_d) > 0:
-                    # Calculate distance matrix (Euclidean)
-                    dists = cdist(pts_u, pts_d, metric='euclidean')
-                    # Find indices where dist < tolerance
-                    u_indices, d_indices = np.where(dists < coloc_tolerance)
-                    
-                    if len(u_indices) > 0:
-                        # Get coords for colocalized spots (take avg position)
-                        coloc_x = (pts_u[u_indices, 0] + pts_d[d_indices, 0]) / 2
-                        coloc_y = (pts_u[u_indices, 1] + pts_d[d_indices, 1]) / 2
-                        
-                        fig_recon.add_trace(go.Scatter(
-                            x=coloc_x, y=coloc_y,
-                            mode='markers',
-                            marker=dict(symbol='x', color='black', size=8, line=dict(width=2)),
-                            name='Colocalized'
-                        ))
-                        coloc_count = len(u_indices)
-                
-                # Match image coordinate system (0,0 at top left)
-                fig_recon.update_xaxes(range=[0, w], showgrid=False)
-                fig_recon.update_yaxes(range=[h, 0], showgrid=False) # Inverted Y
-                fig_recon.update_layout(
-                    margin=dict(l=0, r=0, b=0, t=30),
-                    height=300, # Matches generic image aspect roughly
-                    title=f"Matches: {coloc_count}",
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                st.plotly_chart(fig_recon, use_container_width=True)
+    st.markdown("---")
+    st.subheader("Size Distributions")
 
-            st.divider()
+    units_present = {r.get("unit", "nm") for r in results}
+    if len(units_present) > 1:
+        st.error("Cannot combine histograms — uploaded images use mixed "
+                 "measurement units (nm vs px).")
+        return
 
-    # --- Aggregate Statistics (Optional, kept from original logic) ---
-    if all_results:
-        with st.expander("Aggregate Statistics"):
-            # Reuse existing histogram logic for the aggregated data
-            units_present = {r.get("unit", "nm") for r in all_results}
-            if len(units_present) == 1:
-                unit_label = list(units_present)[0]
-                if shape_type == "Sphere":
-                    all_d = np.concatenate([r["diameters_nm"] for r in all_results])
-                    if all_d.size:
-                        fig, mu, n = histogram_with_fit(all_d, 50, (all_d.min(), all_d.max()), f"All Diameters ({unit_label})", unit_label)
-                        st.plotly_chart(fig)
-            else:
-                st.warning("Mixed units detected, cannot aggregate histograms.")
+    unit = units_present.pop()
 
+    if shape_type == "Sphere":
+        _show_sphere_histograms(results, unit, user_xlim, gmm_components)
+    elif shape_type == "Hexagonal Prism":
+        _show_hex_histograms(results, unit, user_xlim, gmm_components)
+    elif shape_type == "Cube":
+        _show_cube_histograms(results, unit, user_xlim, gmm_components)
+    elif shape_type == "Octahedron":
+        _show_octahedron_histograms(results, unit, user_xlim, gmm_components)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Entry point
+# ═══════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     run()
