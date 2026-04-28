@@ -1043,8 +1043,7 @@ def _analyze_one(file_bytes: bytes, filename: str, shape_type: str,
 # Main Streamlit entry point
 # ═══════════════════════════════════════════════════════════════════════════
 def run() -> None:
-    st.set_page_config(page_title="TEM Particle Characterization",
-                       layout="wide")
+
     st.title("TEM Particle Characterization")
 
     missing: List[str] = []
