@@ -1,9 +1,7 @@
-import streamlit as st
-
 import math
 import numpy as np
 import pandas as pd
-  
+import streamlit as st
 
 def highlight_cells(val, row_name):
     if row_name == "% Volume Injected" and float(val) > 10:
@@ -11,7 +9,10 @@ def highlight_cells(val, row_name):
     return ""
 
 def run():
-
+  
+  # --- Page config ---
+  st.set_page_config(
+      page_title="Shelling Injection Table")
   
   
   with st.form("inputs"):

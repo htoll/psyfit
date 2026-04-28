@@ -1,16 +1,19 @@
-# --- Core App Framework ---
-streamlit==1.40.0
+# --- Streamlit & Web App ---
+streamlit>=1.34
 streamlit-drawable-canvas>=0.9.3
 streamlit-plotly-events>=0.0.6
 
-# --- Data & Image Processing ---
+# --- Core Data & Science ---
 numpy
 pandas
 scipy
-scikit-image
 scikit-learn
+
+# --- Image Processing ---
+scikit-image
 opencv-python-headless
 imageio
+imageio-ffmpeg
 tifffile
 
 # --- Visualization ---
@@ -20,40 +23,10 @@ plotly>=5.19
 pydeck
 kaleido>=0.2.1
 
-# --- Specific Scientific Tools ---
+# --- Microscopy & Specialized Formats ---
 ncempy>=1.10
-git+https://github.com/piraynal/pyDM3reader.git
+h5py
+
+# --- Git Dependencies (Parsers) ---
 git+https://github.com/fujiisoup/sif_parser.git
-
-#streamlit
-#streamlit-drawable-canvas>=0.9.3 
-#streamlit_plotly_events
-#pandas
-#numpy
-#matplotlib
-#scikit-learn
-#scipy
-#seaborn
-#plotly
-#pydeck
-#scikit-image
-#opencv-python-headless
-#tifffile
-#git+https://github.com/fujiisoup/sif_parser.git
-#streamlit==1.48.0
-
-streamlit>=1.34
-ncempy>=1.10
-scikit-image
-scikit-learn
-plotly>=5.19
-kaleido>=0.2.1
-streamlit-plotly-events>=0.0.6
-imageio
-imageio-ffmpeg
-
-#dm3 reader for tem images
 git+https://github.com/piraynal/pyDM3reader.git
-
-ncempy
-
