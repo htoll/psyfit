@@ -64,7 +64,7 @@ def run():
               value=50.0,
               step=1.0,
           )
-        scale_factor = st.number_input(
+          scale_factor = st.number_input(
                     "Reaction Scale Factor",
                     min_value=0.1,
                     max_value=20.0,
