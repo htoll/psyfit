@@ -64,6 +64,13 @@ def run():
               value=50.0,
               step=1.0,
           )
+        scale_factor = st.number_input(
+                    "Reaction Scale Factor",
+                    min_value=0.1,
+                    max_value=20.0,
+                    value=1.0,
+                    step=0.1,
+                    help="Scales core volume and precursor amounts")
       normalize_injections = st.checkbox('Normalize injections and core volume', help = 'If initial injection is >1 mL or < 0.4 mL')
       submitted = st.form_submit_button("Calculate")
   
@@ -73,7 +80,8 @@ def run():
                               final_radius: float,
                               nm_per_mL: float = 200,
                               injection_time: int = 20,
-                              initial_rxn_vol: float = 10.0):
+                              initial_rxn_vol: float = 10.0,
+                              scale_factor: float = 1.0):
       warnings = []
   
       if delta <= 0:
@@ -94,13 +102,13 @@ def run():
   
       yac_added = np.zeros(num_injections)
       for y in range(num_injections - 1):
-          yac_added[y] = round(volume_added[y] / nm_per_mL, 2)
+          yac_added[y] = round(volume_added[y] / nm_per_mL * scale_factor, 2)
 
 
       #calculate volume of core to add:
       ref_mL_per_nmcubed = 2.7 / (4.7**3) #standard protocol is 2.7 mL for a 9.2 nm core
       ref_stock = 50 #reference stock is 50 mL
-      vol_core = ref_mL_per_nmcubed * initial_radius**3 * (initial_core_vol / ref_stock)
+      vol_core = ref_mL_per_nmcubed * initial_radius**3 * (initial_core_vol / ref_stock) * scale_factor
 
       if normalize_injections and (yac_added[0] > 1 or yac_added[0] < 0.4):
         norm_factor = yac_added[0]
