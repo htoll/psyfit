@@ -162,6 +162,7 @@ def run():
             nm_per_mL=nm_per_mL,
             injection_time=injection_time,
             initial_rxn_vol=initial_rxn_vol,
+            scale_factor = scale_factor
         )
         numeric_rows = [
             "Estimated radius (nm)",
