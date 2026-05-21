@@ -39,7 +39,7 @@ def _process_files(uploaded_files, region="Mr Beam", threshold=1, signal="UCNP",
         with open(file_path, "wb") as f:
             f.write(uf.getbuffer())
         try:
-            df, image_data_cps = utils.integrate_sif(
+            df, image_data_cps, _ = utils.integrate_sif(
                 str(file_path),
                 region=region,
                 threshold=threshold,
