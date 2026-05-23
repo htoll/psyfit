@@ -762,4 +762,3 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
         return pd.DataFrame(all_matched_pairs)
     return None
 
-

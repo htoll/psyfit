@@ -4,10 +4,11 @@ streamlit-drawable-canvas>=0.9.3
 streamlit-plotly-events>=0.0.6
 
 # --- Core Data & Science ---
-numpy
 pandas
 scipy
 scikit-learn
+torch
+numpy<2
 
 # --- Image Processing ---
 scikit-image
@@ -15,6 +16,7 @@ opencv-python-headless
 imageio
 imageio-ffmpeg
 tifffile
+cellpose
 
 # --- Visualization ---
 matplotlib

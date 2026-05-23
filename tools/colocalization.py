@@ -41,7 +41,7 @@ def _extract_common_stem(uploaded_files):
     name = Path(uploaded_files[0].name).stem
     if "_" in name:
         return name.rsplit("_", 1)[0]
-    return name
+    return name 
 
 def natural_sort_key(s: str):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]

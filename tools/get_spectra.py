@@ -39,7 +39,7 @@ def _process_files(uploaded_files, region="Mr Beam", threshold=1, signal="UCNP",
         with open(file_path, "wb") as f:
             f.write(uf.getbuffer())
         try:
-            df, image_data_cps = utils.integrate_sif(
+            df, image_data_cps, _ = utils.integrate_sif(
                 str(file_path),
                 region=region,
                 threshold=threshold,
@@ -349,26 +349,49 @@ def run():
 
                     coords[i] = [x, 280-y]
 
+                # 1. Filter out dim particles FIRST to avoid mapping junk
+                too_dim = [i for i, (_, row) in enumerate(df.iterrows()) if row["brightness_fit"] < no_dim]
+                for id in too_dim:
+                    if id in coords:
+                        del coords[id]
+
+                # 2. Check for overlapping spectra safely and efficiently
                 if remove_overlapping:
                     to_remove = []
-
-                    for i in coords:
-                        [x1, y1], _ = Methods.get_image(coords[i], [val[1] for val in calibration.values()], [val[3] for val in calibration.values()])
-                        for j in range(i+1, len(coords)):
-                            [x2, y2], _ = Methods.get_image(coords[j], [val[1] for val in calibration.values()], [val[3] for val in calibration.values()])
+                    spectral_coords = {}
+                    
+                    # Pre-calculate spectral coordinates (with a safety net to catch bounds errors)
+                    for i in list(coords.keys()):
+                        try:
+                            spec_coord, _ = Methods.get_image(
+                                coords[i], 
+                                [c_val[1] for c_val in calibration.values()], 
+                                [c_val[3] for c_val in calibration.values()]
+                            )
+                            spectral_coords[i] = spec_coord
+                        except Exception:
+                            # If Methods.get_image goes out of bounds, flag it for removal
+                            to_remove.append(i)
+                    
+                    # Check overlaps among valid coordinates
+                    valid_keys = [k for k in spectral_coords.keys() if k not in to_remove]
+                    for idx_1 in range(len(valid_keys)):
+                        i = valid_keys[idx_1]
+                        x1, y1 = spectral_coords[i]
+                        
+                        for idx_2 in range(idx_1 + 1, len(valid_keys)):
+                            j = valid_keys[idx_2]
+                            x2, y2 = spectral_coords[j]
+                            
                             if np.abs(x1-x2) < 95 and np.abs(y1-y2) < 5:
                                 to_remove.append(i)
                                 to_remove.append(j)
 
-                    for id in to_remove:
+                    # Remove flagged and overlapping points
+                    for id in set(to_remove):
                         if id in coords:
                             del coords[id]
 
-                too_dim = [i for i, (_, row) in enumerate(df.iterrows()) if row["brightness_fit"] < no_dim]
-
-                for id in too_dim:
-                    if id in coords:
-                        del coords[id]
 
                 colors = cm.rainbow(np.linspace(0, 1, len(coords.keys())))
                 for i, id in enumerate(coords):
@@ -384,6 +407,7 @@ def run():
                 st.pyplot(fig)
 
         with col2:
+                all_spectra_data = []
                 for key, val in u_data.items():
                     u_img = val["image"]
                     # u_img = np.flip(u_img, axis=0)
@@ -408,18 +432,46 @@ def run():
 
                         coords[i] = [x, 280-y]
 
+                    # 1. Filter out dim particles FIRST to avoid mapping junk
+                    too_dim = [i for i, (_, row) in enumerate(df.iterrows()) if row["brightness_fit"] < no_dim]
+                    for id in too_dim:
+                        if id in coords:
+                            del coords[id]
+
+                    # 2. Check for overlapping spectra safely and efficiently
                     if remove_overlapping:
                         to_remove = []
-
-                        for i in coords:
-                            [x1, y1], _ = Methods.get_image(coords[i], [val[1] for val in calibration.values()], [val[3] for val in calibration.values()])
-                            for j in range(i+1, len(coords)):
-                                [x2, y2], _ = Methods.get_image(coords[j], [val[1] for val in calibration.values()], [val[3] for val in calibration.values()])
+                        spectral_coords = {}
+                        
+                        # Pre-calculate spectral coordinates (with a safety net to catch bounds errors)
+                        for i in list(coords.keys()):
+                            try:
+                                spec_coord, _ = Methods.get_image(
+                                    coords[i], 
+                                    [c_val[1] for c_val in calibration.values()], 
+                                    [c_val[3] for c_val in calibration.values()]
+                                )
+                                spectral_coords[i] = spec_coord
+                            except Exception:
+                                # If Methods.get_image goes out of bounds, flag it for removal
+                                to_remove.append(i)
+                        
+                        # Check overlaps among valid coordinates
+                        valid_keys = [k for k in spectral_coords.keys() if k not in to_remove]
+                        for idx_1 in range(len(valid_keys)):
+                            i = valid_keys[idx_1]
+                            x1, y1 = spectral_coords[i]
+                            
+                            for idx_2 in range(idx_1 + 1, len(valid_keys)):
+                                j = valid_keys[idx_2]
+                                x2, y2 = spectral_coords[j]
+                                
                                 if np.abs(x1-x2) < 95 and np.abs(y1-y2) < 5:
                                     to_remove.append(i)
                                     to_remove.append(j)
 
-                        for id in to_remove:
+                        # Remove flagged and overlapping points
+                        for id in set(to_remove):
                             if id in coords:
                                 del coords[id]
 
@@ -447,42 +499,34 @@ def run():
                         try:
                             wvl, spec, nms_per_pixel = get_spectrum(np.array([x, y]), full_frame, calibration, calib_fits)
                             
+                            # 1. Background subtraction
                             if background is not None:
-                                #ax.plot(wvl, spec, c=colors[i])
                                 bkg_wvl, bkg_spec, _ = get_spectrum(np.array([x,y]), background_image, calibration, calib_fits)
-                                #ax.plot(wvl, bkg_spec, 'k--')
                                 res = fit_template_sigma_clip(spec, bkg_spec, 10, 1)
                                 bkg_fitted = res[0]
-                                #ax.plot(wvl, bkg_fitted, 'k--') 
-                                intensity_sans_bkg = spec-bkg_fitted
-
-                                if not scale_per_nm:
-                                    if not normalize:
-                                        ax.plot(wvl, intensity_sans_bkg, c=colors[i])
-                                    else:
-                                        ax.plot(wvl, Methods.normalize(intensity_sans_bkg), c=colors[i])
-
-                                else:
-                                    intensity_scaled = intensity_sans_bkg/nms_per_pixel
-                                    if not normalize:
-                                        ax.plot(wvl, intensity_scaled, c=colors[i])
-                                    else:
-                                        ax.plot(wvl, Methods.normalize(intensity_scaled), c=colors[i])
-                            
+                                intensity_sans_bkg = spec - bkg_fitted
                             else:
-                                intensity_sans_bkg = spec-np.min(spec)
-                                if not scale_per_nm:
-                                    if not normalize:
-                                        ax.plot(wvl, intensity_sans_bkg, c=colors[i])
-                                    else:
-                                        ax.plot(wvl, Methods.normalize(intensity_sans_bkg), c=colors[i])
+                                intensity_sans_bkg = spec - np.min(spec)
 
-                                else:
-                                    intensity_scaled = intensity_sans_bkg/nms_per_pixel
-                                    if not normalize:
-                                        ax.plot(wvl, intensity_scaled, c=colors[i])
-                                    else:
-                                        ax.plot(wvl, Methods.normalize(intensity_scaled), c=colors[i])
+                            # 2. Apply scaling and normalization sequentially
+                            final_intensity = intensity_sans_bkg
+                            if scale_per_nm:
+                                final_intensity = final_intensity / nms_per_pixel
+                            if normalize:
+                                final_intensity = Methods.normalize(final_intensity)
+
+                            # 3. Plot the trace
+                            ax.plot(wvl, final_intensity, c=colors[i])
+
+                            # 4. Save the points for our CSV export
+                            for w, inten in zip(wvl, final_intensity):
+                                all_spectra_data.append({
+                                    "File": key,
+                                    "Particle_ID": id,
+                                    "Wavelength_nm": w,
+                                    "Intensity": inten
+                                })
+
                         except Exception as e:
                             st.error(f"Error extracting spectrum for particle {id}")
                             continue
@@ -491,8 +535,17 @@ def run():
 
                     # Show the figure
                     st.pyplot(fig)
+            # Put this at the very end of col2, flush with the `for key, val...` loop indentation
+            
+                
+                st.download_button(
+                    label="Download All Spectra (CSV)",
+                    data=csv,
+                    file_name="all_extracted_spectra.csv",
+                    mime="text/csv",
+                )
                             
-   
+
                   
 if __name__ == "__main__":
     run()

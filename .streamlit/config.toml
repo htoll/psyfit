@@ -1,6 +1,6 @@
 [server]
-maxUploadSize = 500 #MB
-maxMessageSize = 500 #MB
+maxUploadSize = 3000 #MB
+maxMessageSize = 3000 #MB
 # enableXsrfProtection = false   # TEMPORARY for debugging
 # enableCORS = false             # TEMPORARY for debugging
 
