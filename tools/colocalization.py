@@ -33,7 +33,7 @@ def _hash_file(uf) -> str:
 
 def _build_proc_key(sif_files, region_ucnp, region_dye, threshold, ucnp_id, dye_id):
     names_hashes = tuple(sorted((f.name, _hash_file(f)) for f in (sif_files or [])))
-    return (names_hashes, str(region_ucnp), str(region_dye), threshold, str(ucnp_id), str(dye_id))
+    return (names_hashes, str(region_ucnp), str(region_dye), int(threshold), str(ucnp_id), str(dye_id))
 
 def _extract_common_stem(uploaded_files):
     if not uploaded_files:
@@ -41,7 +41,7 @@ def _extract_common_stem(uploaded_files):
     name = Path(uploaded_files[0].name).stem
     if "_" in name:
         return name.rsplit("_", 1)[0]
-    return name
+    return name 
 
 def natural_sort_key(s: str):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
@@ -214,6 +214,7 @@ def _compute_coloc_mask(df_u: pd.DataFrame, df_d: pd.DataFrame, radius_px: int):
 # --- Main App ---
 
 def run():
+    st.set_page_config(layout="wide") # Helps with narrow screen issues
 
     with st.sidebar:
         st.header("Inputs")

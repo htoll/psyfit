@@ -8,6 +8,15 @@ import numpy as np
 
 import plotly.express as px
 import plotly.graph_objects as go
+from scipy.stats import norm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+
+blue_ch_color = 'dodgerblue'
+green_ch_color = 'forestgreen'
+red_ch_color = 'tomato'
+nir_ch_color = 'darkorange'
+
 
 from scipy.stats import norm
 from scipy.ndimage import gaussian_filter
@@ -118,8 +127,11 @@ def run():
                                                                 - UCNP for high SNR (sklearn peakfinder)
                                                                 - dye for low SNR (sklearn blob detection)''')
         min_distance = st.number_input("Minimum Distance", min_value=1, value=5, help='Min distance between PSFs (px)')
+<<<<<<< HEAD
+=======
         pix_size_um = st.number_input("Pixel Size (µm)", min_value = 0.01, value = 0.1)
 
+>>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
         cmap = st.selectbox("Colormap", options=[ 'gray', 'plasma', "magma", 'viridis', 'hot', 'hsv'])
         show_fits = st.checkbox("Show fits", value=True)
         normalization = st.checkbox("Log Image Scaling")
@@ -146,8 +158,12 @@ def run():
                                                         region, 
                                                         threshold=threshold, 
                                                         signal=signal,
+<<<<<<< HEAD
+                                                       min_distance = min_distance)
+=======
                                                        min_distance = min_distance,
                                                        pix_size_um = pix_size_um)
+>>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
             if mcl_toggle and combined_df is not None and not combined_df.empty:
                 # Assign quadrants based on pixel coordinates
                 conditions = [
@@ -182,7 +198,10 @@ def run():
                     interactive=True,
                 )
                 if mcl_toggle:
+<<<<<<< HEAD
+=======
 
+>>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
                     if hasattr(fig_image, "savefig"):
                         # Matplotlib annotations
                         ax = fig_image.gca()
@@ -289,6 +308,18 @@ def run():
                                     ax.set_ylabel(channel, color=color, weight='bold')
                                     
                                     # Gaussian fit
+<<<<<<< HEAD
+                                    if len(chan_data) > 1:
+                                        mu, std = norm.fit(chan_data)
+                                        x_fit = np.linspace(user_min, user_max, 100)
+                                        
+                                        # Scale the PDF to match raw counts: PDF * Total Data Points * Bin Width
+                                        bin_width = bins[1] - bins[0]
+                                        p = norm.pdf(x_fit, mu, std) * len(chan_data) * bin_width
+                                        
+                                        ax.plot(x_fit, p, 'k', linewidth=1.5)
+                                        ax.set_title(f"μ={mu:.2e} ± {std:.2e} pps", fontsize=16, pad=2)
+=======
                                     if len(chan_data) > int(gmm_components):
                                         # Use chan_data here, NOT brightness_vals
                                         X_chan = chan_data.reshape(-1, 1)
@@ -322,6 +353,7 @@ def run():
                                         # Parameters for return (all components)
                                         mu = gmm.means_.flatten()
                                         sigma = np.sqrt(gmm.covariances_.flatten())
+>>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
                                 
                                 axes[-1].set_xlabel('Brightness (pps)')
                                 fig_hist.tight_layout()
@@ -343,8 +375,11 @@ def run():
                                     min_val=user_min,
                                     max_val=user_max,
                                     num_bins='auto',
+<<<<<<< HEAD
+=======
                                     n_components = int(gmm_components)
                                     
+>>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
                                 )
                                 st.pyplot(fig_hist, use_container_width=True)
                         else:
