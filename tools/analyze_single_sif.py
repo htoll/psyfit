@@ -3,28 +3,28 @@ import os
 import io
 from utils import integrate_sif, plot_brightness, plot_histogram
 from tools.process_files import process_files
-from matplotlib.colors import LogNorm
 import numpy as np
+import pandas as pd
+import seaborn as sns
+
+
 
 import plotly.express as px
 import plotly.graph_objects as go
-from scipy.stats import norm
+
+from matplotlib.colors import LogNorm
+
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-
-blue_ch_color = 'dodgerblue'
-green_ch_color = 'forestgreen'
-red_ch_color = 'tomato'
-nir_ch_color = 'darkorange'
-
-
+from scipy.stats import norm
 from scipy.stats import norm
 from scipy.ndimage import gaussian_filter
-
+from scipy.spatial import cKDTree
+from scipy.stats import linregress
 
 from sklearn.mixture import GaussianMixture
 
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
 blue_ch_color = 'dodgerblue'
@@ -127,11 +127,8 @@ def run():
                                                                 - UCNP for high SNR (sklearn peakfinder)
                                                                 - dye for low SNR (sklearn blob detection)''')
         min_distance = st.number_input("Minimum Distance", min_value=1, value=5, help='Min distance between PSFs (px)')
-<<<<<<< HEAD
-=======
         pix_size_um = st.number_input("Pixel Size (µm)", min_value = 0.01, value = 0.1)
 
->>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
         cmap = st.selectbox("Colormap", options=[ 'gray', 'plasma', "magma", 'viridis', 'hot', 'hsv'])
         show_fits = st.checkbox("Show fits", value=True)
         normalization = st.checkbox("Log Image Scaling")
@@ -158,12 +155,8 @@ def run():
                                                         region, 
                                                         threshold=threshold, 
                                                         signal=signal,
-<<<<<<< HEAD
-                                                       min_distance = min_distance)
-=======
                                                        min_distance = min_distance,
                                                        pix_size_um = pix_size_um)
->>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
             if mcl_toggle and combined_df is not None and not combined_df.empty:
                 # Assign quadrants based on pixel coordinates
                 conditions = [
@@ -198,10 +191,6 @@ def run():
                     interactive=True,
                 )
                 if mcl_toggle:
-<<<<<<< HEAD
-=======
-
->>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
                     if hasattr(fig_image, "savefig"):
                         # Matplotlib annotations
                         ax = fig_image.gca()
@@ -308,18 +297,6 @@ def run():
                                     ax.set_ylabel(channel, color=color, weight='bold')
                                     
                                     # Gaussian fit
-<<<<<<< HEAD
-                                    if len(chan_data) > 1:
-                                        mu, std = norm.fit(chan_data)
-                                        x_fit = np.linspace(user_min, user_max, 100)
-                                        
-                                        # Scale the PDF to match raw counts: PDF * Total Data Points * Bin Width
-                                        bin_width = bins[1] - bins[0]
-                                        p = norm.pdf(x_fit, mu, std) * len(chan_data) * bin_width
-                                        
-                                        ax.plot(x_fit, p, 'k', linewidth=1.5)
-                                        ax.set_title(f"μ={mu:.2e} ± {std:.2e} pps", fontsize=16, pad=2)
-=======
                                     if len(chan_data) > int(gmm_components):
                                         # Use chan_data here, NOT brightness_vals
                                         X_chan = chan_data.reshape(-1, 1)
@@ -353,7 +330,6 @@ def run():
                                         # Parameters for return (all components)
                                         mu = gmm.means_.flatten()
                                         sigma = np.sqrt(gmm.covariances_.flatten())
->>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
                                 
                                 axes[-1].set_xlabel('Brightness (pps)')
                                 fig_hist.tight_layout()
@@ -368,6 +344,8 @@ def run():
                                     file_name=f"mcl_histogram.{save_format}",
                                     mime=mime_map[save_format],
                                 )
+
+                                st.divider()
                                 
                             else:
                                 fig_hist, _, _ = plot_histogram(
@@ -375,11 +353,8 @@ def run():
                                     min_val=user_min,
                                     max_val=user_max,
                                     num_bins='auto',
-<<<<<<< HEAD
-=======
                                     n_components = int(gmm_components)
                                     
->>>>>>> 762080850d37830a335c1e2cfb9e1233c00f0d2f
                                 )
                                 st.pyplot(fig_hist, use_container_width=True)
                         else:
@@ -461,3 +436,144 @@ def run():
                     st.warning(f"Couldn't build heatmap: {e_hm}")
             else:
                 st.info("Run analysis to build heatmap.")
+
+        st.divider()
+    st.subheader("Cross-Channel Analysis")
+
+    #  Cross-Channel Analysis ---
+    plot_channels = st.checkbox("Plot brightness of channels")
+    if plot_channels:
+        ch_options = ['Blue', 'Green', 'Red', 'NIR']
+        
+        # We can use columns here just for the dropdowns so they sit nicely side-by-side
+        c1, c2, c3, c4 = st.columns(4)
+        x_ch = c1.selectbox("X-axis Channel", options=ch_options, index=0)
+        y_ch = c2.selectbox("Y-axis Channel", options=ch_options, index=1)
+        
+        if x_ch == y_ch:
+            st.warning("Please select two different channels to compare.")
+        else:
+            # 1. Transform Global Coordinates to Local 256x256 Grid for Registration
+            def get_local_coords(df, ch):
+                d = df[df['quadrant'] == ch].copy()
+                d['lx'] = d['x_pix'] % 256
+                d['ly'] = d['y_pix'] % 256
+                return d
+            
+            df_x = get_local_coords(combined_df, x_ch)
+            df_y = get_local_coords(combined_df, y_ch)
+            
+            if not df_x.empty and not df_y.empty:
+                # Match points between channels using Nearest Neighbors
+                tree_y = cKDTree(df_y[['lx', 'ly']].values)
+                distances, indices = tree_y.query(df_x[['lx', 'ly']].values, distance_upper_bound=3.0)
+                valid_matches = distances != np.inf
+                
+                matched_x = df_x.iloc[valid_matches].copy()
+                matched_y = df_y.iloc[indices[valid_matches]].copy()
+                
+                matched_df = pd.DataFrame({
+                    f'brightness_{x_ch}': matched_x['brightness_integrated'].values,
+                    f'brightness_{y_ch}': matched_y['brightness_integrated'].values
+                })
+                
+                # Split the remaining UI into two wider columns to make use of horizontal space
+                reg_col, plot_col = st.columns((1, 2))
+                
+                with reg_col:
+                    # 2. Display Colormerged Example
+                    def get_quadrant_crop(img, ch):
+                        if ch == 'Blue': return img[256:512, 0:256]
+                        if ch == 'Green': return img[256:512, 256:512]
+                        if ch == 'Red': return img[0:256, 0:256]
+                        if ch == 'NIR': return img[0:256, 256:512]
+                        
+                    crop_x = get_quadrant_crop(image_data_cps, x_ch)
+                    crop_y = get_quadrant_crop(image_data_cps, y_ch)
+                    
+                    # Normalize image intensities for display
+                    crop_x_norm = np.clip((crop_x - np.min(crop_x)) / (np.max(crop_x) - np.min(crop_x) + 1e-6), 0, 1)
+                    crop_y_norm = np.clip((crop_y - np.min(crop_y)) / (np.max(crop_y) - np.min(crop_y) + 1e-6), 0, 1)
+                    
+                    def apply_channel_color(img_norm, channel_name):
+                        """Maps a 2D array to a 3D RGB array based on the channel color."""
+                        rgb = np.zeros((256, 256, 3))
+                        if channel_name == 'Red': rgb[..., 0] = img_norm
+                        elif channel_name == 'Green': rgb[..., 1] = img_norm
+                        elif channel_name == 'Blue': rgb[..., 2] = img_norm
+                        elif channel_name == 'NIR':
+                            rgb[..., 0] = img_norm
+                            rgb[..., 1] = img_norm
+                            rgb[..., 2] = img_norm
+                        return rgb
+                    
+                    rgb_x = apply_channel_color(crop_x_norm, x_ch)
+                    rgb_y = apply_channel_color(crop_y_norm, y_ch)
+                    rgb_merge = np.clip(rgb_x + rgb_y, 0, 1)
+                    
+                    st.markdown("**Registration Alignment**")
+                    st.caption(f"Colors match channels. NIR is White.")
+                    import matplotlib.pyplot as plt
+                    fig_merge, ax_merge = plt.subplots(figsize=(4, 4))
+                    ax_merge.imshow(rgb_merge)
+                    ax_merge.axis('off')
+                    st.pyplot(fig_merge)
+                    
+                    # 3. Aggregates Filter & LinReg Options (Moved under the image)
+                    filter_aggs = st.checkbox("Filter out aggregates (GMM)", help="Uses a 2-component GMM to isolate the primary monomer population.")
+                    fit_line = st.checkbox("Fit linear regression")
+
+                with plot_col:
+                    if filter_aggs and len(matched_df) > 2:
+                        features = matched_df[[f'brightness_{x_ch}', f'brightness_{y_ch}']].values
+                        gmm_filter = GaussianMixture(n_components=2, random_state=42).fit(features)
+                        labels = gmm_filter.predict(features)
+                        
+                        # Isolate cluster with lowest mean brightness
+                        means = gmm_filter.means_.sum(axis=1)
+                        monomer_idx = np.argmin(means)
+                        matched_df = matched_df[labels == monomer_idx]
+                        st.caption(f"Filtered out aggregates. Particles remaining: {len(matched_df)}")
+                        
+                    if not matched_df.empty:
+                        # 4. Plot Scatter & Marginals using Seaborn
+                        g = sns.jointplot(
+                            data=matched_df, 
+                            x=f'brightness_{x_ch}', 
+                            y=f'brightness_{y_ch}',
+                            kind="scatter",
+                            alpha=0.6,
+                            height=6, # Slightly larger since we have more room now
+                            color="purple"
+                        )
+                        
+                        # Fit Linear Regression if toggled
+                        if fit_line and len(matched_df) > 1:
+                            slope, intercept, r_value, p_value, std_err = linregress(
+                                matched_df[f'brightness_{x_ch}'], 
+                                matched_df[f'brightness_{y_ch}']
+                            )
+                            
+                            x_vals = np.array(g.ax_joint.get_xlim())
+                            y_vals = intercept + slope * x_vals
+                            g.ax_joint.plot(x_vals, y_vals, color='red', ls='--')
+                            
+                            eq_text = f"y = {slope:.2f}x + {intercept:.2f}\nR² = {r_value**2:.3f}"
+                            g.ax_joint.annotate(eq_text, xy=(0.05, 0.95), xycoords='axes fraction', 
+                                                fontsize=12, color='red', va='top')
+                        
+                        g.set_axis_labels(f'{x_ch} Brightness (pps)', f'{y_ch} Brightness (pps)')
+                        st.pyplot(g.figure)
+                        
+                        # 5. Downloads (Side by side)
+                        dl1, dl2 = st.columns(2)
+                        scat_buf = io.BytesIO()
+                        g.figure.savefig(scat_buf, format="png", bbox_inches='tight')
+                        dl1.download_button("Download Plot (PNG)", data=scat_buf.getvalue(), file_name=f"{x_ch}_vs_{y_ch}_scatter.png", mime="image/png")
+                        
+                        csv_paired = matched_df.to_csv(index=False).encode('utf-8')
+                        dl2.download_button("Download Data (CSV)", data=csv_paired, file_name=f"{x_ch}_vs_{y_ch}_paired.csv", mime="text/csv")
+                    else:
+                        st.warning("No matched points remaining after filtering.")
+            else:
+                st.warning(f"Not enough data in {x_ch} or {y_ch} to match particles.")
