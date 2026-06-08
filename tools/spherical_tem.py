@@ -504,8 +504,7 @@ def _download_row(fig: plt.Figure, df: pd.DataFrame, stem: str) -> None:
 # Main Streamlit UI
 # ═══════════════════════════════════════════════════════════════════════════
 def run() -> None:
-    st.set_page_config(page_title="TEM Particle Analysis", layout="wide")
-    st.title("TEM Particle Characterization (Fast CV)")
+    st.title("TEM Particle Characterization (CV)")
     
     if "full_run_complete" not in st.session_state:
         st.session_state.full_run_complete = False
