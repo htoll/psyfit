@@ -25,7 +25,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from scipy.ndimage import gaussian_filter, laplace, median_filter, uniform_filter, distance_transform_edt, label
-from sklearn.mixture import GaussianMixture
+from scipy.stats import norm
+
 from skimage import exposure
 from skimage.measure import regionprops
 from skimage.filters import threshold_otsu
@@ -426,54 +427,38 @@ def run_batch_analysis(file_data: List[Tuple[bytes, str]], shape_type: str, para
 # ═══════════════════════════════════════════════════════════════════════════
 # Histograms
 # ═══════════════════════════════════════════════════════════════════════════
-def histogram_with_fit(values: np.ndarray, title: str, unit_label: str, n_components: int = 1) -> Tuple[plt.Figure, list, list, int]:
-    n_fit = len(values)
+def histogram_with_fit(values: np.ndarray, title: str, unit_label: str, fit_min: float, fit_max: float) -> Tuple[plt.Figure, float, float, int]:
+    # Filter values based on user-defined range
+    filtered_vals = values[(values >= fit_min) & (values <= fit_max)]
+    n_fit = len(filtered_vals)
+    
     fig, ax = plt.subplots(figsize=(7, 4), dpi=150)
-    mus, stds = [], []
+    mu, std = 0.0, 0.0
 
-    if n_fit > 0:
-        vis_min, vis_max = np.percentile(values, [0.5, 99.5])
-        if vis_min >= vis_max: vis_min, vis_max = values.min(), values.max()
+    if n_fit > 1:
+        # Dynamic binning based on data range and size
+        bins = max(10, int(min(50, n_fit / 3)))
+        counts, bin_edges, _ = ax.hist(filtered_vals, bins=bins, color='steelblue', edgecolor='black', alpha=0.6)
+        bw = float(bin_edges[1] - bin_edges[0])
         
-        counts, bins, _ = ax.hist(values, bins=max(10, int((vis_max - vis_min) / ((vis_max - vis_min) / 40.0)) if vis_max > vis_min else 10), color='steelblue', edgecolor='black', alpha=0.6)
-        bw = float(bins[1] - bins[0]) if len(bins) > 1 else 1.0
+        # Single Gaussian fit parameters
+        mu, std = np.mean(filtered_vals), np.std(filtered_vals)
         
-        if n_fit >= 3 * n_components:
-            # Fit the GMM
-            gmm = GaussianMixture(n_components=n_components, random_state=42).fit(values.reshape(-1, 1))
-            mus_raw = gmm.means_.flatten()
-            stds_raw = np.sqrt(gmm.covariances_.flatten())
-            weights_raw = gmm.weights_.flatten()
+        if std > 0:
+            x_fit = np.linspace(fit_min, fit_max, 300)
+            pdf = norm.pdf(x_fit, mu, std)
+            ax.plot(x_fit, pdf * n_fit * bw, 'k', linewidth=2.0, label='Gaussian Fit')
 
-            # Sort peaks from smallest to largest so we consistently get [minor, major]
-            sort_idx = np.argsort(mus_raw)
-            mus = mus_raw[sort_idx].tolist()
-            stds = stds_raw[sort_idx].tolist()
-            weights = weights_raw[sort_idx].tolist()
-
-            x_fit = np.linspace(vis_min, vis_max, 300).reshape(-1, 1)
-            pdf = np.exp(gmm.score_samples(x_fit))
-            ax.plot(x_fit, pdf * n_fit * bw, 'k', linewidth=1.5, label='Total Fit')
-
-            # Plot individual dashed components if finding multiple peaks
-            if n_components > 1:
-                for i in range(n_components):
-                    # Manual normal PDF calculation
-                    comp_pdf = weights[i] * (np.exp(-0.5 * ((x_fit.flatten() - mus[i]) / stds[i])**2) / (stds[i] * np.sqrt(2 * np.pi)))
-                    ax.plot(x_fit, comp_pdf * n_fit * bw, '--', alpha=0.8)
-
-            # Format the title based on component count
-            if n_components == 1:
-                ax.set_title(f"{title} (n={n_fit})\nDominant μ={mus[0]:.2f} ± {stds[0]:.2f} {unit_label}", fontsize=14)
-            else:
-                title_str = f"{title} (n={n_fit})\n"
-                title_str += " | ".join([f"μ{i+1}={mus[i]:.2f}±{stds[i]:.2f}" for i in range(n_components)])
-                ax.set_title(title_str, fontsize=14)
-        else:
-            ax.set_title(f"{title} (n={n_fit})", fontsize=14)
-        ax.set_xlim(vis_min, vis_max)
+        ax.set_title(f"{title} (n={n_fit})\nμ = {mu:.2f} ± {std:.2f} {unit_label}", fontsize=14)
     else:
-        ax.set_title(f"{title} (n=0)", fontsize=14)
+        if n_fit == 1:
+            ax.hist(filtered_vals, bins=1, color='steelblue', edgecolor='black', alpha=0.6)
+            mu = filtered_vals[0]
+        ax.set_title(f"{title} (n={n_fit})", fontsize=14)
+
+    # Lock the plot to the user's defined bounds
+    if fit_min < fit_max:
+        ax.set_xlim(fit_min, fit_max)
 
     ax.set_xlabel(f"Size ({unit_label})", color='black', weight='bold')
     ax.set_ylabel("Count", color='black', weight='bold')
@@ -481,14 +466,45 @@ def histogram_with_fit(values: np.ndarray, title: str, unit_label: str, n_compon
     ax.spines['right'].set_visible(False)
     fig.tight_layout()
     
-    return fig, mus, stds, n_fit
+    return fig, mu, std, n_fit
+
+def get_min_max_ui(key_prefix: str, label: str, data: np.ndarray) -> Tuple[float, float]:
+    """Generates UI columns for min/max filtering."""
+    if data.size == 0:
+        return 0.0, 1.0
+    d_min, d_max = float(np.min(data)), float(np.max(data))
+    if d_min == d_max:
+        d_max = d_min + 1.0  # Prevent min == max collapse
+        
+    c1, c2 = st.columns(2)
+    with c1:
+        fit_min = st.number_input(f"Min {label}", value=d_min, key=f"{key_prefix}_min")
+    with c2:
+        fit_max = st.number_input(f"Max {label}", value=d_max, key=f"{key_prefix}_max")
+    return fit_min, fit_max
 
 def _common_prefix(names: List[str]) -> str:
-    if not names: return "analysis"
+    if not names: return "Analysis"
+    
+    # If there's only one file, use its full root name
+    if len(names) == 1:
+        return os.path.splitext(names[0])[0]
+        
     shortest = min(names, key=len)
+    prefix = shortest
     for i, ch in enumerate(shortest):
-        if any(name[i] != ch for name in names): return shortest[:i].rstrip(" _-.") or "analysis"
-    return shortest.rstrip(" _-.") or "analysis"
+        if any(name[i] != ch for name in names): 
+            prefix = shortest[:i]
+            break
+
+    prefix = prefix.rstrip(" _-.")
+    
+    # If the common prefix is too short or doesn't exist, use the first file's name as a base
+    if len(prefix) < 3:
+        base = os.path.splitext(names[0])[0]
+        return f"{base} (+{len(names)-1} files)"
+        
+    return prefix
 
 def _download_row(fig: plt.Figure, df: pd.DataFrame, stem: str) -> None:
     c1, c2 = st.columns(2)
@@ -504,7 +520,8 @@ def _download_row(fig: plt.Figure, df: pd.DataFrame, stem: str) -> None:
 # Main Streamlit UI
 # ═══════════════════════════════════════════════════════════════════════════
 def run() -> None:
-    st.title("TEM Particle Characterization (CV)")
+    #st.set_page_config(page_title="TEM Particle Analysis", layout="wide")
+    st.title("TEM Particle Characterization (Fast CV)")
     
     if "full_run_complete" not in st.session_state:
         st.session_state.full_run_complete = False
@@ -617,18 +634,16 @@ def run() -> None:
             def calc_reff(volume: float) -> float:
                 """Helper to convert volume to effective radius."""
                 return ((3.0 * volume) / (4.0 * np.pi)) ** (1.0 / 3.0)
-
             if shape_type == "Sphere":
                 all_d = np.concatenate([r["diameters"] for r in results])
                 if all_d.size > 0:
-                    fig, mu, std, n = histogram_with_fit(all_d, f"{prefix} — Diameter", unit_full)
+                    fit_min, fit_max = get_min_max_ui("sph_d", f"Diameter ({unit_full})", all_d)
+                    fig, mu, std, n = histogram_with_fit(all_d, f"{prefix} — Diameter", unit_full, fit_min, fit_max)
                     st.pyplot(fig, use_container_width=True)
-                    _download_row(fig, pd.DataFrame({"diameter": all_d}), f"{prefix}_diameter")
+                    _download_row(fig, pd.DataFrame({"diameter": all_d[(all_d >= fit_min) & (all_d <= fit_max)]}), f"{prefix}_diameter")
                     
-                    # Calculate r_eff
-                    mean_d = np.mean(all_d)
-                    r_eff = mean_d / 2.0
-                    st.metric(label=f"Effective Radius (r_eff)", value=f"{r_eff:.2f} {unit_full}")
+                    if n > 0:
+                        st.metric(label=f"Effective Radius (r_eff)", value=f"{(mu / 2.0):.2f} {unit_full}")
                 else: 
                     st.info("No spherical particles detected.")
                 
@@ -636,92 +651,99 @@ def run() -> None:
                 all_w = np.concatenate([r["hex_widths"] for r in results])
                 all_h = np.concatenate([r["hex_heights"] for r in results])
                 
+                mu_w, mu_h = 0.0, 0.0
+                n_w, n_h = 0, 0
+                
                 if all_w.size > 0:
-                    fig_w, mu, std, n = histogram_with_fit(all_w, f"{prefix} — Hex width (face-on)", unit_full)
+                    w_min, w_max = get_min_max_ui("hex_w", f"Width ({unit_full})", all_w)
+                    fig_w, mu_w, std_w, n_w = histogram_with_fit(all_w, f"{prefix} — Hex width (face-on)", unit_full, w_min, w_max)
                     st.pyplot(fig_w, use_container_width=True)
                     _download_row(fig_w, pd.DataFrame({"hex_width": all_w}), f"{prefix}_hex_width")
+                    
+                st.markdown("---")
+                    
                 if all_h.size > 0:
-                    fig_h, mu, std, n = histogram_with_fit(all_h, f"{prefix} — Height (side-on)", unit_full)
+                    h_min, h_max = get_min_max_ui("hex_h", f"Height ({unit_full})", all_h)
+                    fig_h, mu_h, std_h, n_h = histogram_with_fit(all_h, f"{prefix} — Height (side-on)", unit_full, h_min, h_max)
                     st.pyplot(fig_h, use_container_width=True)
                     _download_row(fig_h, pd.DataFrame({"hex_height": all_h}), f"{prefix}_hex_height")
                     
-                # Calculate r_eff (requires both width and height measurements)
-                if all_w.size > 0 and all_h.size > 0:
-                    mean_w = np.mean(all_w)
-                    mean_h = np.mean(all_h)
-                    v_hex = (np.sqrt(3) / 2.0) * (mean_w ** 2) * mean_h
-                    r_eff = calc_reff(v_hex)
-                    st.metric(label=f"Effective Radius (r_eff)", value=f"{r_eff:.2f} {unit_full}", help=f"Calculated from mean width ({mean_w:.2f}) and mean height ({mean_h:.2f})")
+                if n_w > 0 and n_h > 0:
+                    v_hex = (np.sqrt(3) / 2.0) * (mu_w ** 2) * mu_h
+                    st.metric(label=f"Effective Radius (r_eff)", value=f"{calc_reff(v_hex):.2f} {unit_full}", help=f"Calculated from fitted width μ ({mu_w:.2f}) and height μ ({mu_h:.2f})")
                 else:
-                    st.warning("Both face-on (width) and side-on (height) measurements are needed to calculate r_eff for hexagonal prisms.")
+                    st.warning("Both face-on (width) and side-on (height) measurements are needed to calculate r_eff.")
 
             elif shape_type == "Cube":
                 all_s = np.concatenate([r["side_lengths"] for r in results])
                 if all_s.size > 0:
-                    fig, mu, std, n = histogram_with_fit(all_s, f"{prefix} — Cube side length", unit_full)
+                    s_min, s_max = get_min_max_ui("cube_s", f"Side Length ({unit_full})", all_s)
+                    fig, mu, std, n = histogram_with_fit(all_s, f"{prefix} — Cube side length", unit_full, s_min, s_max)
                     st.pyplot(fig, use_container_width=True)
                     _download_row(fig, pd.DataFrame({"side_length": all_s}), f"{prefix}_side_length")
                     
-                    # Calculate r_eff
-                    mean_s = np.mean(all_s)
-                    v_cube = mean_s ** 3
-                    r_eff = calc_reff(v_cube)
-                    st.metric(label=f"Effective Radius (r_eff)", value=f"{r_eff:.2f} {unit_full}")
+                    if n > 0:
+                        st.metric(label=f"Effective Radius (r_eff)", value=f"{calc_reff(mu ** 3):.2f} {unit_full}")
                 else: 
                     st.info("No cubic particles detected.")
 
             elif shape_type == "Octahedron":
-                all_maj, all_min = np.concatenate([r["oct_major"] for r in results]), np.concatenate([r["oct_minor"] for r in results])
-                if all_maj.size > 0 or all_min.size > 0:
-                    all_axes = np.concatenate([all_maj, all_min])
+                all_maj = np.concatenate([r["oct_major"] for r in results])
+                all_min = np.concatenate([r["oct_minor"] for r in results])
+                
+                mu_maj, mu_min = 0.0, 0.0
+                n_maj, n_min = 0, 0
+                
+                if all_maj.size > 0:
+                    st.markdown("#### Major Axis")
+                    maj_min, maj_max = get_min_max_ui("oct_maj", f"Major Axis ({unit_full})", all_maj)
+                    fig_maj, mu_maj, std_maj, n_maj = histogram_with_fit(all_maj, f"{prefix} — Octahedron Major", unit_full, maj_min, maj_max)
+                    st.pyplot(fig_maj, use_container_width=True)
+                    _download_row(fig_maj, pd.DataFrame({"oct_major": all_maj}), f"{prefix}_oct_major")
                     
-                    # Pass n_components=2 to force a double-peak fit
-                    fig, mus, stds, n = histogram_with_fit(all_axes, f"{prefix} — Octahedron Combined Axes", unit_full, n_components=2)
-                    st.pyplot(fig, use_container_width=True)
-                    _download_row(fig, pd.DataFrame({"combined_axes": all_axes}), f"{prefix}_octahedron")
+                st.markdown("---")
                     
-                    # Calculate r_eff using the two dominant GMM peaks
-                    if len(mus) >= 2:
-                        mu_minor, mu_major = mus[0], mus[1]  # Pre-sorted smallest to largest
-                        v_oct = (np.sqrt(2) / 3.0) * mu_major * (mu_minor ** 2)
-                        r_eff = calc_reff(v_oct)
-                        
-                        st.metric(
-                            label=f"Effective Radius (r_eff)", 
-                            value=f"{r_eff:.2f} {unit_full}", 
-                            help=f"Calculated from GMM peaks: minor = {mu_minor:.2f}, major = {mu_major:.2f}"
-                        )
-                    else:
-                        st.warning("Not enough data points to confidently fit two distinct peaks for the r_eff calculation.")
+                if all_min.size > 0:
+                    st.markdown("#### Minor Axis")
+                    min_min, min_max = get_min_max_ui("oct_min", f"Minor Axis ({unit_full})", all_min)
+                    fig_min, mu_min, std_min, n_min = histogram_with_fit(all_min, f"{prefix} — Octahedron Minor", unit_full, min_min, min_max)
+                    st.pyplot(fig_min, use_container_width=True)
+                    _download_row(fig_min, pd.DataFrame({"oct_minor": all_min}), f"{prefix}_oct_minor")
+                    
+                if n_maj > 0 and n_min > 0:
+                    v_oct = (np.sqrt(2) / 3.0) * mu_maj * (mu_min ** 2)
+                    st.metric(label=f"Effective Radius (r_eff)", value=f"{calc_reff(v_oct):.2f} {unit_full}", help=f"Calculated from fitted major μ ({mu_maj:.2f}) and minor μ ({mu_min:.2f})")
                 else: 
-                    st.info("No octahedral particles detected.")
+                    st.info("Missing dimensions required to calculate r_eff.")
                 
             elif shape_type == "Tic Tac":
                 all_maj = np.concatenate([r["tic_tac_major"] for r in results])
                 all_min = np.concatenate([r["tic_tac_minor"] for r in results])
                 
+                mu_maj, mu_min = 0.0, 0.0
+                n_maj, n_min = 0, 0
+                
                 if all_maj.size > 0:
-                    fig_maj, mu, std, n = histogram_with_fit(all_maj, f"{prefix} — Tic Tac Major Axis", unit_full)
+                    maj_min, maj_max = get_min_max_ui("tic_maj", f"Major Axis ({unit_full})", all_maj)
+                    fig_maj, mu_maj, std_maj, n_maj = histogram_with_fit(all_maj, f"{prefix} — Tic Tac Major", unit_full, maj_min, maj_max)
                     st.pyplot(fig_maj, use_container_width=True)
                     _download_row(fig_maj, pd.DataFrame({"tic_tac_major": all_maj}), f"{prefix}_tictac_major")
+                    
+                st.markdown("---")
+                    
                 if all_min.size > 0:
-                    fig_min, mu, std, n = histogram_with_fit(all_min, f"{prefix} — Tic Tac Minor Axis", unit_full)
+                    min_min, min_max = get_min_max_ui("tic_min", f"Minor Axis ({unit_full})", all_min)
+                    fig_min, mu_min, std_min, n_min = histogram_with_fit(all_min, f"{prefix} — Tic Tac Minor", unit_full, min_min, min_max)
                     st.pyplot(fig_min, use_container_width=True)
                     _download_row(fig_min, pd.DataFrame({"tic_tac_minor": all_min}), f"{prefix}_tictac_minor")
                     
-                # Calculate r_eff
-                if all_maj.size > 0 and all_min.size > 0:
-                    mean_maj = np.mean(all_maj)
-                    mean_min = np.mean(all_min)
-                    # Treat as prolate spheroid: V = 4/3 * pi * a * b^2 (where a and b are radii)
-                    a = mean_maj / 2.0
-                    b = mean_min / 2.0
+                if n_maj > 0 and n_min > 0:
+                    a = mu_maj / 2.0
+                    b = mu_min / 2.0
                     v_tictac = (4.0 / 3.0) * np.pi * a * (b ** 2)
-                    r_eff = calc_reff(v_tictac)
-                    st.metric(label=f"Effective Radius (r_eff)", value=f"{r_eff:.2f} {unit_full}", help=f"Calculated from mean major ({mean_maj:.2f}) and mean minor ({mean_min:.2f}) axes")
-                elif all_maj.size == 0 and all_min.size == 0:
-                    st.info("No Tic Tac particles detected.")
+                    st.metric(label=f"Effective Radius (r_eff)", value=f"{calc_reff(v_tictac):.2f} {unit_full}", help=f"Calculated from fitted major μ ({mu_maj:.2f}) and minor μ ({mu_min:.2f})")
                 else:
-                    st.warning("Both major and minor axes are needed to calculate r_eff for Tic Tacs.")
+                    st.warning("Both major and minor axes are needed to calculate r_eff.")
+
 if __name__ == "__main__":
     run()
