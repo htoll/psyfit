@@ -344,6 +344,7 @@ def run():
             
         plt.tight_layout()
         st.pyplot(fig)
+        plt.close(fig)
         
     else:
         st.subheader("Merge Grid Plot")
@@ -435,6 +436,7 @@ def run():
 
         plt.tight_layout()
         st.pyplot(fig)
+        plt.close(fig)
 
 if __name__ == "__main__":
     run()

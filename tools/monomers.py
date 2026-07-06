@@ -443,6 +443,7 @@ def run():
                         thresholds=thresholds,
                     )
                     st.pyplot(fig_hist_final)
+                    plt.close(fig_hist_final)
 
                     bins_for_pie = [user_min_val] + [t for t in thresholds if user_min_val < t < user_max_val] + [user_max_val]
                     bins_for_pie = sorted(bins_for_pie)
@@ -551,3 +552,4 @@ def run():
             ax_count.tick_params(axis='y', labelsize=8)
             HWT_aesthetic()
             st.pyplot(fig_count)
+            plt.close(fig_count)

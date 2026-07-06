@@ -312,6 +312,7 @@ def run():
                         st.pyplot(fig_image)
                         svg_buffer_img = io.StringIO()
                         fig_image.savefig(svg_buffer_img, format='svg')
+                        plt.close(fig_image)
                         st.download_button("Download Image (SVG)", svg_buffer_img.getvalue(), f"{selected_file}.svg")
 
                     with plot_col2:
@@ -328,9 +329,10 @@ def run():
                             
                             fig_hist, _, _ = plot_histogram(df_for_file, min_val=min_val, max_val=max_val, num_bins=num_bins)
                             st.pyplot(fig_hist)
-                            
+
                             svg_buffer_hist = io.StringIO()
                             fig_hist.savefig(svg_buffer_hist, format='svg')
+                            plt.close(fig_hist)
                             st.download_button("Download Histogram (SVG)", svg_buffer_hist.getvalue(), f"{selected_file}_histogram.svg")
                             
                             csv_bytes = df_to_csv_bytes(df_for_file)
@@ -351,6 +353,7 @@ def run():
                     st.pyplot(fig_currents)
                     svg_buffer_currents = io.StringIO()
                     fig_currents.savefig(svg_buffer_currents, format='svg')
+                    plt.close(fig_currents)
                     st.download_button("Download Current Plot (SVG)", svg_buffer_currents.getvalue(), "all_quad_brightness_vs_current.svg", key="dl_current")
 
                     st.markdown("---") # Visual separator
@@ -361,6 +364,7 @@ def run():
                     st.pyplot(fig_quad_hist)
                     svg_buffer_quad = io.StringIO()
                     fig_quad_hist.savefig(svg_buffer_quad, format='svg')
+                    plt.close(fig_quad_hist)
                     st.download_button("Download Quadrant Plot (SVG)", svg_buffer_quad.getvalue(), "quadrant_histogram.svg", key="dl_quad")
                 else:
                     st.warning("No particle data found across any quadrant. Cannot generate summary plots.") 

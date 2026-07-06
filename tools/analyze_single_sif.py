@@ -7,17 +7,14 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-
-
+import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 
 from matplotlib.colors import LogNorm
 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from scipy.stats import norm
 from scipy.stats import norm
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import cKDTree
@@ -213,6 +210,7 @@ def run():
                     if hasattr(fig_image, "savefig"):
                         fig_image.set_size_inches(8, 8)
                         st.pyplot(fig_image, use_container_width=True)
+                        plt.close(fig_image)
                         buffer = io.BytesIO()
                         fig_image.savefig(buffer, format=save_format)
                         st.download_button(
@@ -273,7 +271,6 @@ def run():
 
                         if user_min < user_max:
                             if mcl_toggle:
-                                import matplotlib.pyplot as plt
                                 # Create a 4-panel subplot for the channels
                                 fig_hist, axes = plt.subplots(4, 1, figsize=(4, 8), sharex=True)
                                 channels = ['Blue', 'Green', 'Red', 'NIR']
@@ -334,7 +331,8 @@ def run():
                                 axes[-1].set_xlabel('Brightness (pps)')
                                 fig_hist.tight_layout()
                                 st.pyplot(fig_hist, use_container_width=True)
-                                
+                                plt.close(fig_hist)
+
                                 # Download button for the MCL histogram
                                 hist_buffer = io.BytesIO()
                                 fig_hist.savefig(hist_buffer, format=save_format)
@@ -354,9 +352,10 @@ def run():
                                     max_val=user_max,
                                     num_bins='auto',
                                     n_components = int(gmm_components)
-                                    
+
                                 )
                                 st.pyplot(fig_hist, use_container_width=True)
+                                plt.close(fig_hist)
                         else:
                             st.warning("Min greater than max.")
                         
@@ -407,7 +406,6 @@ def run():
                                 )
                                 heatmap = (windows * kernel).sum(axis=(-1, -2))
 
-                    import matplotlib.pyplot as plt
                     fig_hm, ax_hm = plt.subplots()
                     im = ax_hm.imshow(heatmap, origin="lower", cmap=heat_cmap, norm=None)
                     ax_hm.set_title("Brightness Heatmap (All SIFs)")
@@ -422,6 +420,7 @@ def run():
                     cbar.set_label("Summed brightness (pps)")
 
                     st.pyplot(fig_hm)
+                    plt.close(fig_hm)
 
                     hm_svg_buf = io.StringIO()
                     fig_hm.savefig(hm_svg_buf, format="svg")
@@ -442,7 +441,15 @@ def run():
 
     #  Cross-Channel Analysis ---
     plot_channels = st.checkbox("Plot brightness of channels")
-    if plot_channels:
+    _xchan_ready = (
+        'combined_df' in locals()
+        and isinstance(combined_df, pd.DataFrame)
+        and not combined_df.empty
+        and 'quadrant' in combined_df.columns
+    )
+    if plot_channels and not _xchan_ready:
+        st.info("Run an analysis with MCL quadrant detection enabled to compare channels.")
+    if plot_channels and _xchan_ready:
         ch_options = ['Blue', 'Green', 'Red', 'NIR']
         
         # We can use columns here just for the dropdowns so they sit nicely side-by-side
@@ -513,12 +520,12 @@ def run():
                     
                     st.markdown("**Registration Alignment**")
                     st.caption(f"Colors match channels. NIR is White.")
-                    import matplotlib.pyplot as plt
                     fig_merge, ax_merge = plt.subplots(figsize=(4, 4))
                     ax_merge.imshow(rgb_merge)
                     ax_merge.axis('off')
                     st.pyplot(fig_merge)
-                    
+                    plt.close(fig_merge)
+
                     # 3. Aggregates Filter & LinReg Options (Moved under the image)
                     filter_aggs = st.checkbox("Filter out aggregates (GMM)", help="Uses a 2-component GMM to isolate the primary monomer population.")
                     fit_line = st.checkbox("Fit linear regression")
@@ -564,6 +571,7 @@ def run():
                         
                         g.set_axis_labels(f'{x_ch} Brightness (pps)', f'{y_ch} Brightness (pps)')
                         st.pyplot(g.figure)
+                        plt.close(g.figure)
                         
                         # 5. Downloads (Side by side)
                         dl1, dl2 = st.columns(2)

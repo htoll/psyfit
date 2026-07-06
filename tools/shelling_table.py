@@ -10,11 +10,10 @@ def highlight_cells(val, row_name):
 
 def run():
   
-  # --- Page config ---
-  st.set_page_config(
-      page_title="Shelling Injection Table")
-  
-  
+  # Note: st.set_page_config is owned by app.py (it may only be called once,
+  # as the first Streamlit command), so it is intentionally not called here.
+
+
   with st.form("inputs"):
       col1, col2 = st.columns(2)
       with col1:

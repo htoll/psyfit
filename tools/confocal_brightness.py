@@ -6,6 +6,7 @@ import os
 from scipy.optimize import least_squares
 from scipy.ndimage import gaussian_filter
 from skimage.feature import peak_local_max
+import matplotlib.pyplot as plt
 import re
 
 from utils import plot_brightness, plot_histogram
@@ -353,7 +354,8 @@ def run():
                         num_bins=30
                     )
                     st.pyplot(fig_hist, use_container_width=True)
-                    
+                    plt.close(fig_hist)
+
                     csv = combined_df.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         "Download All Results (CSV)",

@@ -214,8 +214,7 @@ def _compute_coloc_mask(df_u: pd.DataFrame, df_d: pd.DataFrame, radius_px: int):
 # --- Main App ---
 
 def run():
-    st.set_page_config(layout="wide") # Helps with narrow screen issues
-
+    # Note: st.set_page_config is owned by app.py (called once, first); not called here.
     with st.sidebar:
         st.header("Inputs")
         sif_files = st.file_uploader("SIF files (UCNP + Dye)", type=["sif"], accept_multiple_files=True)
@@ -436,6 +435,7 @@ def run():
                 ax_r.set_xticks([]); ax_r.set_yticks([])
                 ax_r.legend(loc='upper right', fontsize='x-small', framealpha=0.8)
                 st.pyplot(fig_r)
+                plt.close(fig_r)
 
             # Apply Overlays to Images
             if show_all_fits:
@@ -451,6 +451,7 @@ def run():
             # Render the image plots
             with colL: st.pyplot(fig_u)
             with colM: st.pyplot(fig_d)
+            plt.close(fig_u); plt.close(fig_d)
             
             st.divider()
 
@@ -513,6 +514,7 @@ def run():
             colA, colB = st.columns(2)
             with colA:
                 st.pyplot(fig_sc2)
+                plt.close(fig_sc2)
 
             msk = (thresholded_df["num_ucnps"] >= 0) & (thresholded_df["num_ucnps"] <= 2)
             y_subset = thresholded_df.loc[msk, "num_dyes"].dropna().to_numpy()
@@ -533,6 +535,7 @@ def run():
 
             with colB:
                 st.pyplot(fig_h2)
+                plt.close(fig_h2)
 
 if __name__ == "__main__":
     run()

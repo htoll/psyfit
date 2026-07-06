@@ -28,6 +28,7 @@ import streamlit as st
 import io
 import re
 import os
+import math
 import textwrap
 
 import plotly.express as px
@@ -441,6 +442,8 @@ def plot_histogram(df,
         idx = np.argmax(gmm.weights_)
         mu_primary = gmm.means_.flatten()[idx]
         sigma_primary = np.sqrt(gmm.covariances_.flatten()[idx])
+        # Return the fitted stats to callers (previously left as None).
+        mu, sigma = mu_primary, sigma_primary
         sigma_over_mu = (sigma_primary / mu_primary * 100) if mu_primary != 0 else 0
         n_points = len(brightness_vals)
 
@@ -761,4 +764,65 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     if all_matched_pairs:
         return pd.DataFrame(all_matched_pairs)
     return None
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Spectral calibration helpers (merged from the former Methods.py).
+# Used by tools/get_spectra.py to map a particle coordinate onto the
+# spectrometer image via the nearest non-collinear calibration grid points.
+# Note: the vector-norm helper is named `vec_norm` (not `norm`) to avoid
+# shadowing `scipy.stats.norm` imported above.
+# ───────────────────────────────────────────────────────────────────────────
+def distance(point1, point2):
+    return math.sqrt((point1[0] - point2[0])**2 + (point1[1] - point2[1])**2)
+
+
+def vec_norm(vec):
+    return math.sqrt(vec[0]**2 + vec[1]**2)
+
+
+def express(x, origin, point1, point2):
+    """Express ``x`` in terms of the two basis vectors (point1-origin), (point2-origin)."""
+    x -= origin
+    vec1 = point1 - origin
+    vec2 = point2 - origin
+    coeffs = np.linalg.solve(np.vstack((vec1, vec2)).T, x)
+    return coeffs
+
+
+def get_image(point, grid, grid_images):
+    """Interpolate the spectrometer image position for ``point`` from the three
+    nearest, non-collinear calibration grid points."""
+    distances = [distance(point, val) for val in grid]
+    sorted_ind = np.argsort(distances)
+    gridpoints = sorted_ind[:3]
+
+    before = [np.array(grid[gridpoint]) for gridpoint in gridpoints]
+    cos_angle = (before[1]-before[0])@(before[2]-before[0])/vec_norm(before[1]-before[0])/vec_norm(before[2]-before[0])
+
+    # avoid collinear points
+    k = 3
+    while np.abs(cos_angle) > 0.1:
+        gridpoints[-1] = sorted_ind[k]
+        before = [np.array(grid[gridpoint]) for gridpoint in gridpoints]
+        cos_angle = (before[1]-before[0])@(before[2]-before[0])/vec_norm(before[1]-before[0])/vec_norm(before[2]-before[0])
+        k += 1
+
+    before = [grid[gridpoint] for gridpoint in gridpoints]
+    after = [grid_images[gridpoint] for gridpoint in gridpoints]
+
+    coeffs = express(np.array(point), np.array(before[0]), np.array(before[1]), np.array(before[2]))
+
+    object = np.array(before[0]) + coeffs[0]*(np.array(before[1])-np.array(before[0])) + coeffs[1]*(np.array(before[2])-np.array(before[0]))
+    image = np.array(after[0]) + coeffs[0]*(np.array(after[1])-np.array(after[0])) + coeffs[1]*(np.array(after[2])-np.array(after[0]))
+
+    return object, image
+
+
+def normalize(array):
+    return (array - np.min(array)) / (np.max(array) - np.min(array))
+
+
+def exp(x, a, b, c):
+    return a*np.exp(b*x) + c
 
