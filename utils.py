@@ -46,7 +46,7 @@ def HWT_aesthetic():
     sns.despine()
     return palette 
 
-def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3, min_distance = 5):
+def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3, min_distance = 5, roi=None):
     image_data, metadata = sif_parser.np_open(sif, ignore_corrupt=True)
     image_data = image_data[0]  # (H, W)
 
@@ -64,7 +64,11 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 
     # --- Crop image if region specified ---
     region = str(region)
-    if region == '3':
+    if roi is not None:
+        # User-drawn rectangular ROI (raw-array slice bounds); overrides region.
+        row0, row1, col0, col1 = roi
+        image_data_cps = image_data_cps[row0:row1, col0:col1]
+    elif region == '3':
         image_data_cps = image_data_cps[0:256, 0:256]
     elif region == '4':
         image_data_cps = image_data_cps[0:256, 256:512]

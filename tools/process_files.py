@@ -7,7 +7,7 @@ from utils import integrate_sif, plot_brightness, plot_histogram
 
 
 @st.cache_data
-def process_files(uploaded_files, region, threshold=1, signal="UCNP", pix_size_um=0.1, sig_threshold=0.3, min_distance = 5):
+def process_files(uploaded_files, region, threshold=1, signal="UCNP", pix_size_um=0.1, sig_threshold=0.3, min_distance = 5, roi=None):
     """
     Processes all uploaded .sif files and returns a dictionary of dataframes
     and images, plus a single combined dataframe for the histogram.
@@ -31,7 +31,8 @@ def process_files(uploaded_files, region, threshold=1, signal="UCNP", pix_size_u
                                                signal = signal,
                                                pix_size_um = pix_size_um,
                                                sig_threshold=sig_threshold,
-                                               min_distance = min_distance
+                                               min_distance = min_distance,
+                                               roi=roi
                                                 )
             df["file_stem"] = os.path.splitext(uploaded_file.name)[0]
             processed_data[uploaded_file.name] = {

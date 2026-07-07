@@ -3,6 +3,7 @@ import os
 import io
 from utils import integrate_sif, plot_brightness, plot_histogram
 from tools.process_files import process_files
+from tools import roi as roi_tool
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -116,7 +117,7 @@ def run():
         │ 3 │ 4 │
         └─┴─┘
         """
-        region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
+        region = st.selectbox("Region", options=["1", "2", "3", "4", "all", "Custom"], help=diagram)
         gmm_components = st.sidebar.number_input("GMM Components", min_value=1, value=2)
 
 
@@ -143,17 +144,37 @@ def run():
     if mcl_toggle:
         region = "all"
 
+    # --- Custom ROI: draw on the first file, one ROI applied to all files ---
+    custom_roi = None
+    if region == "Custom" and uploaded_files:
+        st.subheader("Custom region")
+        _roi_name, ref_img = roi_tool.read_first_sif_raw(uploaded_files)
+        if ref_img is None:
+            st.warning("Could not read the first file to draw an ROI.")
+        else:
+            custom_roi = roi_tool.draw_roi(
+                ref_img, key="wf_roi", cmap=cmap, log=normalization,
+            )
+            if custom_roi is None:
+                st.info("Draw a rectangle above, then click Analyze.")
+
     brightness_col, hist_col = st.columns([3, 1])
     mime_map = {"svg": "image/svg+xml", "png": "image/png", "jpeg": "image/jpeg"}
 
+    if region == "Custom" and custom_roi is None:
+        return
+
     if st.session_state.analyze_clicked and uploaded_files:
         try:
-            processed_data, combined_df = process_files(uploaded_files, 
-                                                        region, 
-                                                        threshold=threshold, 
+            processed_data, combined_df = process_files(uploaded_files,
+                                                        region,
+                                                        threshold=threshold,
                                                         signal=signal,
                                                        min_distance = min_distance,
-                                                       pix_size_um = pix_size_um)
+                                                       pix_size_um = pix_size_um,
+                                                       roi=custom_roi)
+            if combined_df is not None:
+                roi_tool.stamp_roi(combined_df, custom_roi)
             if mcl_toggle and combined_df is not None and not combined_df.empty:
                 # Assign quadrants based on pixel coordinates
                 conditions = [

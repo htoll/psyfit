@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import re
 
 from utils import plot_brightness, plot_histogram
+from tools import roi as roi_tool
 
 def read_dat_image(file_buffer):
     """
@@ -97,17 +98,28 @@ def fit_gaussian_2d(sub_img, x0_guess, y0_guess, amp_guess, offset_guess, pix_si
         return None
 
 def integrate_dat(
-    image_data, 
-    dwell_val, 
-    line_acc, 
+    image_data,
+    dwell_val,
+    line_acc,
     filename,
-    threshold_std=5, 
-    pix_size_um=0.1, 
-    min_fit_r2=0.85
+    threshold_std=5,
+    pix_size_um=0.1,
+    min_fit_r2=0.85,
+    roi=None
 ):
     """
     Analyzes a generic confocal image array.
+
+    If ``roi=(row0, row1, col0, col1)`` is given, detection is restricted to that
+    rectangular crop; reported ``x_pix``/``y_pix`` are shifted back into
+    full-image coordinates so they remain comparable to un-cropped runs.
     """
+    # 0. Restrict to a user-drawn ROI if provided.
+    roi_row0, roi_col0 = 0, 0
+    if roi is not None:
+        roi_row0, roi_row1, roi_col0, roi_col1 = roi
+        image_data = image_data[roi_row0:roi_row1, roi_col0:roi_col1]
+
     # 1. Peak Detection
     smoothed = gaussian_filter(image_data, sigma=1)
     bg_mean = np.mean(smoothed)
@@ -167,9 +179,10 @@ def integrate_dat(
         denom = (dwell_val * line_acc) if (dwell_val * line_acc) > 0 else 1.0
         calculated_brightness = amp_fit / denom
 
-        # Store results (convert fit centers back to global pixels)
-        global_x_pix = x_min + (x0_um / pix_size_um)
-        global_y_pix = y_min + (y0_um / pix_size_um)
+        # Store results (convert fit centers back to global pixels).
+        # Add the ROI offset so coordinates stay in full-image space.
+        global_x_pix = roi_col0 + x_min + (x0_um / pix_size_um)
+        global_y_pix = roi_row0 + y_min + (y0_um / pix_size_um)
 
         results.append({
             'filename': filename,
@@ -234,6 +247,28 @@ def run():
         show_fits = st.checkbox("Show Fit Circles", value=True)
         log_scale = st.checkbox("Log Scale Image", value=False)
 
+        st.markdown("---")
+        use_custom_roi = st.checkbox(
+            "Custom region (draw ROI)", value=False,
+            help="Restrict detection to a rectangle you draw on the first file; "
+                 "the ROI coordinates are saved into the exported CSV.",
+        )
+
+    # --- Custom ROI: draw on the first uploaded file, applied to all files ---
+    custom_roi = None
+    if uploaded_files and use_custom_roi:
+        st.subheader("Custom region")
+        ref_img = read_dat_image(uploaded_files[0])
+        if ref_img is None:
+            st.warning("Could not read the first file to draw an ROI.")
+        else:
+            custom_roi = roi_tool.draw_roi(
+                ref_img, key="confocal_roi", cmap=cmap, log=log_scale,
+            )
+            if custom_roi is None:
+                st.info("Draw a rectangle above to run the analysis inside it.")
+                return
+
     # --- Main Processing ---
     if uploaded_files:
         all_results = []
@@ -279,13 +314,14 @@ def run():
 
                 # 4. Analyze
                 df_file = integrate_dat(
-                    image_data, 
-                    dwell_s,  
-                    current_acc, 
+                    image_data,
+                    dwell_s,
+                    current_acc,
                     uploaded_file.name,
-                    threshold_std=threshold_std, 
+                    threshold_std=threshold_std,
                     pix_size_um=pix_size_um,
-                    min_fit_r2=min_r2
+                    min_fit_r2=min_r2,
+                    roi=custom_roi
                 )
                 
                 if not df_file.empty:
@@ -308,7 +344,8 @@ def run():
         # Combine results
         if all_results:
             combined_df = pd.concat(all_results, ignore_index=True)
-            
+            roi_tool.stamp_roi(combined_df, custom_roi)
+
             # --- Layout ---
             col_viz, col_data = st.columns([2, 1])
 

@@ -105,7 +105,9 @@ TOOLS = {
     ),
     "Monomer Estimation": (
         "tools.monomers", "run", "Quantification",
-        "Estimate monomer/dimer/trimer/multimer populations from brightness distributions.",
+        "Estimate monomer/dimer/trimer/multimer populations from brightness distributions. "
+        "Concentration estimation assumes uniform distribution of particles across 3 mm PDMS "
+        "well volume using 5 uL of 1x PBS that has been allowed to equilibrate for > 5 mins.",
         False,
     ),
     "Shelling Injection Table": (

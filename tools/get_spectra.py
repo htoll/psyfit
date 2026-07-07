@@ -13,6 +13,7 @@ import streamlit as st
 import sys
 
 import utils
+from tools import roi as roi_tool
 
 
 import sif_parser
@@ -292,7 +293,7 @@ def _interp_tier(interp, max_raw, x, y):
     return raw, rel, _tier_for_relative(rel)
 
 
-def _build_filtered_coords(df, calibration, no_dim, remove_overlapping, left_edge_cutoff):
+def _build_filtered_coords(df, calibration, no_dim, remove_overlapping, left_edge_cutoff, roi=None):
     """Map localized particles to plotting coords and apply quality filters.
 
     Returns ``{particle_id: [x_pix, y_pix]}`` for the particles that survive,
@@ -313,6 +314,16 @@ def _build_filtered_coords(df, calibration, no_dim, remove_overlapping, left_edg
         x = row["x_um"] / PIX_SIZE_UM
         y = row["y_um"] / PIX_SIZE_UM
         coords[i] = [x, 280 - y]
+
+    # 0. Custom ROI: keep only particles inside the drawn rectangle. coords are
+    #    already in the same (col, row) space as the displayed frame the ROI was
+    #    drawn on, so this is a direct box test.
+    if roi is not None:
+        row0, row1, col0, col1 = roi
+        for i in list(coords.keys()):
+            sx, sy = coords[i]
+            if not (col0 <= sx <= col1 and row0 <= sy <= row1):
+                coords.pop(i, None)
 
     # 1. Brightness
     for i, (_, row) in enumerate(df.iterrows()):
@@ -504,6 +515,11 @@ def run():
         st.header("Fitting")
         threshold = st.number_input("Threshold", min_value=0, value=2)
         radius_px = st.number_input("Radius (pixels)", min_value=1, value=2)
+        use_custom_roi = st.checkbox(
+            "Custom region (draw ROI)", value=False,
+            help="Keep only particles inside a rectangle you draw on the first "
+                 "image; the ROI coordinates are saved into the exported CSV.",
+        )
 
         st.header("Display")
         # cmap = st.selectbox("Colormap", options=["gray","magma","viridis","plasma","hot","hsv"], index=0)
@@ -565,6 +581,24 @@ def run():
         u_data, _ = _process_files(sif_files, region="Mr Beam", threshold=threshold, signal="UCNP")
         full_images = just_read_in(sif_files)
 
+        # Custom ROI: draw on the first displayed frame; one ROI filters every
+        # file. Particles are kept only if they fall inside the rectangle.
+        custom_roi = None
+        if use_custom_roi:
+            st.subheader("Custom region")
+            first_frame = next(iter(full_images.values()), None)
+            if first_frame is None:
+                st.warning("Could not read an image to draw an ROI.")
+            else:
+                custom_roi = roi_tool.draw_roi(
+                    first_frame, key="spectra_roi", cmap="gray",
+                    flip_display=False,
+                )
+                if custom_roi is None:
+                    st.info("Draw a rectangle above to restrict the analysis.")
+                    return
+        roi_cols = roi_tool.roi_columns(custom_roi)
+
         # Record the calibration source names before the loaded dicts shadow the
         # uploader objects (appended to the CSV for provenance).
         calib_file_name = getattr(cal_file, "name", "")
@@ -604,7 +638,8 @@ def run():
             full_frame = full_images[key]
             df = val["df"]
             coords = _build_filtered_coords(
-                df, calibration, no_dim, remove_overlapping, left_edge_cutoff
+                df, calibration, no_dim, remove_overlapping, left_edge_cutoff,
+                roi=custom_roi
             )
             colors = cm.rainbow(np.linspace(0, 1, len(coords.keys())))
 
@@ -680,6 +715,7 @@ def run():
                                 "Illumination_Tier": tier_illum,
                                 "Calibration_File": calib_file_name,
                                 "Calibration_Fits": calib_fits_name,
+                                **roi_cols,
                             })
                     except Exception:
                         st.error(f"Error extracting spectrum for particle {id}")
