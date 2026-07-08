@@ -4,3 +4,6 @@ venv/
 .venv/
 __pycache__/
 *.pyc
+
+# Generated code-review artifacts
+CODE_REVIEW.md

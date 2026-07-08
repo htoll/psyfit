@@ -9,7 +9,7 @@ from skimage.feature import peak_local_max
 import matplotlib.pyplot as plt
 import re
 
-from utils import plot_brightness, plot_histogram
+from utils import plot_brightness, plot_histogram, file_uploader_with_clear
 from tools import roi as roi_tool
 
 def read_dat_image(file_buffer):
@@ -207,7 +207,7 @@ def run():
     # --- Sidebar Controls ---
     with st.sidebar:
         st.subheader("Files")
-        uploaded_files = st.file_uploader("Upload .dat files", type=["dat", "txt", "csv"], accept_multiple_files=True)
+        uploaded_files = file_uploader_with_clear("Upload .dat files", key="confocal_uploads", type=["dat", "txt", "csv"], accept_multiple_files=True)
         
         st.markdown("---")
         st.subheader("Acquisition Settings")

@@ -28,6 +28,8 @@ from pybaselines import Baseline
 
 import plotly.graph_objects as go
 
+from utils import file_uploader_with_clear
+
 # Columns expected from a Get Spectra export.
 REQUIRED_COLS = ["File", "Particle_ID", "Wavelength_nm", "Intensity"]
 
@@ -736,8 +738,9 @@ def run():
 
     with st.sidebar:
         st.header("Inputs")
-        csv_files = st.file_uploader(
+        csv_files = file_uploader_with_clear(
             "Spectra CSVs (from Get Spectra)",
+            key="process_spectra_uploads",
             type=["csv"], accept_multiple_files=True,
         )
 

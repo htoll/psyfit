@@ -9,7 +9,7 @@ import matplotlib.colors as mcolors
 import plotly.express as px
 from matplotlib.lines import Line2D
 
-from utils import plot_brightness, plot_histogram, HWT_aesthetic
+from utils import plot_brightness, plot_histogram, HWT_aesthetic, file_uploader_with_clear
 from tools.process_files import process_files
 from tools import roi as roi_tool
 
@@ -124,18 +124,24 @@ def _fit_circle_lsq(x, y):
     return float(cx), float(cy), r
 
 
-def fit_aperture_circle(image):
+def fit_aperture_circle(image, pix_size_um=None, min_diameter_um=20.0):
     """
-    Fit the circular illuminated aperture (e.g. the Nikon field stop) in a 2D
-    image. Returns {cx, cy, r, area_px, fit} in pixels, or None if no disk found.
+    Fit the circular illuminated aperture (field stop) in a 2D image. Returns
+    {cx, cy, r, area_px, fit} in pixels, or None if no plausible disk is found.
 
     The aperture may be partially occluded (e.g. clipped on the left), so a
     plain area-equivalent radius (√(area/π)) and centroid are biased. Instead we
     fit a circle by least squares to the *arc* of the illuminated boundary, with
     iterative outlier rejection to shed the straight occlusion edge — giving an
     accurate center/radius for the overlay. `area_px` remains the actual
-    illuminated pixel count (the true counting area for concentration), so a
-    clipped aperture correctly reduces the observed area.
+    illuminated pixel count (the true counting area for concentration).
+
+    Robustness for very bright signal on a flat background (where Otsu can latch
+    onto a single bright particle and fit a tiny circle):
+      - the component containing the ROI center (image center) is preferred over
+        the largest one, so the fit is seeded on the aperture, not a stray blob;
+      - fits smaller than `min_diameter_um` (needs `pix_size_um`) are rejected
+        (return None) so the caller falls back to the full crop area.
     """
     img = np.asarray(image, dtype=float)
     if img.ndim != 2 or img.size == 0:
@@ -162,10 +168,25 @@ def fit_aperture_circle(image):
     lbl, n = ndimage.label(mask)
     if n == 0:
         return None
-    sizes = ndimage.sum(np.ones_like(lbl, dtype=float), lbl, index=np.arange(1, n + 1))
-    biggest = 1 + int(np.argmax(sizes))
-    disk = ndimage.binary_fill_holes(lbl == biggest)
+
+    # Prefer the component covering the ROI center; else the largest one.
+    h, w = mask.shape
+    center_label = int(lbl[h // 2, w // 2])
+    if center_label != 0:
+        chosen = center_label
+    else:
+        sizes = ndimage.sum(np.ones_like(lbl, dtype=float), lbl, index=np.arange(1, n + 1))
+        chosen = 1 + int(np.argmax(sizes))
+    disk = ndimage.binary_fill_holes(lbl == chosen)
     area_px = float(disk.sum())
+
+    # Minimum radius (px) implied by the minimum FOV diameter.
+    min_r_px = 0.0
+    if pix_size_um and min_diameter_um:
+        min_r_px = (float(min_diameter_um) / 2.0) / float(pix_size_um)
+
+    def _valid(res):
+        return res is not None and res["r"] >= min_r_px
 
     cy0, cx0 = ndimage.center_of_mass(disk)
     fallback = {"cx": float(cx0), "cy": float(cy0),
@@ -175,10 +196,9 @@ def fit_aperture_circle(image):
     boundary = disk & ~ndimage.binary_erosion(disk)
     ys, xs = np.nonzero(boundary)
     if xs.size < 8:
-        return fallback
+        return fallback if _valid(fallback) else None
 
     # Drop boundary pixels on the image frame (crop edges are not real arc).
-    h, w = disk.shape
     on_frame = (xs <= 0) | (ys <= 0) | (xs >= w - 1) | (ys >= h - 1)
     xf, yf = xs[~on_frame].astype(float), ys[~on_frame].astype(float)
     if xf.size < 8:
@@ -199,8 +219,9 @@ def fit_aperture_circle(image):
         cx, cy, r = _fit_circle_lsq(xf, yf)
 
     if not (np.isfinite(cx) and np.isfinite(cy) and np.isfinite(r)) or r <= 0:
-        return fallback
-    return {"cx": cx, "cy": cy, "r": r, "area_px": area_px, "fit": "circle"}
+        return fallback if _valid(fallback) else None
+    result = {"cx": cx, "cy": cy, "r": r, "area_px": area_px, "fit": "circle"}
+    return result if _valid(result) else None
 
 
 def plot_monomer_brightness(
@@ -418,8 +439,8 @@ def run():
     region = None
 
     with st.sidebar:
-        uploaded_files = st.file_uploader(
-            "Upload .sif file", type=["sif"], accept_multiple_files=True
+        uploaded_files = file_uploader_with_clear(
+            "Upload .sif file", key="monomers_uploads", type=["sif"], accept_multiple_files=True
         )
 
         # --- SYNC PHASE: make session match current uploader selection ---
@@ -480,6 +501,7 @@ def run():
                 "Microscope",
                 options=["MCL", "Nikon / Mr Beam"],
                 help="Microscope used to acquire the images.",
+                key="mono_microscope",
             )
 
             # Parameters (kept to preserve existing UI)
@@ -487,14 +509,16 @@ def run():
                                         "Threshold", min_value=1, value=1,
                                         help=("Stringency of fit, higher value is more selective:\n"
                                               "- UCNP signal sets absolute peak cut off\n"
-                                              "- Dye signal sets sensitivity of blob detection")
+                                              "- Dye signal sets sensitivity of blob detection"),
+                                        key="mono_threshold",
                                         )
 
             signal = st.selectbox(
                                     "Signal", options=["UCNP", "dye"],
                                     help=("Changes detection method:\n"
                                           "- UCNP for high SNR (sklearn peakfinder)\n"
-                                          "- dye for low SNR (sklearn blob detection)")
+                                          "- dye for low SNR (sklearn blob detection)"),
+                                    key="mono_signal",
                                     )
             if microscope == "MCL":
                 diagram = """ Splits sif into quadrants (256x256 px):
@@ -508,7 +532,8 @@ def run():
                 # Display channel names; map to underlying quadrant regions.
                 mcl_region_map = {"Blue": "1", "Green": "2", "Red": "3", "NIR": "4", "all": "all"}
                 region_label = st.selectbox(
-                    "Region", options=["Blue", "Green", "Red", "NIR", "all"], help=diagram
+                    "Region", options=["Blue", "Green", "Red", "NIR", "all"], help=diagram,
+                    key="mono_region_label",
                 )
                 region = mcl_region_map[region_label]
             else:
@@ -520,6 +545,7 @@ def run():
                 help="Restrict detection to a rectangle you draw on the selected "
                      "file (shown in the main panel); overrides the Region above. "
                      "The ROI coordinates are saved into the exported CSV.",
+                key="mono_use_roi",
             )
             st.session_state["monomers_use_roi"] = use_custom_roi
 
@@ -528,6 +554,7 @@ def run():
                 "Objective magnification",
                 min_value=1, value=60, step=1,
                 help="Objective magnification used during acquisition.",
+                key="mono_objective_mag",
             )
             # Pixel size is derived from the microscope (+ magnification), not
             # entered manually.
@@ -549,6 +576,7 @@ def run():
                 "Dilution",
                 value="1E3",
                 help="Sample dilution factor (scientific notation accepted, e.g. 1E3).",
+                key="mono_dilution",
             )
             try:
                 dilution = float(dilution_str)
@@ -560,6 +588,7 @@ def run():
                 "Estimate concentration",
                 value=False,
                 help="Estimate stock molarity from the average particles per field of view.",
+                key="mono_estimate_conc",
             )
             if estimate_conc:
                 axial_depth_um = st.number_input(
@@ -569,6 +598,7 @@ def run():
                           "(A_fov × depth) the "
                           "depth over which a particle is still detected/fit, including "
                           "out-of-focus ones. Concentration scales as 1/depth."),
+                    key="mono_axial_depth",
                 )
             else:
                 axial_depth_um = 0.5
@@ -580,17 +610,19 @@ def run():
             st.session_state["estimate_conc"] = estimate_conc
             st.session_state["axial_depth_um"] = axial_depth_um
 
-            cmap_options = ["plasma", "viridis", "magma", "hot", "gray", "hsv"]
+            cmap_options = ["gray", "viridis", "magma", "hot",  "hsv"]
             current_cmap = st.session_state.get("monomers_cmap", "plasma")
             try:
                 default_cmap_index = cmap_options.index(current_cmap)
             except ValueError:
                 default_cmap_index = cmap_options.index("plasma")
-            cmap = st.selectbox("Colormap", options=cmap_options, index=default_cmap_index)            
+            cmap = st.selectbox("Colormap", options=cmap_options, index=default_cmap_index)
             st.session_state["monomers_cmap"] = cmap
-            show_fits = st.checkbox("Show fits", value=True)
-            normalization = st.checkbox("Log Image Scaling", value = True)
-            save_format = st.selectbox("Download format", ["svg", "png", "jpeg"]).lower()
+            show_fits = st.checkbox("Show fits", value=True, key="mono_show_fits")
+            normalization = st.checkbox("Log Image Scaling", value=True, key="mono_normalization")
+            save_format = st.selectbox(
+                "Download format", ["svg", "png", "jpeg"], key="mono_save_format"
+            ).lower()
 
             # Process automatically. _process_files_cached is @st.cache_data keyed on
             # (saved_records, region, threshold, signal, pix_size_um), so tuning any of
@@ -662,11 +694,21 @@ def run():
         microscope = st.session_state.get("microscope", "MCL")
         pix = float(st.session_state.get("pix_size_um", 0.107))
 
-        # Fit the circular illuminated aperture for Nikon (field stop): used to
-        # overlay on the preview and to get an accurate FOV area for concentration.
+        # Both MCL and Nikon image through a circular aperture (field stop), so
+        # fit it in either case: used to overlay on the preview and to get an
+        # accurate FOV area for concentration. Seeded on the ROI center with a
+        # 20 µm minimum diameter. If the fit fails, fall back to a circle
+        # inscribed in the region (not the full square crop). Skipped for the
+        # 'custom' region (not a full circular aperture).
         aperture = None
-        if image_data_cps is not None and str(microscope).startswith("Nikon"):
-            aperture = fit_aperture_circle(image_data_cps)
+        if image_data_cps is not None and str(region) != "custom":
+            aperture = fit_aperture_circle(image_data_cps, pix_size_um=pix,
+                                           min_diameter_um=20.0)
+            if aperture is None and getattr(image_data_cps, "ndim", 0) >= 2:
+                h_px, w_px = image_data_cps.shape[:2]
+                r_px = min(h_px, w_px) / 2.0
+                aperture = {"cx": w_px / 2.0, "cy": h_px / 2.0, "r": r_px,
+                            "area_px": float(np.pi * r_px ** 2), "fit": "inscribed"}
 
         top_left, top_right = st.columns(2)
         fig_pie = None
@@ -700,7 +742,7 @@ def run():
                     default_spb = float(np.clip(default_spb, user_min_val, user_max_val))
 
                     bc1, bc2 = st.columns(2)
-                    num_bins = bc1.number_input("# Bins:", value=50)
+                    num_bins = bc1.number_input("# Bins:", value=50, key="mono_num_bins")
                     single_ucnp_brightness_value = bc2.number_input(
                         "Single Particle Brightness (pps)",
                         min_value=user_min_val,
@@ -855,18 +897,23 @@ def run():
                     dilution = st.session_state.get("dilution")
                     axial_depth_um = float(st.session_state.get("axial_depth_um", 0.5))
 
-                    # FOV area: fitted aperture (Nikon) else the full analyzed crop,
-                    # matching the region over which ppv was counted.
+                    # FOV area: fitted aperture, else an inscribed-circle fallback
+                    # (set above), else the full crop for the 'custom' region.
                     if aperture is not None:
-                        # Counting area = actual illuminated pixels (excludes any
-                        # occluded part). Fitted r/Ø describe the full circle.
                         fov_area = aperture["area_px"] * (pix ** 2)
-                        fov_desc = (f"illuminated aperture: {aperture['area_px']:.0f} px "
-                                    f"(fit r={aperture['r']:.0f} px, Ø{2 * aperture['r'] * pix:.1f} µm)")
+                        d_um = 2 * aperture["r"] * pix
+                        if aperture.get("fit") == "inscribed":
+                            fov_desc = (f"inscribed circle Ø{2 * aperture['r']:.0f} px "
+                                        f"({d_um:.1f} µm) — aperture fit failed")
+                        else:
+                            # Counting area = actual illuminated pixels (excludes any
+                            # occluded part). Fitted r/Ø describe the full circle.
+                            fov_desc = (f"illuminated aperture: {aperture['area_px']:.0f} px "
+                                        f"(fit r={aperture['r']:.0f} px, Ø{d_um:.1f} µm)")
                     elif image_data_cps is not None and getattr(image_data_cps, "ndim", 0) >= 2:
                         fh, fw = image_data_cps.shape[:2]
                         fov_area = fh * fw * (pix ** 2)
-                        fov_desc = f"{fw}×{fh} px full crop"
+                        fov_desc = f"{fw}×{fh} px full crop (custom region)"
                     else:
                         fov_area = 0.0
                         fov_desc = "unknown"
@@ -883,7 +930,30 @@ def run():
                             dilution=dilution,
                             plane_thickness_um=axial_depth_um,
                         )
+
+                        # --- Error analysis -------------------------------
+                        # Concentration is linear in ppv (all other terms treated
+                        # as exact), so the fractional error carries straight
+                        # through: σ_M/M = σ_ppv/ppv. We use the field-to-field
+                        # SD of the PSF counts and report the standard error of
+                        # the mean (SD/√N) as the uncertainty on the mean-derived
+                        # concentration.
+                        n_fields = len(counts)
+                        counts_sd = float(np.std(counts, ddof=1)) if n_fields > 1 else 0.0
+                        counts_sem = counts_sd / np.sqrt(n_fields) if n_fields > 1 else 0.0
+                        rel_err = counts_sem / mean_count if mean_count else 0.0
+                        cv = counts_sd / mean_count if mean_count else 0.0
+                        molarity_err = est["molarity"] * rel_err
+                        diluted_err = est["conc_diluted_M"] * rel_err
+
                         st.metric("Stock concentration", _format_molarity(est["molarity"]))
+                        if n_fields > 1:
+                            st.caption(
+                                f"± {_format_molarity(molarity_err)}  "
+                                f"(SEM, n={n_fields} fields, CV={cv:.0%})"
+                            )
+                        else:
+                            st.caption("Single field — no error estimate (need ≥2 files).")
                         st.metric("Avg particles / view", f"{est['ppv']:.1f} ppv")
 
                         with st.expander("Show calculation", expanded=False):
@@ -898,9 +968,19 @@ def run():
                                 f"                         = {obs_l:.3e} L",
                                 "",
                                 f"density  = ppv / V        = {density_l:.3e} /L",
-                                f"diluted molarity          = {_format_molarity(est['conc_diluted_M'])}",
+                                f"diluted molarity          = {_format_molarity(est['conc_diluted_M'])}"
+                                + (f" ± {_format_molarity(diluted_err)}" if n_fields > 1 else ""),
                                 f"× dilution {dilution:g}",
-                                f"stock molarity            = {_format_molarity(est['molarity'])}",
+                                f"stock molarity            = {_format_molarity(est['molarity'])}"
+                                + (f" ± {_format_molarity(molarity_err)}" if n_fields > 1 else ""),
+                                "",
+                                "-- error analysis (from PSF-count spread) --",
+                                f"n fields                 = {n_fields}",
+                                f"PSF count SD             = {counts_sd:.3g}",
+                                f"SEM = SD/√n              = {counts_sem:.3g}",
+                                f"relative error SEM/mean  = {rel_err:.1%}",
+                                f"CV = SD/mean             = {cv:.1%}",
+                                "σ_M/M = σ_ppv/ppv  (M is linear in ppv)",
                                 "",
                                 "M_stock = ppv · dilution / (A_fov · t · N_A)",
                             ])

@@ -36,6 +36,8 @@ from skimage.morphology import disk, opening
 from skimage.feature import peak_local_max
 from skimage.segmentation import watershed
 
+from utils import file_uploader_with_clear
+
 # Optional — emd support requires h5py
 try:
     import h5py
@@ -1166,7 +1168,7 @@ def run() -> None:
         accepted_types = ["dm3"] if _HAS_DM3 else []
         if _HAS_H5PY: accepted_types.append("emd")
         
-        files = st.file_uploader("Upload TEM image(s)", accept_multiple_files=True, type=accepted_types, on_change=_clear_cache)
+        files = file_uploader_with_clear("Upload TEM image(s)", key="tem_uploads", accept_multiple_files=True, type=accepted_types, on_change=_clear_cache, on_clear=_clear_cache)
         shape_type = st.selectbox("Particle shape", list(SHAPE_CHOICES), index=0)
         
         if not files:

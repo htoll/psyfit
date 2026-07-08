@@ -217,7 +217,7 @@ def run():
     # Note: st.set_page_config is owned by app.py (called once, first); not called here.
     with st.sidebar:
         st.header("Inputs")
-        sif_files = st.file_uploader("SIF files (UCNP + Dye)", type=["sif"], accept_multiple_files=True)
+        sif_files = utils.file_uploader_with_clear("SIF files (UCNP + Dye)", key="coloc_uploads", type=["sif"], accept_multiple_files=True)
         stem = _extract_common_stem(sif_files)
 
         st.header("IDs")

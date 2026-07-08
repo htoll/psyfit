@@ -482,7 +482,7 @@ def render_calibration_viewer(cal_file, fit_file):
 def run():
     with st.sidebar:
         st.header("Inputs v0.1")
-        sif_files = st.file_uploader("SIF files", type=["sif"], accept_multiple_files=True)
+        sif_files = utils.file_uploader_with_clear("SIF files", key="spectra_sif_uploads", type=["sif"], accept_multiple_files=True)
 
         background = st.file_uploader("Blank (optional)", type=["sif"], help='''
                     Upload image of an empty FOV under the same imaging conditions 
@@ -490,8 +490,9 @@ def run():
         ''')
         # calibration_date = st.text_input("Calibration date", help="Please enter the date in the format like 250920")
 
-        calibration_uploads = st.file_uploader(
-            "Calibration files (saving_info + fits)", accept_multiple_files=True,
+        calibration_uploads = utils.file_uploader_with_clear(
+            "Calibration files (saving_info + fits)", key="spectra_cal_uploads",
+            accept_multiple_files=True,
             type=["pkl"], help=r'''
                 Upload the two calibration .pkl files together — they're sorted
                 automatically by filename:

@@ -46,6 +46,34 @@ def HWT_aesthetic():
     sns.despine()
     return palette 
 
+def file_uploader_with_clear(label, *, key, clear_label="🗑️ Clear all",
+                             on_clear=None, **uploader_kwargs):
+    """``st.file_uploader`` paired with a button that clears all selected files.
+
+    Streamlit only resets a file_uploader when its widget ``key`` changes, so we
+    keep a per-uploader nonce in ``st.session_state`` and bump it from the
+    button's ``on_click`` (which runs before widgets are rebuilt on the next
+    run), forcing a fresh, empty uploader. ``key`` must be unique per uploader.
+
+    Pass ``on_clear`` to run extra cleanup (e.g. clearing a cache) when cleared.
+    Any other keyword args are forwarded to ``st.file_uploader``.
+    """
+    nonce_key = f"__uploader_nonce_{key}"
+    st.session_state.setdefault(nonce_key, 0)
+
+    def _clear():
+        st.session_state[nonce_key] += 1
+        if on_clear is not None:
+            on_clear()
+
+    files = st.file_uploader(
+        label, key=f"{key}__{st.session_state[nonce_key]}", **uploader_kwargs
+    )
+    st.button(clear_label, key=f"{key}__clear_btn", on_click=_clear,
+              disabled=not files)
+    return files
+
+
 def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3, min_distance = 5, roi=None):
     image_data, metadata = sif_parser.np_open(sif, ignore_corrupt=True)
     image_data = image_data[0]  # (H, W)

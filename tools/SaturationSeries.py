@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import io
 from utilsJFS import plot_histogram
-from utils import integrate_sif, plot_brightness
+from utils import integrate_sif, plot_brightness, file_uploader_with_clear
 from tools.process_files import process_files
 from matplotlib.colors import LogNorm
 import numpy as np
@@ -224,9 +224,10 @@ def run():
     with col1:
         st.header("Analyze SIF Files")
         
-        uploaded_files = st.file_uploader(
-            "Upload .sif files (e.g., 100_1.sif, 120_1.sif)", 
-            type=["sif"], 
+        uploaded_files = file_uploader_with_clear(
+            "Upload .sif files (e.g., 100_1.sif, 120_1.sif)",
+            key="saturation_uploads",
+            type=["sif"],
             accept_multiple_files=True
         )
         

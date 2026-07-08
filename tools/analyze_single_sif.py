@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 import io
-from utils import integrate_sif, plot_brightness, plot_histogram
+from utils import integrate_sif, plot_brightness, plot_histogram, file_uploader_with_clear
 from tools.process_files import process_files
 from tools import roi as roi_tool
 import numpy as np
@@ -104,7 +104,7 @@ def run():
 
     with st.sidebar:
         st.header("Analyze SIF Files")
-        uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
+        uploaded_files = file_uploader_with_clear("Upload .sif file", key="wf_uploads", type=["sif"], accept_multiple_files=True)
         threshold = st.number_input("Threshold", min_value=0, value=10, help='''
         Stringency of fit, higher value is more selective:
         -UCNP signal sets absolute peak cut off

@@ -7,6 +7,7 @@ import tifffile
 
 # Import the existing dat reader from your tools
 from tools.confocal_brightness import read_dat_image
+from utils import file_uploader_with_clear
 
 def get_custom_lut(name):
     """Generates custom colormaps or returns standard matplotlib cmaps."""
@@ -179,7 +180,7 @@ def run():
     
     with st.sidebar:
         st.subheader("Data Import")
-        uploaded_files = st.file_uploader("Upload .tif or .dat files", type=["tif", "tiff", "dat"], accept_multiple_files=True)
+        uploaded_files = file_uploader_with_clear("Upload .tif or .dat files", key="confviz_uploads", type=["tif", "tiff", "dat"], accept_multiple_files=True)
         
         st.markdown("---")
         st.subheader("Filename Parsing Tags")
