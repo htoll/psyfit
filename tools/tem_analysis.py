@@ -11,8 +11,8 @@ Main features
 from __future__ import annotations
 
 import io
-import math
 import os
+import textwrap
 import re
 import json
 import tempfile
@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 from matplotlib.font_manager import FontProperties
+from matplotlib.offsetbox import TextArea
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 import numpy as np
 import pandas as pd
@@ -283,6 +284,10 @@ SHAPE_CHOICES = ("Sphere", "Hexagonal Prism", "Cube", "Octahedron", "Tic Tac")
 # the face-on width sample is too small to trust, so the rectangle-GMM width
 # estimate is auto-enabled (the user can still override it).
 HEX_GMM_AUTO_RATIO = 0.2
+# A tic-tac width-profile bin counts as "body" (rather than an end cap) while its width stays
+# at least this fraction of the full body width; the body length is the span of such bins.
+# Lower = more of the tapering cap gets absorbed into the body; higher = noisier junction.
+BODY_WIDTH_FRAC = 0.9
 _COLORS = {
     "circle": "lime", "hexagon": "cyan", "rectangle": "yellow",
     "square": "orange", "diamond": "magenta", "ellipse": "violet", "stadium": "violet", "unknown": "gray"
@@ -341,44 +346,18 @@ def _stadium_vertices(cx: float, cy: float, L_body: float, W: float, d: float, a
     verts = [(cx + x * ca - y * sa, cy + x * sa + y * ca) for x, y in local]
     return np.array(verts)
 
-def _cap_depth_from_area(area: float, W: float, L_total: float) -> float:
-    """Cap sagitta ``d`` of a stadium (rectangle body + two circular-arc caps) implied by
-    its area. ``W`` and ``L_total`` are recovered robustly from the width profile; ``d`` is
-    then whatever makes the model area match the measured pixel area.
-
-    The two arc caps remove ``2·(W·d − A_segment)`` from the bounding ``W × L_total``
-    rectangle, where ``A_segment`` is the circular-segment area for chord ``W`` and
-    sagitta ``d``. This is monotonic in ``d``, so a bisection on ``d ∈ (0, W/2]`` inverts it.
-    """
-    a = W / 2.0
-    if a <= 0 or L_total <= 0:
-        return 0.0
-    removed = W * L_total - area                             # corner area cut off by the caps
-    if removed <= 0:
-        return 0.0
-
-    def removed_of_d(d: float) -> float:
-        if d <= 0:
-            return 0.0
-        R = (a * a + d * d) / (2.0 * d)
-        phi = math.asin(min(a / R, 1.0))                     # half-angle subtended by the chord
-        a_seg = R * R * (phi - math.sin(phi) * math.cos(phi))
-        return 2.0 * (W * d - a_seg)
-
-    if removed >= removed_of_d(a):                           # at least a full semicircle; clamp
-        return a
-    lo, hi = 0.0, a
-    for _ in range(40):
-        mid = 0.5 * (lo + hi)
-        if removed_of_d(mid) < removed:
-            lo = mid
-        else:
-            hi = mid
-    return 0.5 * (lo + hi)
-
 def _fit_stadium(prop) -> Optional[Dict[str, float]]:
-    """Fit a stadium (rectangle body + two circular-arc end caps) to a labelled region
-    via a PCA width-profile in the particle's principal frame (no image interpolation).
+    """Fit a stadium (rectangle body + two circular-arc end caps) to a labelled region via a
+    PCA width-profile in the particle's principal frame (no image interpolation).
+
+    ``L_body`` is measured *directly* as the span of the central plateau where the width sits
+    at (near) its full value; the caps are the tapering ends, so ``d = (L_total − L_body)/2``.
+    This deliberately replaces the older approach of back-solving the cap depth from the
+    silhouette area: that inversion had two clamped regimes (``d→0`` when the outline fills its
+    bounding box, ``d→W/2`` when the ends read fully round), and orientation/pixelation noise
+    flipped otherwise-identical particles between them, splitting the body-length distribution
+    into a spurious two peaks. A direct plateau measurement is monotonic in the true geometry,
+    so uniform particles now land on one peak.
 
     Returns pixel-unit geometry ``{L_total, W, L_body, d, R, angle}`` or ``None`` when the
     region is too small/degenerate. ``angle`` is the long-axis orientation (radians) in
@@ -402,8 +381,9 @@ def _fit_stadium(prop) -> Optional[Dict[str, float]]:
 
     # Width profile: bin the long axis (~1 px bins), width(bin) = span of v inside it.
     # The +eps in the denominator keeps the largest u from rounding into its own bin,
-    # which would otherwise leave sporadic empty bins and under-count the area.
+    # which would otherwise leave sporadic empty bins.
     n_bins = max(int(np.ceil(L_total)), 5)
+    bin_w = L_total / n_bins
     bin_idx = np.clip(((u - u.min()) / (L_total + 1e-9) * n_bins).astype(int), 0, n_bins - 1)
     widths = np.zeros(n_bins)
     for b in range(n_bins):
@@ -414,16 +394,22 @@ def _fit_stadium(prop) -> Optional[Dict[str, float]]:
     occupied = widths[widths > 0]
     if occupied.size == 0:
         return None
-    W = float(np.percentile(occupied, 95))                   # robust full (body) width
+    # Full (body) width = the plateau level: the median of the near-widest bins, robust to a
+    # single spuriously wide bin (which the old 95th-percentile would latch onto).
+    plateau = widths[widths >= 0.9 * float(widths.max())]
+    W = float(np.median(plateau)) if plateau.size else float(np.max(widths))
     if W <= 0:
         return None
 
-    # Cap depth from the area, integrated from the width profile so it shares the same
-    # centre-span convention as W and L_total (avoids the pixel-count off-by-one bias).
-    bin_w = L_total / n_bins
-    area = float(widths.sum() * bin_w)
-    d = _cap_depth_from_area(area, W, L_total)
-    L_body = max(L_total - 2.0 * d, 0.0)
+    # Body length = span of the contiguous central bins that stay near the full width; the
+    # tapering ends are the caps. First↔last body bin (inclusive) so the partly-filled junction
+    # bins count with the body. BODY_WIDTH_FRAC sets how far below W still counts as body.
+    body_bins = np.where(widths >= BODY_WIDTH_FRAC * W)[0]
+    L_body = float((body_bins[-1] - body_bins[0] + 1) * bin_w) if body_bins.size else L_total
+    L_body = min(max(L_body, 0.0), L_total)
+
+    d = min(max((L_total - L_body) / 2.0, 0.0), W / 2.0)     # a cap can't exceed a semicircle
+    L_body = L_total - 2.0 * d                               # keep body/caps consistent post-clamp
     R = (d ** 2 + (W / 2.0) ** 2) / (2.0 * d) if d > 1e-6 else float("inf")
     angle = float(np.arctan2(major[1], major[0]))
     return {"L_total": L_total, "W": W, "L_body": L_body, "d": d, "R": R, "angle": angle}
@@ -487,6 +473,7 @@ def segment_and_measure(
         "tic_tac_major": [], "tic_tac_width": [], "tic_tac_body_length": [], "tic_tac_cap_depth": []
     }
     draw_shapes = []
+    objects: List[Dict[str, Any]] = []   # per-shape centroid + measured dims (for FOV-crop scoring)
 
     for prop in regionprops(labels_ws):
         minr, minc, maxr, maxc = prop.bbox
@@ -508,6 +495,7 @@ def segment_and_measure(
             if d_val >= min_size_value:
                 measurements["diameters"].append(d_val)
                 draw_shapes.append({"type": "circle", "cx": cx, "cy": cy, "r": d_px/2.0, "color": color})
+                objects.append({"cx": cx, "cy": cy, "dims": {"diameters": d_val}})
         elif cls == "hexagon":
             d_px = (maj_px + min_px) / 2.0
             d_val = d_px * sf
@@ -516,9 +504,10 @@ def segment_and_measure(
                 # Pass the 'orient' variable as the 4th argument here!
                 draw_shapes.append({
                     "type": "polygon", 
-                    "vertices": _hexagon_vertices(cx, cy, d_px/2.0, orient), 
+                    "vertices": _hexagon_vertices(cx, cy, d_px/2.0, orient),
                     "color": color
                 })
+                objects.append({"cx": cx, "cy": cy, "dims": {"hex_widths": d_val}})
         elif cls == "rectangle":
             if maj_px * sf >= min_size_value:
                 measurements["hex_heights"].append(maj_px * sf)
@@ -527,17 +516,21 @@ def segment_and_measure(
                 # are scarce (see the rectangle-GMM path in run()).
                 measurements["hex_rect_widths"].append(min_px * sf)
                 draw_shapes.append({"type": "polygon", "vertices": _rotated_rect_vertices(cx, cy, maj_px/2.0, min_px/2.0, orient), "color": color})
+                objects.append({"cx": cx, "cy": cy,
+                                "dims": {"hex_heights": maj_px * sf, "hex_rect_widths": min_px * sf}})
         elif cls == "square":
             side_px = ((maj_px + min_px) / 2.0) * 0.8660
             if side_px * sf >= min_size_value:
                 measurements["side_lengths"].append(side_px * sf)
                 draw_shapes.append({"type": "polygon", "vertices": _rotated_rect_vertices(cx, cy, side_px/2.0, side_px/2.0, orient), "color": color})
+                objects.append({"cx": cx, "cy": cy, "dims": {"side_lengths": side_px * sf}})
         elif cls == "diamond":
             maj_val, min_val = maj_px * 1.2247 * sf, min_px * 1.2247 * sf
             if maj_val >= min_size_value:
                 measurements["oct_major"].append(maj_val)
                 measurements["oct_minor"].append(min_val)
                 draw_shapes.append({"type": "polygon", "vertices": _diamond_vertices(cx, cy, (maj_px*1.2247)/2.0, (min_px*1.2247)/2.0, orient), "color": color})
+                objects.append({"cx": cx, "cy": cy, "dims": {"oct_major": maj_val, "oct_minor": min_val}})
         elif cls == "stadium":
             fit = _fit_stadium(prop)
             if fit is None:
@@ -553,13 +546,17 @@ def segment_and_measure(
                     "vertices": _stadium_vertices(cx, cy, fit["L_body"], fit["W"], fit["d"], fit["angle"]),
                     "color": color,
                 })
+                objects.append({"cx": cx, "cy": cy, "dims": {
+                    "tic_tac_major": L_total, "tic_tac_width": fit["W"] * sf,
+                    "tic_tac_body_length": fit["L_body"] * sf, "tic_tac_cap_depth": fit["d"] * sf}})
 
     # Generate random colored mask for visualization
     rand_cmap = np.random.RandomState(42).rand(max(int(labels_ws.max()) + 1, 1), 3)
     rand_cmap[0] = [1.0, 1.0, 1.0] # Background is white
     
     out = {
-        "data": data, "draw_shapes": draw_shapes, "rgb_ws": (rand_cmap[labels_ws] * 255).astype(np.uint8),
+        "data": data, "draw_shapes": draw_shapes, "objects": objects,
+        "rgb_ws": (rand_cmap[labels_ws] * 255).astype(np.uint8),
         "unit": measurement_unit, "nm_per_px": float(nm_per_px) if measurement_unit == "nm" else float("nan")
     }
     for k, v in measurements.items(): out[k] = np.array(v, dtype=np.float64)
@@ -568,7 +565,11 @@ def segment_and_measure(
 # ═══════════════════════════════════════════════════════════════════════════
 # Drawing Helper
 # ═══════════════════════════════════════════════════════════════════════════
-def plot_annotated_image(ax, image_data, draw_shapes):
+def plot_annotated_image(ax, image_data, draw_shapes, nm_per_px: float = float("nan"),
+                         unit: str = "px", show_mag: bool = False):
+    """Grayscale image with the fitted-shape overlays. When the image is calibrated a scale
+    bar (sized 'nicely' relative to the field of view) is drawn lower-left; ``show_mag`` adds
+    the estimated magnification below it — only valid for a full image, not a cropped ROI."""
     zmin, zmax = np.percentile(image_data, [0.1, 99.9])
     ax.imshow(image_data, cmap="gray", vmin=zmin, vmax=zmax)
     for s in draw_shapes:
@@ -578,6 +579,10 @@ def plot_annotated_image(ax, image_data, draw_shapes):
             ax.add_patch(patches.Polygon(s["vertices"], closed=True, edgecolor=s["color"], facecolor=s["color"], alpha=0.4, lw=2))
         elif s["type"] == "ellipse":
             ax.add_patch(patches.Ellipse((s["cx"], s["cy"]), s["w"], s["h"], angle=s["angle"], edgecolor=s["color"], facecolor=s["color"], alpha=0.4, lw=2))
+    if np.isfinite(nm_per_px) and nm_per_px > 0:
+        h_px, w_px = image_data.shape[:2]
+        mag_kx = _estimate_mag_kx(w_px * nm_per_px) if show_mag else float("nan")
+        _add_scale_bar(ax, w_px, h_px, nm_per_px, unit, mag_kx=mag_kx, font_size=11.0)
     ax.axis("off")
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -589,8 +594,11 @@ def run_batch_analysis(file_data: List[Tuple[bytes, str]], shape_type: str, para
     # "tic_tac_width" (body width W), "tic_tac_body_length" (straight plateau L_body)
     # and "tic_tac_cap_depth" (arc sagitta d) — replacing the old "tic_tac_minor".
     # "hex_rect_widths" (rectangle minor axis) remains for the hexagonal-prism
-    # rectangle-GMM width estimate. This comment is part of the cached function's
-    # source, so editing it busts any stale cache produced before the schema changed.
+    # rectangle-GMM width estimate. Schema v4 adds "objects": a per-shape list of
+    # {cx, cy, dims{key: value}} used to crop the summary FOV to the densest region of
+    # in-range particles. v5: tic-tac "tic_tac_body_length" is now measured directly from the
+    # width-profile plateau (not back-solved from area), fixing spurious bimodality. This
+    # comment is part of the cached function's source, so editing it busts any stale cache.
     results = []
     for f_bytes, f_name in file_data:
         tem = read_tem_file(f_bytes, f_name)
@@ -639,35 +647,51 @@ def _fit_gaussians(
         return mus, stds, weights, method
     return [], [], [], ""
 
+# When a fit min/max crops the data, the visible x-axis is padded by this fraction of the
+# (max − min) fit span on each side, so a narrow distribution isn't awkwardly zoomed in.
+# Bins in the padded region are still drawn (from the real data), they just aren't fit.
+HIST_X_BUFFER_FRAC = 1.0
+
 def _plot_hist_on_ax(
     ax: plt.Axes, values: np.ndarray, title: str, unit_label: str, n_components: int = 1,
     fit_min: Optional[float] = None, fit_max: Optional[float] = None,
     mu_ranges: Optional[List[Tuple[float, float]]] = None,
+    x_buffer_frac: float = HIST_X_BUFFER_FRAC,
 ) -> Tuple[list, list, int]:
     """Draw a histogram + Gaussian/GMM fit onto ``ax`` and return ``(mus, stds, n_fit)``.
 
-    ``fit_min``/``fit_max`` crop the data/x-axis to a window. ``mu_ranges`` optionally
-    constrains each GMM component's mean to a range (see ``_fit_gaussians``). The title
-    carries only the axis descriptor, how it was fit, and the μ ± σ values.
+    ``fit_min``/``fit_max`` crop the data used for the fit to a window; the visible x-axis is
+    then padded by ``x_buffer_frac`` of that span on each side so the plot isn't over-zoomed
+    (real bins in the padding are still shown, they just don't feed the fit). ``mu_ranges``
+    optionally constrains each GMM component's mean to a range (see ``_fit_gaussians``). The
+    title carries only the axis descriptor, how it was fit, and the μ ± σ values.
     """
-    values = np.asarray(values, dtype=float)
-    if fit_min is not None and fit_max is not None and fit_max > fit_min:
-        values = values[(values >= fit_min) & (values <= fit_max)]
+    all_values = np.asarray(values, dtype=float)
+    cropped = fit_min is not None and fit_max is not None and fit_max > fit_min
+    fit_values = all_values[(all_values >= fit_min) & (all_values <= fit_max)] if cropped else all_values
 
-    n_fit = len(values)
+    n_fit = len(fit_values)
     mus, stds = [], []
 
     if n_fit > 0:
-        if fit_min is not None and fit_max is not None and fit_max > fit_min:
-            vis_min, vis_max = float(fit_min), float(fit_max)
+        if cropped:
+            # Pad the visible x-axis by a fraction of the fit span on each side so the plot isn't
+            # over-zoomed. The padding is always added (even past the data) — real bins inside it
+            # still show; beyond the data it's just breathing room. Only the low edge is clamped
+            # at 0 since a size axis can't go negative.
+            pad = x_buffer_frac * (float(fit_max) - float(fit_min))
+            vis_min = max(float(fit_min) - pad, 0.0)
+            vis_max = float(fit_max) + pad
         else:
-            vis_min, vis_max = np.percentile(values, [0.5, 99.5])
-            if vis_min >= vis_max: vis_min, vis_max = values.min(), values.max()
+            vis_min, vis_max = np.percentile(fit_values, [0.5, 99.5])
+            if vis_min >= vis_max: vis_min, vis_max = fit_values.min(), fit_values.max()
 
-        _, bins, _ = ax.hist(values, bins=40, range=(vis_min, vis_max), color='steelblue', edgecolor='black', alpha=0.6)
+        # Histogram every value inside the (padded) window so bins outside the fit range show.
+        vis_values = all_values[(all_values >= vis_min) & (all_values <= vis_max)]
+        _, bins, _ = ax.hist(vis_values, bins=40, range=(vis_min, vis_max), color='steelblue', edgecolor='black', alpha=0.6)
         bw = float(bins[1] - bins[0]) if len(bins) > 1 else 1.0
 
-        mus, stds, weights, method = _fit_gaussians(values, n_components, mu_ranges)
+        mus, stds, weights, method = _fit_gaussians(fit_values, n_components, mu_ranges)
         if mus:
             x = np.linspace(vis_min, vis_max, 300)
             total = np.zeros_like(x)
@@ -952,6 +976,34 @@ def _nice_bar_nm(fov_nm: float) -> float:
             return float(b)
     return round(target, 2)
 
+def _estimate_mag_kx(fov_width_nm: float) -> float:
+    """Estimated microscope magnification (in kx) for an image, assuming magnification is
+    linear in inverse field-of-view and pinned to the known 30 kx reference FOV width.
+    A wider FOV ⇒ lower magnification, so mag ∝ 1/FOV_width."""
+    if not (np.isfinite(fov_width_nm) and fov_width_nm > 0):
+        return float("nan")
+    return 30.0 * MAG_30KX_FOV_NM[0] / fov_width_nm
+
+def _add_scale_bar(ax, w_px: float, h_px: float, nm_per_px: float, unit: str,
+                   mag_kx: float = float("nan"), font_size: float = 13.0) -> None:
+    """Draw a 'nice'-length white scale bar (lower-left) on an auto-fitting grey panel. When
+    ``mag_kx`` is finite, the estimated magnification is added on a smaller second line inside
+    the same grey frame (the frame auto-expands to accommodate it)."""
+    bar_nm = _nice_bar_nm(w_px * nm_per_px)
+    bar_px = bar_nm / nm_per_px
+    sb = AnchoredSizeBar(
+        ax.transData, bar_px, f"{bar_nm:g} {unit}", loc="lower left",
+        pad=0.4, borderpad=0.6, sep=5, color="white", frameon=True,
+        size_vertical=max(0.012 * h_px, 3), fontproperties=FontProperties(size=font_size, weight="bold"),
+    )
+    sb.patch.set(facecolor="0.15", edgecolor="none", alpha=0.5)   # grey box auto-fits its contents
+    if np.isfinite(mag_kx) and mag_kx > 0:
+        mag_txt = f"~{mag_kx:.0f} kx" if mag_kx >= 10 else f"~{mag_kx:.1f} kx"
+        mag_area = TextArea(mag_txt, textprops=dict(color="white", weight="bold",
+                                                    size=max(font_size - 4.0, 7.0)))
+        sb._box._children.append(mag_area)   # extra smaller line stacked under the label
+    ax.add_artist(sb)
+
 _FIT_TITLE = "Average Shape \nDimensions Fit:"
 # IBM colorblind-safe categorical palette ("ibm_dark"): each fit drawable gets its own colour.
 IBM_DARK = ["#648FFF", "#DC267F", "#FFB000", "#FE6100", "#785EF0"]
@@ -976,7 +1028,8 @@ def draw_tem_with_fits(ax, tem: dict, shape_type: str, geom: Dict[str, float], u
     h_px, w_px = img.shape[:2]
     ax.set_xlim(0, w_px); ax.set_ylim(h_px, 0)
     ax.axis("off")
-    ax.set_title(f"TEM: {tem.get('name', '')}", fontsize=10)
+    # Wrap a long file name so the title stays within the panel instead of clipping/overrunning.
+    ax.set_title("\n".join(textwrap.wrap(f"TEM: {tem.get('name', '')}", width=42)), fontsize=10)
 
     if not (np.isfinite(nmpp) and nmpp > 0):
         ax.text(0.5, 0.04, "Uncalibrated image — cannot render fits to scale",
@@ -986,26 +1039,29 @@ def draw_tem_with_fits(ax, tem: dict, shape_type: str, geom: Dict[str, float], u
     # ---- Lower-right: reported geometry (2-D projections then wireframe) to scale ----
     placed, total_w, max_h = _layout_fits(_fit_drawables(shape_type, geom), 1.0 / nmpp)
     if placed:
-        title_fs = 11
+        title_fs = 10
         lines = _FIT_TITLE.split("\n")
-        # Text is sized in points; convert to data-px via px_per_in so the box fits it exactly.
-        title_w = max(len(s) for s in lines) * (title_fs / 72.0) * 0.62 * px_per_in
-        title_h = len(lines) * (title_fs / 72.0) * 1.35 * px_per_in
-        pad_x, pad_y = 0.015 * w_px, 0.012 * h_px
+        # Text is sized in points; convert to data-px via px_per_in so the box fits it snugly.
+        title_w = max(len(s) for s in lines) * (title_fs / 72.0) * 0.56 * px_per_in
+        title_h = len(lines) * (title_fs / 72.0) * 1.22 * px_per_in
+        pad_x, pad_y = 0.008 * w_px, 0.006 * h_px
         # Reserve a strip above the shapes for the Miller-index labels (if any).
-        label_fs = 10
-        label_h = ((label_fs / 72.0) * 1.4 * px_per_in) if any(it.get("label") for it in placed) else 0.0
+        label_fs = 9
+        label_h = ((label_fs / 72.0) * 1.3 * px_per_in) if any(it.get("label") for it in placed) else 0.0
         content_w = max(total_w, title_w)
         box_right = w_px - 0.02 * w_px
         box_left = max(0.02 * w_px, box_right - content_w - 2 * pad_x)
         baseline = h_px - 0.05 * h_px                            # bottom of the shapes
-        title_base = baseline - max_h - label_h - 0.012 * h_px   # heading baseline (above labels)
+        title_base = baseline - max_h - label_h - 0.008 * h_px   # heading baseline (above labels)
         _translucent_panel(ax, box_left, title_base - title_h - pad_y,
                             box_right, baseline + pad_y, w_px, h_px)
         shapes_left = box_left + pad_x + max(0.0, ((box_right - box_left) - 2 * pad_x - total_w) / 2.0)
+        # Line weight tracks how large the shapes render on the page (small shapes ⇒ thinner
+        # strokes), clamped to a narrow band so it only ever nudges the default weight down.
+        lw_scale = float(np.clip((max_h / max(px_per_in, 1e-6)) / 0.6, 0.7, 1.0))
         for i, item in enumerate(placed):
             color = IBM_DARK[i % len(IBM_DARK)]
-            lw = 1.0 if item["kind"] == "wire" else 1.8
+            lw = (1.0 if item["kind"] == "wire" else 1.8) * lw_scale
             xs_all, ys_all = [], []
             for poly in item["polys"]:
                 xs = shapes_left + poly[:, 0]
@@ -1020,16 +1076,8 @@ def draw_tem_with_fits(ax, tem: dict, shape_type: str, geom: Dict[str, float], u
         ax.text((box_left + box_right) / 2.0, title_base, _FIT_TITLE, color="white", fontsize=title_fs,
                 weight="bold", va="bottom", ha="center", zorder=6, linespacing=1.15)
 
-    # ---- Lower-left: white scale bar on an auto-fitting grey panel (AnchoredSizeBar) ----
-    bar_nm = _nice_bar_nm(w_px * nmpp)
-    bar_px = bar_nm / nmpp
-    sb = AnchoredSizeBar(
-        ax.transData, bar_px, f"{bar_nm:g} {unit}", loc="lower left",
-        pad=0.4, borderpad=0.6, sep=5, color="white", frameon=True,
-        size_vertical=max(0.012 * h_px, 3), fontproperties=FontProperties(size=13, weight="bold"),
-    )
-    sb.patch.set(facecolor="0.15", edgecolor="none", alpha=0.5)   # the grey box auto-fits bar + label
-    ax.add_artist(sb)
+    # ---- Lower-left: white scale bar + estimated magnification on a grey panel ----
+    _add_scale_bar(ax, w_px, h_px, nmpp, unit, mag_kx=_estimate_mag_kx(w_px * nmpp))
 
 def draw_fits_no_tem(ax, shape_type: str, geom: Dict[str, float], unit: str) -> None:
     """Fallback when no calibrated TEM image is available: the same fit drawables laid out
@@ -1054,42 +1102,148 @@ def draw_fits_no_tem(ax, shape_type: str, geom: Dict[str, float], unit: str) -> 
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Dimension guide — annotated example of what each measured dimension means
+# ═══════════════════════════════════════════════════════════════════════════
+def _dim_arrow(ax, p0, p1, label, lab_off=(0.0, 0.0), ha="center", va="center", color="#222222"):
+    """Double-headed measurement arrow from ``p0`` to ``p1`` with a bold label offset from its
+    midpoint by ``lab_off``."""
+    ax.annotate("", xy=p1, xytext=p0,
+                arrowprops=dict(arrowstyle="<->", color=color, lw=1.4, shrinkA=0, shrinkB=0))
+    mx, my = (p0[0] + p1[0]) / 2.0, (p0[1] + p1[1]) / 2.0
+    ax.text(mx + lab_off[0], my + lab_off[1], label, color=color, fontsize=9,
+            ha=ha, va=va, weight="bold", linespacing=1.1)
+
+def _dim_outline(ax, verts, color):
+    ax.add_patch(patches.Polygon(verts, closed=True, fill=True, facecolor=color,
+                                 edgecolor=color, alpha=0.18, lw=1.8))
+
+def _dim_guide(ax, p0, p1, color="0.55"):
+    ax.plot([p0[0], p1[0]], [p0[1], p1[1]], ls=(0, (4, 3)), color=color, lw=0.9, zorder=1)
+
+def _dim_finish(ax, x0, x1, y0, y1, title):
+    ax.set_xlim(x0, x1); ax.set_ylim(y0, y1); ax.set_aspect("equal"); ax.axis("off")
+    ax.set_title(title, fontsize=10, weight="bold")
+
+def build_dimension_guide_figure(shape_type: str) -> plt.Figure:
+    """A small annotated diagram of the projection(s) the tool measures, with every reported
+    dimension called out — so 'width' vs 'body length' vs 'total length' etc. are unambiguous."""
+    c0, c1 = IBM_DARK[0], IBM_DARK[1]
+    if shape_type == "Sphere":
+        fig, ax = plt.subplots(figsize=(3.2, 3.3), dpi=130, layout="constrained")
+        _dim_outline(ax, _circle_poly(1.0), c0)
+        _dim_arrow(ax, (-1, 0), (1, 0), "Diameter (D)", (0, 0.13), va="bottom")
+        _dim_finish(ax, -1.5, 1.5, -1.4, 1.5, "Sphere → circle")
+
+    elif shape_type == "Cube":
+        fig, ax = plt.subplots(figsize=(3.2, 3.4), dpi=130, layout="constrained")
+        s = 2.0
+        _dim_outline(ax, np.array([[-s/2, -s/2], [s/2, -s/2], [s/2, s/2], [-s/2, s/2]]), c0)
+        _dim_arrow(ax, (-s/2, -s/2 - 0.35), (s/2, -s/2 - 0.35), "Side length (s)", (0, -0.16), va="top")
+        _dim_finish(ax, -1.7, 1.7, -2.0, 1.4, "Cube → square")
+
+    elif shape_type == "Hexagonal Prism":
+        fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.5), dpi=130, layout="constrained")
+        ax = axes[0]
+        _dim_outline(ax, _hexagon_vertices(0, 0, 1.0, 0.0), c0)
+        _dim_guide(ax, (-1, 0), (-1, -1.35)); _dim_guide(ax, (1, 0), (1, -1.35))
+        _dim_arrow(ax, (-1, -1.35), (1, -1.35), "Width (W)\nvertex-to-vertex", (0, -0.18), va="top")
+        _dim_finish(ax, -1.7, 1.7, -2.2, 1.3, "Face-on (0001)")
+        ax = axes[1]
+        W, Hh = 2.0, 3.0
+        _dim_outline(ax, np.array([[-W/2, -Hh/2], [W/2, -Hh/2], [W/2, Hh/2], [-W/2, Hh/2]]), c1)
+        _dim_arrow(ax, (-W/2 - 0.4, -Hh/2), (-W/2 - 0.4, Hh/2), "Height (H)", (-0.15, 0), ha="right")
+        _dim_arrow(ax, (-W/2, -Hh/2 - 0.4), (W/2, -Hh/2 - 0.4), "Width (W)", (0, -0.16), va="top")
+        _dim_finish(ax, -2.5, 1.8, -2.5, 2.0, "Side-on (10-10)")
+        fig.suptitle("Hexagonal prism dimensions", fontsize=11, weight="bold")
+
+    elif shape_type == "Octahedron":
+        fig, ax = plt.subplots(figsize=(3.6, 3.7), dpi=130, layout="constrained")
+        maj, mn = 3.0, 2.0
+        _dim_outline(ax, np.array([[0, maj/2], [mn/2, 0], [0, -maj/2], [-mn/2, 0]]), c0)
+        _dim_arrow(ax, (mn/2 + 0.4, -maj/2), (mn/2 + 0.4, maj/2), "Major axis", (0.13, 0), ha="left")
+        _dim_arrow(ax, (-mn/2, -maj/2 - 0.4), (mn/2, -maj/2 - 0.4), "Minor axis", (0, -0.16), va="top")
+        _dim_finish(ax, -1.9, 2.6, -2.4, 2.1, "Octahedron → rhombus projection")
+
+    elif shape_type == "Tic Tac":
+        fig, ax = plt.subplots(figsize=(5.6, 3.6), dpi=130, layout="constrained")
+        W, L_body, d = 1.6, 2.0, 0.7
+        half, L_total = W / 2.0, L_body + 2.0 * d
+        _dim_outline(ax, _stadium_vertices(0, 0, L_body, W, d, 0.0), c0)
+        # Dashed guides mark where the straight body ends and the arc caps begin.
+        _dim_guide(ax, (-L_body/2, -half), (-L_body/2, half + 0.95))
+        _dim_guide(ax, (L_body/2, -half), (L_body/2, half + 0.95))
+        _dim_arrow(ax, (L_total/2 + 0.4, -half), (L_total/2 + 0.4, half), "Width (W)", (0.13, 0), ha="left")
+        _dim_arrow(ax, (L_body/2, half + 0.6), (L_total/2, half + 0.6), "Cap depth (d)", (0.0, 0.15), va="bottom")
+        _dim_arrow(ax, (-L_total/2, -half - 0.55), (L_total/2, -half - 0.55), "Total length (L)", (0, -0.17), va="top")
+        _dim_arrow(ax, (-L_body/2, -half - 1.05), (L_body/2, -half - 1.05), "Body length (L_body)", (0, -0.17), va="top")
+        _dim_finish(ax, -L_total/2 - 1.3, L_total/2 + 1.7, -half - 1.8, half + 1.3,
+                    "Tic Tac → stadium (straight body + arc caps)")
+
+    else:
+        fig, ax = plt.subplots(figsize=(3.0, 2.0), dpi=130, layout="constrained")
+        ax.text(0.5, 0.5, "No dimension guide", ha="center", va="center"); ax.axis("off")
+    return fig
+
+def render_dimension_guide(shape_type: str) -> None:
+    """Collapsible panel showing the annotated dimension diagram for the selected shape."""
+    with st.expander(f"📐 What each {shape_type} dimension means", expanded=False):
+        fig = build_dimension_guide_figure(shape_type)
+        st.pyplot(fig)
+        plt.close(fig)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Comprehensive summary figure + export
 # ═══════════════════════════════════════════════════════════════════════════
+# Locked summary-figure geometry: every exported summary has these exact page dimensions (one
+# fixed aspect ratio) regardless of magnification, crop, shape, or histogram count, so a wall of
+# them tiles cleanly. The TEM image is letterboxed (equal aspect) into its fixed panel; the
+# histograms share the full right-column height (so a single histogram is as tall as the TEM
+# panel, not a small strip). Export must NOT use bbox_inches="tight" or the crop would
+# reintroduce variable sizes.
+SUMMARY_FIG_W_IN = 12.0
+SUMMARY_FIG_H_IN = 7.0
+SUMMARY_TEM_FRAC = 0.55          # width fraction given to the TEM panel
+SUMMARY_TITLE_IN = 1.0           # approx page band reserved for the (2-line) sup-title
+# Fixed, legible font sizes (points) — identical across every summary since the page size is
+# locked, so text reads at the same physical size no matter the shape or histogram count.
+SUMMARY_SUPTITLE_FS = 16
+SUMMARY_NOTES_FS = 9.5
+
 def build_summary_figure(
     shape_type: str, hist_specs: List[dict], geom: Dict[str, float],
     reff: float, reff_sd: float, unit: str, prefix: str, notes: str = "",
     tem: Optional[dict] = None,
 ) -> plt.Figure:
-    """One figure: the TEM image with the reported geometry (2-D projections + 3-D wireframe)
-    overlaid to scale on the left, and every histogram + fit stacked to the right at a matching
-    height. The file name is the main heading; r_eff ± SD sits bold beneath it."""
+    """One figure at a locked page size/aspect: the TEM image with the reported geometry (2-D
+    projections + 3-D wireframe) overlaid to scale on the left, and every histogram + fit in
+    fixed-height rows on the right. The file name is the main heading; r_eff ± SD sits bold
+    beneath it. The fixed geometry (see the SUMMARY_* constants) makes many summaries tile
+    cleanly no matter the magnification, shape, or histogram count."""
     n = max(len(hist_specs), 1)
     have_tem = tem is not None and tem.get("data") is not None
 
-    # Size the columns so the TEM image and the histogram stack come out the same height:
-    # the left column width is the image height × aspect, so its equal-aspect image fills it.
-    if have_tem:
-        hh, ww = np.asarray(tem["data"]).shape[:2]
-        aspect = (ww / hh) if hh else 1.4
-    else:
-        aspect = 1.4
-    hist_w, hist_h_each = 4.8, 2.9
-    stack_h = n * hist_h_each
-    tem_w = float(np.clip(stack_h * aspect, 3.0, 13.5))
-    # constrained_layout reserves space for the (multi-line) suptitle and each axes title
-    # reliably — even with the equal-aspect TEM image — so nothing overlaps at any stack size.
-    fig = plt.figure(figsize=(tem_w + hist_w + 1.0, stack_h + 1.2), dpi=150, layout="constrained")
-    outer = fig.add_gridspec(1, 2, width_ratios=[tem_w, hist_w])
+    # constrained_layout only redistributes space *within* the fixed figsize, so the output page
+    # stays exactly SUMMARY_FIG_W_IN × SUMMARY_FIG_H_IN.
+    fig = plt.figure(figsize=(SUMMARY_FIG_W_IN, SUMMARY_FIG_H_IN), dpi=150, layout="constrained")
+    outer = fig.add_gridspec(1, 2, width_ratios=[SUMMARY_TEM_FRAC, 1.0 - SUMMARY_TEM_FRAC])
 
     ax_left = fig.add_subplot(outer[0, 0])
     if have_tem:
-        # data-pixels per page-inch, so draw_tem_with_fits can size the heading box to its text
-        px_per_in = (np.asarray(tem["data"]).shape[1] / tem_w) if tem_w else 120.0
+        img = np.asarray(tem["data"]); h_px, w_px = img.shape[:2]
+        # The equal-aspect image is letterboxed inside the fixed panel; estimate its drawn width
+        # so draw_tem_with_fits can size the heading box to its (point-based) text.
+        tem_w_in = SUMMARY_FIG_W_IN * SUMMARY_TEM_FRAC
+        tem_h_in = max(SUMMARY_FIG_H_IN - SUMMARY_TITLE_IN, 1.0)
+        img_aspect = (w_px / h_px) if h_px else 1.4
+        drawn_w_in = tem_w_in if img_aspect >= (tem_w_in / tem_h_in) else tem_h_in * img_aspect
+        px_per_in = w_px / max(drawn_w_in, 1e-6)
         draw_tem_with_fits(ax_left, tem, shape_type, geom, unit, px_per_in=px_per_in)
     else:
         draw_fits_no_tem(ax_left, shape_type, geom, unit)
 
+    # Histograms fill the full column height (so a lone histogram is as tall as the TEM panel
+    # rather than a small strip); the locked page size holds regardless of the count.
     right = outer[0, 1].subgridspec(n, 1, hspace=0.45)
     for i, spec in enumerate(hist_specs):
         ax = fig.add_subplot(right[i])
@@ -1099,16 +1253,88 @@ def build_summary_figure(
         )
 
     # File name is the heading; r_eff ± SD is the second line — same bold size, one suptitle.
-    head = prefix
+    # Wrap a long prefix/notes so nothing clips at the fixed page edge (no bbox expansion now).
+    head = "\n".join(textwrap.wrap(prefix, width=72)) or prefix
     if np.isfinite(reff):
         sd_txt = f" ± {reff_sd:.2f}" if np.isfinite(reff_sd) else ""
         head += f"\n$r_{{eff}}$ = {reff:.2f}{sd_txt} {unit}"
-    fig.suptitle(head, fontsize=15, weight="bold")
+    fig.suptitle(head, fontsize=SUMMARY_SUPTITLE_FS, weight="bold")
     if notes:
         # supxlabel is managed by constrained_layout, so it gets its own reserved band below the
         # axes x-labels instead of overlapping them.
-        fig.supxlabel(notes, fontsize=8.5, style="italic")
+        fig.supxlabel("\n".join(textwrap.wrap(notes, width=140)), fontsize=SUMMARY_NOTES_FS, style="italic")
     return fig
+
+# Selectable summary-figure zoom levels; each maps (via the linear 30 kx reference) to a
+# field-of-view crop size in nm.
+ZOOM_OPTIONS_KX = (10.0, 30.0, 67.0, 100.0)
+
+def _fov_for_kx(kx: float) -> Tuple[float, float]:
+    """Field of view (width, height) in nm at magnification ``kx``, linear in 1/FOV against the
+    known 30 kx reference (393.19 × 261.34 nm): a higher kx ⇒ a smaller FOV."""
+    f = 30.0 / kx
+    return MAG_30KX_FOV_NM[0] * f, MAG_30KX_FOV_NM[1] * f
+
+def _tem_center_crop(tem: dict, crop_w: int, crop_h: int) -> dict:
+    data = np.asarray(tem["data"]); h_px, w_px = data.shape[:2]
+    c0, r0 = (w_px - crop_w) // 2, (h_px - crop_h) // 2
+    return {**tem, "data": data[r0:r0 + crop_h, c0:c0 + crop_w]}
+
+def _in_range_object_centroids(objects: list, ranges: Dict[str, Tuple[float, float]]) -> np.ndarray:
+    """(row, col) centroids of objects whose measured dimensions all fall inside the fit ranges.
+    An object counts only if it has at least one dimension keyed in ``ranges`` and every such
+    dimension is within its window. Returns an (N, 2) array (possibly empty)."""
+    pts = []
+    for ob in objects:
+        matched = [(k, v) for k, v in ob.get("dims", {}).items() if k in ranges]
+        if matched and all(ranges[k][0] <= v <= ranges[k][1] for k, v in matched):
+            pts.append((ob["cy"], ob["cx"]))
+    return np.array(pts, dtype=float) if pts else np.zeros((0, 2))
+
+def _crop_tem_to_fov(tem: Optional[dict], crop_w_nm: float, crop_h_nm: float,
+                     hist_specs: List[dict]) -> Optional[dict]:
+    """Crop ``tem`` to a ``crop_w_nm × crop_h_nm`` window placed over the region richest in
+    watershed objects whose dimensions lie within the histogram (Gaussian-fit) ranges.
+    Failsafes: returns the image unchanged when uncalibrated or already at/below the requested
+    FOV; falls back to a centered crop when no in-range object positions are available."""
+    if tem is None or tem.get("data") is None:
+        return tem
+    data = np.asarray(tem["data"])
+    nmpp = float(tem.get("nm_per_px", float("nan")))
+    if not (np.isfinite(nmpp) and nmpp > 0):
+        return tem
+    h_px, w_px = data.shape[:2]
+    crop_w = int(round(crop_w_nm / nmpp))
+    crop_h = int(round(crop_h_nm / nmpp))
+    if crop_w < 1 or crop_h < 1 or crop_w >= w_px or crop_h >= h_px:
+        return tem   # failsafe: the whole image is already at/below the requested FOV
+
+    ranges = {k: (float(s["fit_min"]), float(s["fit_max"]))
+              for s in hist_specs for k in s.get("keys", [])
+              if s.get("fit_min") is not None and s.get("fit_max") is not None
+              and s["fit_max"] > s["fit_min"]}
+    cents = _in_range_object_centroids(tem.get("objects", []), ranges)
+    if cents.shape[0] == 0:
+        return _tem_center_crop(tem, crop_w, crop_h)   # failsafe: nothing to localise on
+
+    # Densest window: box-count the in-range centroids (a uniform filter is a sliding window
+    # sum up to a constant), then centre the crop on the max, clamped to stay inside the image
+    # — mirroring extract_representative_roi's approach.
+    pmap = np.zeros((h_px, w_px))
+    rr = np.clip(cents[:, 0].astype(int), 0, h_px - 1)
+    cc = np.clip(cents[:, 1].astype(int), 0, w_px - 1)
+    np.add.at(pmap, (rr, cc), 1.0)
+    counts = uniform_filter(pmap, size=(crop_h, crop_w), mode="constant")
+    # Many windows can tie at the max object count (a plateau); among them pick the centre
+    # closest to the in-range centroid cloud, so the particles sit centred in the crop rather
+    # than at a corner of that plateau.
+    ys, xs = np.where(counts >= counts.max() - 1e-9)
+    tgt = cents.mean(axis=0)
+    j = int(np.argmin((ys - tgt[0]) ** 2 + (xs - tgt[1]) ** 2))
+    y, x = int(ys[j]), int(xs[j])
+    r0 = max(0, min(y - crop_h // 2, h_px - crop_h))
+    c0 = max(0, min(x - crop_w // 2, w_px - crop_w))
+    return {**tem, "data": data[r0:r0 + crop_h, c0:c0 + crop_w]}
 
 def _select_tem_for_summary(results: Optional[list], key: str) -> Optional[dict]:
     """Dropdown to pick the TEM image shown in the summary; defaults to the image whose
@@ -1128,7 +1354,8 @@ def _select_tem_for_summary(results: Optional[list], key: str) -> Optional[dict]
         help=f"Defaults to the image nearest 30 kx ({MAG_30KX_FOV_NM[0]:.0f} × {MAG_30KX_FOV_NM[1]:.0f} nm FOV).",
     )
     r = next(rr for rr in results if rr["name"] == sel)
-    return {"data": r["data"], "nm_per_px": float(r.get("nm_per_px", float("nan"))), "name": sel}
+    return {"data": r["data"], "nm_per_px": float(r.get("nm_per_px", float("nan"))),
+            "name": sel, "objects": r.get("objects", [])}
 
 def summary_export_ui(
     shape_type: str, hist_specs: List[dict], geom: Dict[str, float],
@@ -1137,15 +1364,32 @@ def summary_export_ui(
 ) -> None:
     """A checkbox that builds the comprehensive summary figure on demand, previews it,
     and offers a high-resolution PNG download."""
-    if not st.checkbox("Build comprehensive summary figure", key=f"summary_{shape_type}"):
+    if not st.checkbox("Build comprehensive summary figure", value=True, key=f"summary_{shape_type}"):
         st.caption("Tick to assemble one figure with all histograms, r_eff ± SD, and a TEM image "
                    "with the reported geometry (2-D projections + 3-D wireframe) overlaid to scale.")
         return
     tem = _select_tem_for_summary(results, shape_type)
+    # Read the zoom choice before building the figure; the dropdown itself is rendered below
+    # the figure (Streamlit persists it by key, so changing it reruns and regenerates the crop).
+    zoom_key = f"summary_zoom_{shape_type}"
+    zoom_labels = ["Full image"] + [f"{int(k)} kx" for k in ZOOM_OPTIONS_KX]
+    zoom_default = "30 kx"
+    zoom_choice = st.session_state.get(zoom_key, zoom_default)
+    if zoom_choice != "Full image" and unit == "nm":
+        kx = float(zoom_choice.split()[0])
+        crop_w_nm, crop_h_nm = _fov_for_kx(kx)
+        tem = _crop_tem_to_fov(tem, crop_w_nm, crop_h_nm, hist_specs)
     fig = build_summary_figure(shape_type, hist_specs, geom, reff, reff_sd, unit, prefix, notes, tem)
     st.pyplot(fig, use_container_width=True)
+    st.selectbox(
+        "Crop field of view", zoom_labels, index=zoom_labels.index(zoom_default), key=zoom_key,
+        help="Zoom the summary TEM image to the field of view for the chosen magnification, placed "
+             "over the region densest in particles whose sizes fall within the histogram fit "
+             "range(s). Falls back to the full image when it is already at/below that FOV.",
+    )
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", dpi=300)
+    # No bbox_inches="tight": keep the exact locked page size so exported summaries tile cleanly.
+    fig.savefig(buf, format="png", dpi=300)
     st.download_button(
         "Export summary figure (PNG)", buf.getvalue(),
         f"{prefix}_{shape_type.replace(' ', '_').lower()}_summary.png", "image/png",
@@ -1186,7 +1430,8 @@ def run() -> None:
 
     with tab_tune:
         st.subheader("Step 2: Tune Watershed Parameters")
-        
+        render_dimension_guide(shape_type)
+
         c_roi, c_size, c_thresh, c_peak = st.columns(4)
         with c_roi:
             roi_size = st.number_input(f"ROI Size ({unit})", min_value=50, max_value=2000, value=200, step=50)
@@ -1224,7 +1469,8 @@ def run() -> None:
         with plot_c2:
             st.caption("Fitted Shapes (ROI)")
             fig, ax = plt.subplots(figsize=(5, 5), dpi=150)
-            plot_annotated_image(ax, seg_roi["data"], seg_roi["draw_shapes"])
+            plot_annotated_image(ax, seg_roi["data"], seg_roi["draw_shapes"],
+                                 seg_roi["nm_per_px"], seg_roi["unit"])
             fig.tight_layout(pad=0)
             st.pyplot(fig)
             plt.close(fig)
@@ -1261,14 +1507,16 @@ def run() -> None:
             with img_c2:
                 st.caption(f"Annotated Full Image ({sel_res['unit']})")
                 fig_full, ax_full = plt.subplots(figsize=(8, 8), dpi=150)
-                plot_annotated_image(ax_full, sel_res["data"], sel_res["draw_shapes"])
+                plot_annotated_image(ax_full, sel_res["data"], sel_res["draw_shapes"],
+                                     sel_res["nm_per_px"], sel_res["unit"], show_mag=True)
                 fig_full.tight_layout(pad=0)
                 st.pyplot(fig_full)
                 plt.close(fig_full)
 
             st.markdown("---")
             st.markdown("### Histograms & Effective Radius ($r_{eff}$)")
-            
+            render_dimension_guide(shape_type)
+
             prefix = _common_prefix([r["name"] for r in results])
             unit_full = results[0]["unit"] if results else "nm"
 
@@ -1297,7 +1545,8 @@ def run() -> None:
                         )
                         summary_export_ui(
                             shape_type,
-                            [{"values": all_d, "title": "Diameter", "fit_min": fmin, "fit_max": fmax}],
+                            [{"values": all_d, "title": "Diameter", "fit_min": fmin, "fit_max": fmax,
+                              "keys": ["diameters"]}],
                             {"R": mean_d / 2.0}, r_eff, r_eff_sd, unit_full, prefix, results=results,
                         )
                     else:
@@ -1370,7 +1619,8 @@ def run() -> None:
                             summary_export_ui(
                                 shape_type,
                                 [{"values": all_axes, "title": "Rectangle axes",
-                                  "n_components": 2, "fit_min": amin, "fit_max": amax, "mu_ranges": mu_ranges}],
+                                  "n_components": 2, "fit_min": amin, "fit_max": amax, "mu_ranges": mu_ranges,
+                                  "keys": ["hex_heights", "hex_rect_widths"]}],
                                 {"W": mean_w, "H": mean_h}, r_eff, r_eff_sd, unit_full, prefix, " ".join(notes),
                                 results=results,
                             )
@@ -1386,14 +1636,16 @@ def run() -> None:
                         fig_w, *_ = histogram_with_fit(all_w, "Hex width (face-on)", unit_full, fit_min=wmin, fit_max=wmax)
                         st.pyplot(fig_w, use_container_width=True)
                         _download_row(fig_w, pd.DataFrame({"hex_width": w_crop}), f"{prefix}_hex_width")
-                        hist_specs.append({"values": all_w, "title": "Hex width (face-on)", "fit_min": wmin, "fit_max": wmax})
+                        hist_specs.append({"values": all_w, "title": "Hex width (face-on)", "fit_min": wmin, "fit_max": wmax,
+                                           "keys": ["hex_widths"]})
                     if all_h.size > 0:
                         hmin, hmax = get_min_max_ui("hex_h", f"Height ({unit_full})", all_h)
                         h_crop = all_h[(all_h >= hmin) & (all_h <= hmax)]
                         fig_h, *_ = histogram_with_fit(all_h, "Height (side-on)", unit_full, fit_min=hmin, fit_max=hmax)
                         st.pyplot(fig_h, use_container_width=True)
                         _download_row(fig_h, pd.DataFrame({"hex_height": h_crop}), f"{prefix}_hex_height")
-                        hist_specs.append({"values": all_h, "title": "Height (side-on)", "fit_min": hmin, "fit_max": hmax})
+                        hist_specs.append({"values": all_h, "title": "Height (side-on)", "fit_min": hmin, "fit_max": hmax,
+                                           "keys": ["hex_heights"]})
 
                     # Resolve width & height, stating the assumption whenever a projection is scarce.
                     notes = []
@@ -1459,7 +1711,8 @@ def run() -> None:
                         )
                         summary_export_ui(
                             shape_type,
-                            [{"values": all_s, "title": "Cube side length", "fit_min": smin, "fit_max": smax}],
+                            [{"values": all_s, "title": "Cube side length", "fit_min": smin, "fit_max": smax,
+                              "keys": ["side_lengths"]}],
                             {"s": mean_s}, r_eff, r_eff_sd, unit_full, prefix, results=results,
                         )
                     else:
@@ -1510,7 +1763,8 @@ def run() -> None:
                     summary_export_ui(
                         shape_type,
                         [{"values": all_axes, "title": "Octahedron combined axes", "n_components": n_comp,
-                          "fit_min": omin, "fit_max": omax, "mu_ranges": mu_ranges}],
+                          "fit_min": omin, "fit_max": omax, "mu_ranges": mu_ranges,
+                          "keys": ["oct_major", "oct_minor"]}],
                         {"major": mu_major, "minor": mu_minor}, r_eff, r_eff_sd, unit_full, prefix, " ".join(notes),
                         results=results,
                     )
@@ -1583,7 +1837,8 @@ def run() -> None:
                         notes.append(f"Only {w_crop.size} tic-tac(s) in the selected width range (< {MIN_SHAPE_COUNT}); r_eff may be unreliable.")
 
                     hist_specs = [{"values": all_w, "title": "Tic Tac width", "n_components": w_ncomp,
-                                   "fit_min": wmin, "fit_max": wmax, "mu_ranges": mu_ranges}]
+                                   "fit_min": wmin, "fit_max": wmax, "mu_ranges": mu_ranges,
+                                   "keys": ["tic_tac_width"]}]
 
                     # Body length (straight plateau between the caps).
                     mean_body, sd_body = float("nan"), float("nan")
@@ -1598,7 +1853,8 @@ def run() -> None:
                         if body_crop.size > 0:
                             mean_body, sd_body = _mean_sd(body_crop)
                             hist_specs.append({"values": all_body, "title": "Tic Tac body length",
-                                               "fit_min": blmin, "fit_max": blmax})
+                                               "fit_min": blmin, "fit_max": blmax,
+                                               "keys": ["tic_tac_body_length"]})
 
                     # Total length (body + both caps) for reference.
                     if all_maj.size > 0:
@@ -1610,7 +1866,8 @@ def run() -> None:
                         st.pyplot(fig_maj, use_container_width=True)
                         _download_row(fig_maj, pd.DataFrame({"tic_tac_total_length": maj_crop}), f"{prefix}_tictac_total")
                         hist_specs.append({"values": all_maj, "title": "Tic Tac total length",
-                                           "fit_min": mjmin, "fit_max": mjmax})
+                                           "fit_min": mjmin, "fit_max": mjmax,
+                                           "keys": ["tic_tac_major"]})
 
                     mean_cap, sd_cap = _mean_sd(all_cap) if all_cap.size > 0 else (0.0, 0.0)
 

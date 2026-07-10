@@ -1,6 +1,7 @@
 # app.py
 import os
 import sys
+import json
 import traceback
 import importlib
 import importlib.util
@@ -10,6 +11,7 @@ import subprocess
 from datetime import datetime, timezone
 
 import streamlit as st
+import streamlit.components.v1 as components
 from zoneinfo import ZoneInfo
 
 REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
@@ -51,6 +53,78 @@ try:
     )
 except Exception:
     pass
+
+
+# ---------------------------------------------------------------------------
+# Dynamic browser-tab title
+# ---------------------------------------------------------------------------
+# ``set_page_config`` only sets a static title, so we drive the tab text live
+# with a small JS hook injected via components.html (which can reach the parent
+# document). One persistent hook — installed once — shows:
+#   • "Uploading files…"  while a file input is receiving files
+#   • "Analyzing…"        while Streamlit is running (its status widget is shown)
+#   • the tool name        otherwise (idle), shortened to fit a narrow tab
+# We only re-send the current idle name each rerun; the hook does the switching.
+
+# Compact tab labels; anything not listed falls back to truncation.
+SHORT_TOOL_NAMES = {
+    "Brightness (WF)": "Brightness WF",
+    "Brightness (Conf)": "Brightness Conf",
+    "Saturation Series": "Sat Series",
+    "Confocal Visualization": "Confocal Viz",
+    "Dye Colocalization": "Coloc",
+    "Process Spectra": "Proc Spectra",
+    "Monomer Estimation": "Monomers",
+    "Shelling Injection Table": "Shelling",
+    "TEM Size Analysis": "TEM Size",
+    "FFT Analysis": "FFT",
+}
+
+
+def _short_tab_name(label: str, maxlen: int = 18) -> str:
+    name = SHORT_TOOL_NAMES.get(label, label)
+    if len(name) > maxlen:
+        name = name[: maxlen - 1].rstrip() + "…"
+    return name
+
+
+def _sync_tab_title(idle_name: str):
+    """Install (once) the tab-title hook and set the current idle name.
+
+    Uses a single 0-px iframe per rerun. The hook watches Streamlit's running
+    indicator (``stStatusWidget``) to show "Analyzing…", a file-input change to
+    show "Uploading files…", and otherwise the idle tool name.
+    """
+    components.html(
+        """
+        <script>
+        (function () {
+            const doc = window.parent.document;
+            doc.__psyfitIdle = %s;
+            const RUNNING = '[data-testid="stStatusWidgetRunningIcon"], [data-testid="stStatusWidgetRunningManIcon"]';
+            function apply() {
+                if (doc.querySelector(RUNNING)) {
+                    doc.title = 'Analyzing…';
+                } else if (!(doc.title || '').startsWith('Uploading')) {
+                    doc.title = doc.__psyfitIdle;
+                }
+            }
+            if (!doc.__psyfitTitleHook) {
+                doc.__psyfitTitleHook = true;
+                doc.addEventListener('change', function (e) {
+                    const t = e.target;
+                    if (t && t.tagName === 'INPUT' && t.type === 'file' && t.files && t.files.length) {
+                        doc.title = 'Uploading files…';
+                    }
+                }, true);
+                new MutationObserver(apply).observe(doc.body, {childList: true, subtree: true});
+            }
+            apply();
+        })();
+        </script>
+        """ % json.dumps(idle_name),
+        height=0,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +358,10 @@ def safe_run_tool(modpath: str, funcname: str, label: str):
 if tool_label in TOOLS:
     modpath, funcname, cat, description, is_beta = TOOLS[tool_label]
 
+    # Idle tab title = the (shortened) tool name; the hook flips it to
+    # "Analyzing…" while running and "Uploading files…" during uploads.
+    _sync_tab_title(_short_tab_name(tool_label))
+
     title = f"{tool_label}" + ("  Beta" if is_beta else "")
     st.title(title)
     st.caption(f"{cat} · {description}")
@@ -292,5 +370,6 @@ if tool_label in TOOLS:
 
     safe_run_tool(modpath, funcname, tool_label)
 else:
+    _sync_tab_title("PsyFit")
     st.title("🔬 PsyFit")
     st.info("Select a tool from the sidebar to begin.")
