@@ -677,18 +677,29 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
         axes = axes.flatten()
     else:
         axes = [axes]    
-    all_vals = []
-    if univ_minmax and normalization is None:
-        all_vals = []
-        for sif_file in sif_files:
-            sif_name = sif_file.name
-            if sif_name in df_dict:
-                all_vals.append(df_dict[sif_name]["image"])
-        if all_vals:
-            stacked = np.stack(all_vals)
-            global_min = stacked.min()
-            global_max = stacked.max()
-            normalization = Normalize(vmin=global_min, vmax=global_max)
+    # `normalization` arrives as a LogNorm() instance for log scaling, else None.
+    # Detect log intent, then build a FRESH norm per subplot below — reusing one
+    # Normalize/LogNorm instance across imshow() calls makes matplotlib share its
+    # autoscaled vmin/vmax, which silently forces universal scaling. Universal
+    # mode instead uses one global vmin/vmax (matching the img+1 used in imshow).
+    from matplotlib.colors import LogNorm, Normalize
+    is_log = normalization is not None
+
+    g_vmin = g_vmax = None
+    if univ_minmax:
+        imgs = [df_dict[f.name]["image"] for f in sif_files if f.name in df_dict]
+        if imgs:
+            g_vmin = float(min(im.min() for im in imgs)) + 1.0
+            g_vmax = float(max(im.max() for im in imgs)) + 1.0
+
+    def _make_norm():
+        if univ_minmax:
+            if is_log:
+                return LogNorm(vmin=g_vmin, vmax=g_vmax)
+            return Normalize(vmin=g_vmin, vmax=g_vmax)
+        # Independent per-subplot scaling.
+        return LogNorm() if is_log else None
+
     for i, sif_file in enumerate(sif_files):
         ax = axes[i]
         sif_name = sif_file.name  
@@ -719,8 +730,9 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
                         'distance': distances[closest_idx]
                     })
 
-        im = ax.imshow(img + 1, cmap=cmap, origin='lower', norm=normalization)
-        # Only show colorbar on the last subplot in the first row (column n_cols-1)
+        im = ax.imshow(img + 1, cmap=cmap, origin='lower', norm=_make_norm())
+        # Per-subplot colorbar when scaling is independent; universal mode adds a
+        # single shared colorbar after the loop.
         if not univ_minmax:
             plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
 

@@ -297,10 +297,12 @@ def fit_aperture_circle(image, pix_size_um=None, min_diameter_um=20.0):
 def aperture_or_inscribed(image, region, pix_size_um, min_diameter_um=20.0):
     """
     Aperture dict for `image`: the fitted circular field stop, or a circle
-    inscribed in the region if the fit fails. Returns None for the 'custom'
-    region (not a full circular aperture) or when no image is available.
+    inscribed in the region if the fit fails. Returns None for the 'custom' and
+    'all' regions (no single circular aperture — 'all' is a 4-channel frame) or
+    when no image is available.
     """
-    if image is None or getattr(image, "ndim", 0) < 2 or str(region) == "custom":
+    if (image is None or getattr(image, "ndim", 0) < 2
+            or str(region) in ("custom", "all")):
         return None
     ap = fit_aperture_circle(image, pix_size_um=pix_size_um, min_diameter_um=min_diameter_um)
     if ap is None:
