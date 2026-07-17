@@ -28,6 +28,7 @@ import streamlit as st
 import io
 import re
 import os
+import math
 import textwrap
 
 import plotly.express as px
@@ -45,7 +46,35 @@ def HWT_aesthetic():
     sns.despine()
     return palette 
 
-def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3, min_distance = 5):
+def file_uploader_with_clear(label, *, key, clear_label="🗑️ Clear all",
+                             on_clear=None, **uploader_kwargs):
+    """``st.file_uploader`` paired with a button that clears all selected files.
+
+    Streamlit only resets a file_uploader when its widget ``key`` changes, so we
+    keep a per-uploader nonce in ``st.session_state`` and bump it from the
+    button's ``on_click`` (which runs before widgets are rebuilt on the next
+    run), forcing a fresh, empty uploader. ``key`` must be unique per uploader.
+
+    Pass ``on_clear`` to run extra cleanup (e.g. clearing a cache) when cleared.
+    Any other keyword args are forwarded to ``st.file_uploader``.
+    """
+    nonce_key = f"__uploader_nonce_{key}"
+    st.session_state.setdefault(nonce_key, 0)
+
+    def _clear():
+        st.session_state[nonce_key] += 1
+        if on_clear is not None:
+            on_clear()
+
+    files = st.file_uploader(
+        label, key=f"{key}__{st.session_state[nonce_key]}", **uploader_kwargs
+    )
+    st.button(clear_label, key=f"{key}__clear_btn", on_click=_clear,
+              disabled=not files)
+    return files
+
+
+def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3, min_distance = 5, roi=None):
     image_data, metadata = sif_parser.np_open(sif, ignore_corrupt=True)
     image_data = image_data[0]  # (H, W)
 
@@ -63,7 +92,11 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
 
     # --- Crop image if region specified ---
     region = str(region)
-    if region == '3':
+    if roi is not None:
+        # User-drawn rectangular ROI (raw-array slice bounds); overrides region.
+        row0, row1, col0, col1 = roi
+        image_data_cps = image_data_cps[row0:row1, col0:col1]
+    elif region == '3':
         image_data_cps = image_data_cps[0:256, 0:256]
     elif region == '4':
         image_data_cps = image_data_cps[0:256, 256:512]
@@ -441,6 +474,8 @@ def plot_histogram(df,
         idx = np.argmax(gmm.weights_)
         mu_primary = gmm.means_.flatten()[idx]
         sigma_primary = np.sqrt(gmm.covariances_.flatten()[idx])
+        # Return the fitted stats to callers (previously left as None).
+        mu, sigma = mu_primary, sigma_primary
         sigma_over_mu = (sigma_primary / mu_primary * 100) if mu_primary != 0 else 0
         n_points = len(brightness_vals)
 
@@ -642,18 +677,29 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
         axes = axes.flatten()
     else:
         axes = [axes]    
-    all_vals = []
-    if univ_minmax and normalization is None:
-        all_vals = []
-        for sif_file in sif_files:
-            sif_name = sif_file.name
-            if sif_name in df_dict:
-                all_vals.append(df_dict[sif_name]["image"])
-        if all_vals:
-            stacked = np.stack(all_vals)
-            global_min = stacked.min()
-            global_max = stacked.max()
-            normalization = Normalize(vmin=global_min, vmax=global_max)
+    # `normalization` arrives as a LogNorm() instance for log scaling, else None.
+    # Detect log intent, then build a FRESH norm per subplot below — reusing one
+    # Normalize/LogNorm instance across imshow() calls makes matplotlib share its
+    # autoscaled vmin/vmax, which silently forces universal scaling. Universal
+    # mode instead uses one global vmin/vmax (matching the img+1 used in imshow).
+    from matplotlib.colors import LogNorm, Normalize
+    is_log = normalization is not None
+
+    g_vmin = g_vmax = None
+    if univ_minmax:
+        imgs = [df_dict[f.name]["image"] for f in sif_files if f.name in df_dict]
+        if imgs:
+            g_vmin = float(min(im.min() for im in imgs)) + 1.0
+            g_vmax = float(max(im.max() for im in imgs)) + 1.0
+
+    def _make_norm():
+        if univ_minmax:
+            if is_log:
+                return LogNorm(vmin=g_vmin, vmax=g_vmax)
+            return Normalize(vmin=g_vmin, vmax=g_vmax)
+        # Independent per-subplot scaling.
+        return LogNorm() if is_log else None
+
     for i, sif_file in enumerate(sif_files):
         ax = axes[i]
         sif_name = sif_file.name  
@@ -684,8 +730,9 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
                         'distance': distances[closest_idx]
                     })
 
-        im = ax.imshow(img + 1, cmap=cmap, origin='lower', norm=normalization)
-        # Only show colorbar on the last subplot in the first row (column n_cols-1)
+        im = ax.imshow(img + 1, cmap=cmap, origin='lower', norm=_make_norm())
+        # Per-subplot colorbar when scaling is independent; universal mode adds a
+        # single shared colorbar after the loop.
         if not univ_minmax:
             plt.colorbar(im, ax=ax, label='pps', fraction=0.046, pad=0.04)
 
@@ -761,4 +808,65 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     if all_matched_pairs:
         return pd.DataFrame(all_matched_pairs)
     return None
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Spectral calibration helpers (merged from the former Methods.py).
+# Used by tools/get_spectra.py to map a particle coordinate onto the
+# spectrometer image via the nearest non-collinear calibration grid points.
+# Note: the vector-norm helper is named `vec_norm` (not `norm`) to avoid
+# shadowing `scipy.stats.norm` imported above.
+# ───────────────────────────────────────────────────────────────────────────
+def distance(point1, point2):
+    return math.sqrt((point1[0] - point2[0])**2 + (point1[1] - point2[1])**2)
+
+
+def vec_norm(vec):
+    return math.sqrt(vec[0]**2 + vec[1]**2)
+
+
+def express(x, origin, point1, point2):
+    """Express ``x`` in terms of the two basis vectors (point1-origin), (point2-origin)."""
+    x -= origin
+    vec1 = point1 - origin
+    vec2 = point2 - origin
+    coeffs = np.linalg.solve(np.vstack((vec1, vec2)).T, x)
+    return coeffs
+
+
+def get_image(point, grid, grid_images):
+    """Interpolate the spectrometer image position for ``point`` from the three
+    nearest, non-collinear calibration grid points."""
+    distances = [distance(point, val) for val in grid]
+    sorted_ind = np.argsort(distances)
+    gridpoints = sorted_ind[:3]
+
+    before = [np.array(grid[gridpoint]) for gridpoint in gridpoints]
+    cos_angle = (before[1]-before[0])@(before[2]-before[0])/vec_norm(before[1]-before[0])/vec_norm(before[2]-before[0])
+
+    # avoid collinear points
+    k = 3
+    while np.abs(cos_angle) > 0.1:
+        gridpoints[-1] = sorted_ind[k]
+        before = [np.array(grid[gridpoint]) for gridpoint in gridpoints]
+        cos_angle = (before[1]-before[0])@(before[2]-before[0])/vec_norm(before[1]-before[0])/vec_norm(before[2]-before[0])
+        k += 1
+
+    before = [grid[gridpoint] for gridpoint in gridpoints]
+    after = [grid_images[gridpoint] for gridpoint in gridpoints]
+
+    coeffs = express(np.array(point), np.array(before[0]), np.array(before[1]), np.array(before[2]))
+
+    object = np.array(before[0]) + coeffs[0]*(np.array(before[1])-np.array(before[0])) + coeffs[1]*(np.array(before[2])-np.array(before[0]))
+    image = np.array(after[0]) + coeffs[0]*(np.array(after[1])-np.array(after[0])) + coeffs[1]*(np.array(after[2])-np.array(after[0]))
+
+    return object, image
+
+
+def normalize(array):
+    return (array - np.min(array)) / (np.max(array) - np.min(array))
+
+
+def exp(x, a, b, c):
+    return a*np.exp(b*x) + c
 

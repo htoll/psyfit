@@ -1,6 +1,7 @@
 # app.py
 import os
 import sys
+import json
 import traceback
 import importlib
 import importlib.util
@@ -10,16 +11,16 @@ import subprocess
 from datetime import datetime, timezone
 
 import streamlit as st
-from zoneinfo import ZoneInfo
 import streamlit.components.v1 as components
-
+from zoneinfo import ZoneInfo
 
 REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
-sys.path.insert(0, REPO_ROOT)   
+# Ensure local imports work when running "streamlit run app.py"
+sys.path.insert(0, REPO_ROOT)
+
 
 def _repo_last_updated(repo_path: str) -> str:
     """Return a human-readable timestamp for the last git commit in ``repo_path``."""
-
     try:
         timestamp_raw = subprocess.check_output(
             ["git", "-C", repo_path, "log", "-1", "--format=%ct"],
@@ -33,75 +34,235 @@ def _repo_last_updated(repo_path: str) -> str:
         return "unknown"
 
     try:
-        timestamp = datetime.fromtimestamp(int(timestamp_raw), tz=timezone.utc).astimezone(ZoneInfo("America/New_York"))
+        timestamp = datetime.fromtimestamp(
+            int(timestamp_raw), tz=timezone.utc
+        ).astimezone(ZoneInfo("America/New_York"))
     except (ValueError, OSError, OverflowError):
         return "unknown"
 
-    return timestamp.strftime("%Y-%m-%d %H:%M:%S %Z")
-# Ensure local imports work when running "streamlit run app.py"
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-#test
+    return timestamp.strftime("%Y-%m-%d %H:%M %Z")
+
+
 # --- Page setup ---
 try:
-    st.set_page_config(layout="wide")
+    st.set_page_config(
+        page_title="PsyFit",
+        page_icon="🔬",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
 except Exception:
     pass
 
-st.markdown(
-    (
-        "<div style='display:flex; justify-content:flex-end; margin-bottom:0.5rem; color:#5c5c5c;'>"
-        f"<span style='font-size:0.9rem;'>Last repository update: {_repo_last_updated(REPO_ROOT)}</span>"
-        "</div>"
-    ),
-    unsafe_allow_html=True,
-)
 
+# ---------------------------------------------------------------------------
+# Dynamic browser-tab title
+# ---------------------------------------------------------------------------
+# ``set_page_config`` only sets a static title, so we drive the tab text live
+# with a small JS hook injected via components.html (which can reach the parent
+# document). One persistent hook — installed once — shows:
+#   • "Uploading files…"  while a file input is receiving files
+#   • "Analyzing…"        while Streamlit is running (its status widget is shown)
+#   • the tool name        otherwise (idle), shortened to fit a narrow tab
+# We only re-send the current idle name each rerun; the hook does the switching.
 
-st.sidebar.title("Tools")
-
-
-# Central registry: Display Name -> (module_path, callable_name)
-tool_registry = {
-    "Batch Convert": ("tools.batch_convert", "run"),
-    "Brightness (WF)": ("tools.analyze_single_sif", "run"),
-    "Brightness (Conf)": ("tools.confocal_brightness", "run"),
-    "Confocal Visualization": ("tools.confocal_visualizer", "run"),
-    "Dye Colocalization": ("tools.colocalization", "run"),
-    "Get Spectra": ("tools.get_spectra", "run"),
-    "Monomer Estimation": ("tools.monomers", "run"),
-    "Process Movie": ("tools.read_movie", "run"),
-    "Saturation Series": ("tools.SaturationSeries", "run"),
-    "Shelling Injection Table": ("tools.shelling_table", "run"),
-
-    # "Plot CSVs": ("tools.plot_csv", "run"), 
-    "*BETA* TEM Size Analysis": ("tools.spherical_tem", "run"),
-    "*BETA* FFT Analysis": ("tools.fft", "run"),
+# Compact tab labels; anything not listed falls back to truncation.
+SHORT_TOOL_NAMES = {
+    "Brightness (WF)": "Brightness WF",
+    "Brightness (Conf)": "Brightness Conf",
+    "Saturation Series": "Sat Series",
+    "Confocal Visualization": "Confocal Viz",
+    "Dye Colocalization": "Coloc",
+    "Process Spectra": "Proc Spectra",
+    "Monomer Estimation": "Monomers",
+    "Shelling Injection Table": "Shelling",
+    "TEM Size Analysis": "TEM Size",
+    "FFT Analysis": "FFT",
 }
 
+
+def _short_tab_name(label: str, maxlen: int = 18) -> str:
+    name = SHORT_TOOL_NAMES.get(label, label)
+    if len(name) > maxlen:
+        name = name[: maxlen - 1].rstrip() + "…"
+    return name
+
+
+def _sync_tab_title(idle_name: str):
+    """Install (once) the tab-title hook and set the current idle name.
+
+    Uses a single 0-px iframe per rerun. The hook watches Streamlit's running
+    indicator (``stStatusWidget``) to show "Analyzing…", a file-input change to
+    show "Uploading files…", and otherwise the idle tool name.
+    """
+    components.html(
+        """
+        <script>
+        (function () {
+            const doc = window.parent.document;
+            doc.__psyfitIdle = %s;
+            const RUNNING = '[data-testid="stStatusWidgetRunningIcon"], [data-testid="stStatusWidgetRunningManIcon"]';
+            function apply() {
+                if (doc.querySelector(RUNNING)) {
+                    doc.title = 'Analyzing…';
+                } else if (!(doc.title || '').startsWith('Uploading')) {
+                    doc.title = doc.__psyfitIdle;
+                }
+            }
+            if (!doc.__psyfitTitleHook) {
+                doc.__psyfitTitleHook = true;
+                doc.addEventListener('change', function (e) {
+                    const t = e.target;
+                    if (t && t.tagName === 'INPUT' && t.type === 'file' && t.files && t.files.length) {
+                        doc.title = 'Uploading files…';
+                    }
+                }, true);
+                new MutationObserver(apply).observe(doc.body, {childList: true, subtree: true});
+            }
+            apply();
+        })();
+        </script>
+        """ % json.dumps(idle_name),
+        height=0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool registry
+# Display Name -> (module_path, callable_name, category, description, beta)
+# ---------------------------------------------------------------------------
+TOOLS = {
+    "Batch Convert": (
+        "tools.batch_convert", "run", "Convert & Export",
+        "Bulk-convert .sif files into images/data; splits into quadrants with UCNP or dye detection.",
+        False,
+    ),
+    "Process Movie": (
+        "tools.read_movie", "run", "Convert & Export",
+        "Export .sif movies to MP4/MOV/TIFF with region crops, labels, and colorbars.",
+        False,
+    ),
+    "Brightness (WF)": (
+        "tools.analyze_single_sif", "run", "Brightness & Intensity",
+        "Detect emitters in widefield .sif images and quantify per-particle brightness.",
+        False,
+    ),
+    "Brightness (Conf)": (
+        "tools.confocal_brightness", "run", "Brightness & Intensity",
+        "Analyze confocal .dat files for per-particle brightness with tunable fit thresholds.",
+        False,
+    ),
+    "Saturation Series": (
+        "tools.SaturationSeries", "run", "Brightness & Intensity",
+        "Plot brightness versus excitation power density across a saturation series by quadrant.",
+        False,
+    ),
+    "Confocal Visualization": (
+        "tools.confocal_visualizer", "run", "Visualization",
+        "Visualize and merge confocal channels with custom colormaps and grid layouts.",
+        False,
+    ),
+    "Dye Colocalization": (
+        "tools.colocalization", "run", "Spectral & Colocalization",
+        "Measure colocalization between dye channels across registered images.",
+        False,
+    ),
+    "Get Spectra": (
+        "tools.get_spectra", "run", "Spectral & Colocalization",
+        "Extract and plot emission spectra from uploaded acquisitions.",
+        False,
+    ),
+    "Process Spectra": (
+        "tools.process_spectra", "run", "Spectral & Colocalization",
+        "Compare Get Spectra CSVs: per-file plots, click-to-exclude, averaging, normalization, and volume scaling.",
+        False,
+    ),
+    "Monomer Estimation": (
+        "tools.monomers", "run", "Quantification",
+        "Estimate monomer/dimer/trimer/multimer populations from brightness distributions. "
+        "Concentration estimation assumes uniform distribution of particles across 3 mm PDMS "
+        "well volume using 5 uL of 1x PBS that has been allowed to equilibrate for > 5 mins.",
+        False,
+    ),
+    "Shelling Injection Table": (
+        "tools.shelling_table", "run", "Synthesis",
+        "Compute shell-growth injection volumes and timing for nanocrystal synthesis.",
+        False,
+    ),
+    "TEM Size Analysis": (
+        "tools.tem_analysis", "run", "TEM",
+        "Characterize particle size and shape from TEM images using computer-vision watershed fitting.",
+        True,
+    ),
+    "FFT Analysis": (
+        "tools.fft", "run", "TEM",
+        "Estimate lattice spacing from TEM images via interactive FFT analysis.",
+        True,
+    ),
+    # "Plot CSVs": ("tools.plot_csv", "run", "Convert & Export", "Flexible CSV plotting.", False),
+}
+
+# Preserve registry insertion order for categories.
+CATEGORY_ORDER = []
+for _label, (_m, _f, _cat, _d, _b) in TOOLS.items():
+    if _cat not in CATEGORY_ORDER:
+        CATEGORY_ORDER.append(_cat)
+
+
+# ---------------------------------------------------------------------------
+# Sidebar: navigation
+# ---------------------------------------------------------------------------
+st.sidebar.title("🔬 PsyFit")
+st.sidebar.caption("Microscopy & nanoparticle analysis toolkit")
+
+category = st.sidebar.radio(
+    "Category",
+    CATEGORY_ORDER,
+    index=0,
+)
+
+tools_in_category = [
+    label for label, (_m, _f, cat, _d, _b) in TOOLS.items() if cat == category
+]
+
+
+def _format_tool(label: str) -> str:
+    is_beta = TOOLS[label][4]
+    return f" {label}" if is_beta else label
+
+
+tool_label = st.sidebar.radio(
+    "Tool",
+    tools_in_category,
+    index=0,
+    format_func=_format_tool,
+)
+
+st.sidebar.divider()
+
+# ---------------------------------------------------------------------------
+# Sidebar: settings & diagnostics (tucked at the bottom)
+# ---------------------------------------------------------------------------
 show_traces = st.sidebar.toggle(
     "Show error tracebacks",
     value=False,
-    help="Expand to see full Python tracebacks when tools error."
+    help="Expand to see full Python tracebacks when tools error.",
 )
 
-# ---- Diagnostics Sidebar ----
 with st.sidebar.expander("Diagnostics", expanded=False):
-    # Basic environment
     st.markdown("**Environment**")
     st.code(
         f"python: {platform.python_version()}\n"
-        f"os: {platform.system()} {platform.release()} ({platform.version()})\n"
+        f"os: {platform.system()} {platform.release()}\n"
         f"executable: {sys.executable}\n"
         f"cwd: {os.getcwd()}",
-        language="bash"
+        language="bash",
     )
 
-    # Key library versions via importlib.metadata (avoids importing the libs)
     wanted_pkgs = [
         "numpy", "scipy", "scikit-image", "scikit-learn",
-        "matplotlib", "pandas", "streamlit"
+        "matplotlib", "pandas", "streamlit",
     ]
-    st.markdown("**Package versions**")
 
     def pkg_version(name: str) -> str:
         try:
@@ -111,62 +272,58 @@ with st.sidebar.expander("Diagnostics", expanded=False):
         except Exception as e:
             return f"error: {type(e).__name__}"
 
-    versions_text = "\n".join([f"{p}: {pkg_version(p)}" for p in wanted_pkgs])
-    st.code(versions_text, language="bash")
+    st.markdown("**Package versions**")
+    st.code(
+        "\n".join(f"{p}: {pkg_version(p)}" for p in wanted_pkgs),
+        language="bash",
+    )
 
-    # sys.path (first few entries)
-    st.markdown("**sys.path (first 5)**")
-    st.code("\n".join(sys.path[:5]) + ("\n…",)[0], language="bash")
-
-    # Tool availability without importing (fast + safe)
     st.markdown("**Tool availability (light check)**")
     rows = []
-    for label, (modpath, funcname) in tool_registry.items():
+    for label, (modpath, _f, _c, _d, _b) in TOOLS.items():
         spec = importlib.util.find_spec(modpath)
-        rows.append(f"{label}: module={'found' if spec else 'missing'}")
+        rows.append(f"{label}: {'found' if spec else 'MISSING'}")
     st.code("\n".join(rows), language="bash")
 
-    # Optional deep check for a specific tool (imports the module)
     st.markdown("**Deep check a tool** (imports module)")
-    deep_tool = st.selectbox("Pick a tool to deep-check:", list(tool_registry.keys()))
+    deep_tool = st.selectbox("Pick a tool to deep-check:", list(TOOLS.keys()))
     if st.button("Run deep check"):
-        modpath, funcname = tool_registry[deep_tool]
+        modpath, funcname = TOOLS[deep_tool][0], TOOLS[deep_tool][1]
         try:
             module = importlib.import_module(modpath)
             fn = getattr(module, funcname, None)
-            callable_ok = callable(fn)
             st.success(
                 f"Imported `{modpath}` OK. "
                 f"{'Found' if fn else 'Missing'} `{funcname}`; "
-                f"{'callable' if callable_ok else 'not callable'}."
+                f"{'callable' if callable(fn) else 'not callable'}."
             )
         except Exception as e:
             st.error(f"Deep check failed for {deep_tool}: {type(e).__name__}: {e}")
             if show_traces:
                 st.code("".join(traceback.format_exception(e)), language="pytb")
 
-# ---- Main tool launcher ----
-available_labels = list(tool_registry.keys())
-label_to_key = {label: key for label, key in tool_registry.items()}
-tool_label = st.sidebar.radio("Analyze:", available_labels, index=0)
-# # ---- Add Live2D Widget to Sidebar ----
-# with st.sidebar: # joao tried to add an anime girl but it failed. he said he's going to try again...
-#     components.html(LIVE2D_HTML, height=400)
-# -------------------------------------
-col1, col2 = st.columns([1, 2])
+st.sidebar.caption(f"Last repository update: {_repo_last_updated(REPO_ROOT)}")
 
+
+# ---------------------------------------------------------------------------
+# Main area: header + selected tool
+# ---------------------------------------------------------------------------
 def render_error_context(title: str, err: Exception):
     st.error(f"⚠️ {title}: {type(err).__name__}: {err}")
     if show_traces:
         tb = "".join(traceback.format_exception(err))
         with st.expander("View traceback"):
             st.code(tb, language="pytb")
+    else:
+        st.caption("Enable *Show error tracebacks* in the sidebar for full details.")
+
 
 def safe_import(module_path: str):
     try:
         return importlib.import_module(module_path), None
     except Exception as e:
         return None, e
+
 
 def safe_getattr(module, attr: str):
     try:
@@ -176,6 +333,7 @@ def safe_getattr(module, attr: str):
         return fn, None
     except Exception as e:
         return None, e
+
 
 def safe_run_tool(modpath: str, funcname: str, label: str):
     with st.spinner(f"Loading {label}…"):
@@ -194,11 +352,24 @@ def safe_run_tool(modpath: str, funcname: str, label: str):
             return run_fn()
         except Exception as e:
             render_error_context(f"{label} crashed while running", e)
-                
             return
 
-if tool_label in label_to_key:
-    modpath, funcname = label_to_key[tool_label]
+
+if tool_label in TOOLS:
+    modpath, funcname, cat, description, is_beta = TOOLS[tool_label]
+
+    # Idle tab title = the (shortened) tool name; the hook flips it to
+    # "Analyzing…" while running and "Uploading files…" during uploads.
+    _sync_tab_title(_short_tab_name(tool_label))
+
+    title = f"{tool_label}" + ("  Beta" if is_beta else "")
+    st.title(title)
+    st.caption(f"{cat} · {description}")
+
+    st.divider()
+
     safe_run_tool(modpath, funcname, tool_label)
 else:
+    _sync_tab_title("PsyFit")
+    st.title("🔬 PsyFit")
     st.info("Select a tool from the sidebar to begin.")

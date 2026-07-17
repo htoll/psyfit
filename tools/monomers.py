@@ -9,8 +9,9 @@ import matplotlib.colors as mcolors
 import plotly.express as px
 from matplotlib.lines import Line2D
 
-from utils import plot_brightness, plot_histogram, HWT_aesthetic
+from utils import plot_brightness, plot_histogram, HWT_aesthetic, file_uploader_with_clear
 from tools.process_files import process_files
+from tools import roi as roi_tool
 
 CATEGORY_ORDER = ["Monomers", "Dimers", "Trimers", "Multimers"]
 CATEGORY_COLORS = {
@@ -58,6 +59,327 @@ from matplotlib.patches import Circle
 from matplotlib.colors import LogNorm
 import matplotlib.pyplot as plt
 import numpy as np
+
+# --- Concentration-estimation constants -----------------------------------
+AVOGADRO = 6.02214076e23                 # particles / mol
+PLANE_THICKNESS_UM = 0.200               # 200 nm optical section of a PSF
+
+
+def _format_molarity(molar: float) -> str:
+    """Format a molar concentration with a common SI prefix (M, mM, µM, nM…)."""
+    if not np.isfinite(molar) or molar <= 0:
+        return "0 M"
+    prefixes = [
+        (1.0, "M"), (1e-3, "mM"), (1e-6, "µM"), (1e-9, "nM"),
+        (1e-12, "pM"), (1e-15, "fM"), (1e-18, "aM"),
+    ]
+    for scale, unit in prefixes:
+        if molar >= scale:
+            return f"{molar / scale:.3g} {unit}"
+    return f"{molar / 1e-18:.3g} aM"
+
+
+_MOLAR_PREFIXES = [
+    (1.0, "M"), (1e-3, "mM"), (1e-6, "µM"), (1e-9, "nM"),
+    (1e-12, "pM"), (1e-15, "fM"), (1e-18, "aM"),
+]
+
+
+def _format_molarity_pm(molar, err=None):
+    """Format 'value ± err unit' with both in the prefix chosen from `molar`."""
+    if not np.isfinite(molar) or molar <= 0:
+        return "0 M"
+    scale, unit = _MOLAR_PREFIXES[-1]
+    for sc, u in _MOLAR_PREFIXES:
+        if molar >= sc:
+            scale, unit = sc, u
+            break
+    if err and np.isfinite(err) and err > 0:
+        return f"{molar / scale:.3g} ± {err / scale:.2g} {unit}"
+    return f"{molar / scale:.3g} {unit}"
+
+
+def _sci_compact(x):
+    """Compact scientific string, e.g. 1000 -> '1e3', 20000 -> '2e4'."""
+    try:
+        mant, exp = f"{float(x):.0e}".split("e")
+    except (ValueError, TypeError):
+        return str(x)
+    return f"{mant}e{int(exp)}"
+
+
+def parse_filename_params(name):
+    """
+    Best-effort extraction of acquisition params from a .sif filename, e.g.
+    'HWT08_001F_1to1e5_100xOil_976nm1500mA_1.sif'
+    -> {'dilution': 1e5, 'objective_mag': 100}.
+
+    Dilution: an 'AtoB' token is read as the ratio B/A (e.g. '1to1e5' -> 1e5);
+    otherwise a standalone scientific token like '1e5' is used. Magnification:
+    a '<num>x' token not followed by another digit (so '512x512' is ignored).
+    Returns keys with None when a field can't be found.
+    """
+    out = {"dilution": None, "objective_mag": None}
+    if not name:
+        return out
+    stem = os.path.basename(str(name))
+
+    m = re.search(r'(\d+(?:\.\d+)?)\s*to\s*(\d+(?:\.\d+)?(?:[eE]\d+)?)', stem)
+    if m:
+        try:
+            a, b = float(m.group(1)), float(m.group(2))
+            if a > 0:
+                out["dilution"] = b / a
+        except ValueError:
+            pass
+    if out["dilution"] is None:
+        m2 = re.search(r'(\d+(?:\.\d+)?[eE]\d+)', stem)
+        if m2:
+            try:
+                out["dilution"] = float(m2.group(1))
+            except ValueError:
+                pass
+
+    mm = re.search(r'(\d{1,3})\s*[xX](?![0-9])', stem)
+    if mm:
+        try:
+            out["objective_mag"] = int(mm.group(1))
+        except ValueError:
+            pass
+    return out
+
+
+def estimate_concentration(ppv, fov_area_um2, dilution,
+                           plane_thickness_um=PLANE_THICKNESS_UM):
+    """
+    Estimate stock molarity from the average particles-per-view (ppv).
+
+    Concentration is fundamentally (particles observed) / (volume observed),
+    where the observed volume is the imaged FOV area times the 200 nm optical
+    section thickness. All the well-geometry / droplet / plane-count terms
+    cancel algebraically, so they are deliberately omitted here:
+
+        M_stock = ppv * dilution / (A_fov * t * N_A)
+
+    Molarity is intensive, so no bulk (stock/prep) volume enters the formula.
+    """
+    obs_volume_um3 = fov_area_um2 * plane_thickness_um
+    obs_volume_l = obs_volume_um3 * 1e-15                   # 1 µm³ = 1e-15 L
+
+    conc_diluted = ppv / obs_volume_l                      # particles / L (imaged sample)
+    conc_stock = conc_diluted * dilution                   # particles / L (stock)
+    molarity = conc_stock / AVOGADRO
+
+    return {
+        "ppv": ppv,
+        "fov_area_um2": fov_area_um2,
+        "obs_volume_um3": obs_volume_um3,
+        "conc_diluted_M": conc_diluted / AVOGADRO,
+        "molarity": molarity,
+    }
+
+
+def _fit_circle_lsq(x, y):
+    """Algebraic (Kåsa) least-squares circle fit. Returns (cx, cy, r)."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    A = np.column_stack([x, y, np.ones_like(x)])
+    b = -(x ** 2 + y ** 2)
+    sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+    D, E, F = sol
+    cx = -D / 2.0
+    cy = -E / 2.0
+    val = cx * cx + cy * cy - F
+    r = float(np.sqrt(val)) if val > 0 else float("nan")
+    return float(cx), float(cy), r
+
+
+def fit_aperture_circle(image, pix_size_um=None, min_diameter_um=20.0):
+    """
+    Fit the circular illuminated aperture (field stop) in a 2D image. Returns
+    {cx, cy, r, area_px, fit} in pixels, or None if no plausible disk is found.
+
+    The aperture may be partially occluded (e.g. clipped on the left), so a
+    plain area-equivalent radius (√(area/π)) and centroid are biased. Instead we
+    fit a circle by least squares to the *arc* of the illuminated boundary, with
+    iterative outlier rejection to shed the straight occlusion edge — giving an
+    accurate center/radius for the overlay. `area_px` remains the actual
+    illuminated pixel count (the true counting area for concentration).
+
+    Robustness for very bright signal on a flat background (where Otsu can latch
+    onto a single bright particle and fit a tiny circle):
+      - the component containing the ROI center (image center) is preferred over
+        the largest one, so the fit is seeded on the aperture, not a stray blob;
+      - fits smaller than `min_diameter_um` (needs `pix_size_um`) are rejected
+        (return None) so the caller falls back to the full crop area.
+    """
+    img = np.asarray(image, dtype=float)
+    if img.ndim != 2 or img.size == 0:
+        return None
+    try:
+        from scipy import ndimage
+        from skimage.filters import threshold_otsu
+    except Exception:
+        return None
+
+    sm = ndimage.gaussian_filter(img, sigma=2)
+    finite = sm[np.isfinite(sm)]
+    if finite.size == 0 or float(np.ptp(finite)) == 0:
+        return None
+    try:
+        thr = float(threshold_otsu(sm))
+    except Exception:
+        return None
+
+    mask = sm > thr
+    if mask.sum() < 0.02 * mask.size:  # need a plausibly disk-sized bright region
+        return None
+
+    lbl, n = ndimage.label(mask)
+    if n == 0:
+        return None
+
+    # Prefer the component covering the ROI center; else the largest one.
+    h, w = mask.shape
+    center_label = int(lbl[h // 2, w // 2])
+    if center_label != 0:
+        chosen = center_label
+    else:
+        sizes = ndimage.sum(np.ones_like(lbl, dtype=float), lbl, index=np.arange(1, n + 1))
+        chosen = 1 + int(np.argmax(sizes))
+    disk = ndimage.binary_fill_holes(lbl == chosen)
+    area_px = float(disk.sum())
+
+    # Minimum radius (px) implied by the minimum FOV diameter.
+    min_r_px = 0.0
+    if pix_size_um and min_diameter_um:
+        min_r_px = (float(min_diameter_um) / 2.0) / float(pix_size_um)
+
+    def _valid(res):
+        return res is not None and res["r"] >= min_r_px
+
+    cy0, cx0 = ndimage.center_of_mass(disk)
+    fallback = {"cx": float(cx0), "cy": float(cy0),
+                "r": float(np.sqrt(area_px / np.pi)), "area_px": area_px, "fit": "area"}
+
+    # Boundary pixels of the illuminated region.
+    boundary = disk & ~ndimage.binary_erosion(disk)
+    ys, xs = np.nonzero(boundary)
+    if xs.size < 8:
+        return fallback if _valid(fallback) else None
+
+    # Drop boundary pixels on the image frame (crop edges are not real arc).
+    on_frame = (xs <= 0) | (ys <= 0) | (xs >= w - 1) | (ys >= h - 1)
+    xf, yf = xs[~on_frame].astype(float), ys[~on_frame].astype(float)
+    if xf.size < 8:
+        xf, yf = xs.astype(float), ys.astype(float)
+
+    cx, cy, r = _fit_circle_lsq(xf, yf)
+    # Iteratively reject the straight occlusion edge (large-residual points).
+    for _ in range(8):
+        if not np.isfinite(r):
+            break
+        res = np.abs(np.sqrt((xf - cx) ** 2 + (yf - cy) ** 2) - r)
+        med = np.median(res)
+        mad = np.median(np.abs(res - med)) + 1e-9
+        keep = res < med + 2.0 * 1.4826 * mad
+        if keep.sum() < 8 or keep.all():
+            break
+        xf, yf = xf[keep], yf[keep]
+        cx, cy, r = _fit_circle_lsq(xf, yf)
+
+    if not (np.isfinite(cx) and np.isfinite(cy) and np.isfinite(r)) or r <= 0:
+        return fallback if _valid(fallback) else None
+    result = {"cx": cx, "cy": cy, "r": r, "area_px": area_px, "fit": "circle"}
+    return result if _valid(result) else None
+
+
+def aperture_or_inscribed(image, region, pix_size_um, min_diameter_um=20.0):
+    """
+    Aperture dict for `image`: the fitted circular field stop, or a circle
+    inscribed in the region if the fit fails. Returns None for the 'custom' and
+    'all' regions (no single circular aperture — 'all' is a 4-channel frame) or
+    when no image is available.
+    """
+    if (image is None or getattr(image, "ndim", 0) < 2
+            or str(region) in ("custom", "all")):
+        return None
+    ap = fit_aperture_circle(image, pix_size_um=pix_size_um, min_diameter_um=min_diameter_um)
+    if ap is None:
+        h_px, w_px = image.shape[:2]
+        r_px = min(h_px, w_px) / 2.0
+        ap = {"cx": w_px / 2.0, "cy": h_px / 2.0, "r": r_px,
+              "area_px": float(np.pi * r_px ** 2), "fit": "inscribed"}
+    return ap
+
+
+def build_summary_image(image, df, *, pix_size_um, cmap, normalization,
+                        single_ucnp_brightness, aperture,
+                        annotation_lines, title=None,
+                        show_psf_fits=False, show_brightness_fits=False):
+    """
+    Build a compact summary figure for the field whose PSF count is closest to
+    the average: the region image titled with the raw filename, a 'pps'
+    colorbar, the fitted aperture circle (if any), the given annotation lines
+    (concentration first), and optional PSF-fit / brightness overlays.
+    """
+    import textwrap
+
+    # High DPI so text/annotations render crisp (not pixelated) in the export
+    # and in the Streamlit preview.
+    fig, ax = plt.subplots(figsize=(3.4, 3.4), dpi=300)
+
+    norm = LogNorm() if normalization else None
+    im = ax.imshow(np.asarray(image, dtype=float) + 1, cmap=cmap, norm=norm,
+                   origin='lower', interpolation='bilinear')
+    ax.set_xticks([])
+    ax.set_yticks([])
+    if title:
+        wrapped = "\n".join(textwrap.wrap(str(title), width=30)) or str(title)
+        ax.set_title(wrapped, fontsize=9)
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('pps', fontsize=10)
+    # Size BOTH major and minor tick labels (log colorbars label minor ticks
+    # like 2×10⁴ too, which otherwise render at the default larger size).
+    cbar.ax.tick_params(which='both', labelsize=9)
+
+    if single_ucnp_brightness is None:
+        single_ucnp_brightness = float(np.mean(image))
+    t1, t2, t3 = thresholds_from_single_brightness(single_ucnp_brightness)
+
+    # Aperture / inscribed circle.
+    if aperture is not None:
+        ax.add_patch(Circle((aperture['cx'], aperture['cy']), aperture['r'],
+                             fill=False, color='cyan', lw=1.5, ls='--', alpha=0.95))
+
+    # Per-PSF overlays.
+    if (show_psf_fits or show_brightness_fits) and df is not None and not df.empty:
+        for _, row in df.iterrows():
+            x, y = row['x_pix'], row['y_pix']
+            b = row['brightness_integrated']
+            cat = ("Monomers" if b < t1 else "Dimers" if b < t2
+                   else "Trimers" if b < t3 else "Multimers")
+            if show_psf_fits:
+                rr = 3 * max(row['sigx_fit'], row['sigy_fit']) / pix_size_um
+                ax.add_patch(Circle((x, y), rr, fill=False,
+                                    color=CATEGORY_COLORS[cat], lw=1.0, alpha=0.9))
+            if show_brightness_fits:
+                ax.text(x + 7.5, y + 7.5, f"{b / 1000:.1f} kpps",
+                        color='white', fontsize=5, ha='center', va='center')
+        if show_psf_fits:
+            legend_elements = [Line2D([0], [0], color=CATEGORY_COLORS[c], lw=2, label=c)
+                               for c in CATEGORY_ORDER]
+            ax.legend(handles=legend_elements, loc='upper right', fontsize=6,
+                      frameon=False, labelcolor='white')
+
+    # Annotation block (top-left) — concentration first.
+    if annotation_lines:
+        ax.text(0.03, 0.97, "\n".join(annotation_lines), transform=ax.transAxes,
+                color='white', fontsize=10.5, va='top', ha='left', linespacing=1.3,
+                bbox=dict(boxstyle='round', facecolor='black', alpha=0.55, edgecolor='none'))
+
+    plt.tight_layout()
+    return fig
 
 
 def plot_monomer_brightness(
@@ -232,7 +554,7 @@ def plot_monomer_brightness(
 
 
 @st.cache_data(show_spinner=False)
-def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3):
+def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3, roi=None):
     class _FakeUpload:
         def __init__(self, name, path):
             self.name = name
@@ -254,10 +576,43 @@ def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=
         signal=signal,
         pix_size_um=pix_size_um,
         sig_threshold=sig_threshold,
+        roi=roi,
     )
 
 
 def run():
+
+    # Sidebar params are keyed widgets. Streamlit garbage-collects a keyed
+    # widget's session_state entry on any run where the widget isn't rendered
+    # (e.g. after clearing all files, when the param widgets disappear), which
+    # would reset them to defaults on the next upload. Seed defaults once, then
+    # "touch" each key every run so it survives even when not rendered. Widgets
+    # below omit inline value=/index= and read their current value from here.
+    _MONO_DEFAULTS = {
+        "mono_microscope": "MCL",
+        "mono_threshold": 1,
+        "mono_signal": "UCNP",
+        "mono_region_label": "Blue",
+        "mono_use_roi": False,
+        "mono_objective_mag": 60,
+        "mono_dilution": "1E3",
+        "mono_estimate_conc": False,
+        "mono_axial_depth": 0.5,
+        "mono_show_fits": True,
+        "mono_normalization": True,
+        "mono_save_format": "svg",
+        "mono_gen_summary": True,
+        "mono_summ_monomer": False,
+        "mono_summ_psf": False,
+        "mono_summ_bright": False,
+        "mono_num_bins": 50,
+        "mono_autodetect": True,
+    }
+    for _k, _v in _MONO_DEFAULTS.items():
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
+        else:
+            st.session_state[_k] = st.session_state[_k]  # touch to survive GC
 
     # Persistent state
     if "saved_files" not in st.session_state:
@@ -274,8 +629,8 @@ def run():
     region = None
 
     with st.sidebar:
-        uploaded_files = st.file_uploader(
-            "Upload .sif file", type=["sif"], accept_multiple_files=True
+        uploaded_files = file_uploader_with_clear(
+            "Upload .sif file", key="monomers_uploads", type=["sif"], accept_multiple_files=True
         )
 
         # --- SYNC PHASE: make session match current uploader selection ---
@@ -332,58 +687,221 @@ def run():
             )
             st.session_state.selected_file_name = selected_file_name
 
+            # --- Auto-detect params from the filename -------------------------
+            # e.g. 'HWT08_001F_1to1e5_100xOil_..._1.sif' -> dilution 1e5, 100×.
+            # Apply only when the selected file changes so manual edits aren't
+            # clobbered on every rerun; gated by a toggle (persisted).
+            autodetect = st.checkbox(
+                "Auto-detect dilution / magnification from filename",
+                key="mono_autodetect",
+            )
+            detected = parse_filename_params(selected_file_name)
+            if (autodetect and selected_file_name
+                    and st.session_state.get("_mono_autofile") != selected_file_name):
+                st.session_state["_mono_autofile"] = selected_file_name
+                if detected.get("dilution") is not None:
+                    st.session_state["mono_dilution"] = _sci_compact(detected["dilution"])
+                if detected.get("objective_mag") is not None:
+                    st.session_state["mono_objective_mag"] = int(detected["objective_mag"])
+            if autodetect:
+                bits = []
+                if detected.get("objective_mag"):
+                    bits.append(f"{detected['objective_mag']}×")
+                if detected.get("dilution"):
+                    bits.append(f"dilution {_sci_compact(detected['dilution'])}")
+                st.caption("🔍 Detected: " + " · ".join(bits) if bits
+                           else "🔍 No dilution/magnification found in filename.")
+
+            microscope = st.selectbox(
+                "Microscope",
+                options=["MCL", "Nikon "],
+                help="Microscope used to acquire the images.",
+                key="mono_microscope",
+            )
+
             # Parameters (kept to preserve existing UI)
             threshold = st.number_input(
-                                        "Threshold", min_value=1, value=1,
+                                        "Threshold", min_value=1,
                                         help=("Stringency of fit, higher value is more selective:\n"
                                               "- UCNP signal sets absolute peak cut off\n"
-                                              "- Dye signal sets sensitivity of blob detection")
+                                              "- Dye signal sets sensitivity of blob detection"),
+                                        key="mono_threshold",
                                         )
 
             signal = st.selectbox(
                                     "Signal", options=["UCNP", "dye"],
                                     help=("Changes detection method:\n"
                                           "- UCNP for high SNR (sklearn peakfinder)\n"
-                                          "- dye for low SNR (sklearn blob detection)")
+                                          "- dye for low SNR (sklearn blob detection)"),
+                                    key="mono_signal",
                                     )
-            diagram = """ Splits sif into quadrants (256x256 px):  
-                                ┌─┬─┐  
-                                │ 1 │ 2 │  
-                                ├─┼─┤  
-                                │ 3 │ 4 │  
+            if microscope == "MCL":
+                diagram = """ Splits sif into quadrants (256x256 px):
+                                ┌─┬─┐
+                                │ 1 │ 2 │
+                                ├─┼─┤
+                                │ 3 │ 4 │
                                 └─┴─┘
+                                Blue=1, Green=2, Red=3, NIR=4
                                 """
-            region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
+                # Display channel names; map to underlying quadrant regions.
+                mcl_region_map = {"Blue": "1", "Green": "2", "Red": "3", "NIR": "4", "all": "all"}
+                region_label = st.selectbox(
+                    "Region", options=["Blue", "Green", "Red", "NIR", "all"], help=diagram,
+                    key="mono_region_label",
+                )
+                region = mcl_region_map[region_label]
+            else:
+                # Nikon / Mr Beam: no quadrant selection; fixed Mr Beam crop.
+                region = "Mr Beam"
 
-            cmap_options = ["plasma", "viridis", "magma", "hot", "gray", "hsv"]
-            current_cmap = st.session_state.get("monomers_cmap", "plasma")
+            use_custom_roi = st.checkbox(
+                "Custom region (draw ROI)",
+                help="Restrict detection to a rectangle you draw on the selected "
+                     "file (shown in the main panel); overrides the Region above. "
+                     "The ROI coordinates are saved into the exported CSV.",
+                key="mono_use_roi",
+            )
+            st.session_state["monomers_use_roi"] = use_custom_roi
+
+            # --- Acquisition & sample metadata (used for concentration estimation) ---
+            objective_mag = st.number_input(
+                "Objective magnification",
+                min_value=1, step=1,
+                help="Objective magnification used during acquisition.",
+                key="mono_objective_mag",
+            )
+            # Pixel size is derived from the microscope (+ magnification), not
+            # entered manually.
+            if microscope == "MCL":
+                pix_size_um = 0.1011
+                pix_help = "Based on LJ measurement in Blue Channel (Spring 2026)."
+            else:  # Nikon / Mr Beam
+                pix_size_um = 0.107 * 100.0 / float(objective_mag)
+                pix_help = (
+                    "Nikon: 0.107 µm at 100×; scales as 0.107 × 100 / magnification "
+                    f"= {pix_size_um:.4f} µm at {objective_mag}×."
+                )
+            st.number_input(
+                "Pixel size (µm)",
+                value=float(pix_size_um), format="%.4f", disabled=True,
+                help=pix_help,
+            )
+            dilution_str = st.text_input(
+                "Dilution",
+                help="Sample dilution factor (scientific notation accepted, e.g. 1E3).",
+                key="mono_dilution",
+            )
+            try:
+                dilution = float(dilution_str)
+            except ValueError:
+                st.warning("Enter a valid dilution (e.g. 1E3).")
+                dilution = None
+
+            estimate_conc = True
+
+            if estimate_conc:
+                axial_depth_um = st.number_input(
+                    "Axial detection depth (µm)",
+                    min_value=0.001, step=0.05, format="%.3f",
+                    help=("Thickness of the imaged slab used as the counting volume "
+                          "(A_fov × depth) the "
+                          "depth over which a particle is still detected/fit, including "
+                          "out-of-focus ones. Concentration scales as 1/depth."),
+                    key="mono_axial_depth",
+                )
+            else:
+                axial_depth_um = 0.5
+
+            st.session_state["objective_mag"] = objective_mag
+            st.session_state["microscope"] = microscope
+            st.session_state["dilution"] = dilution
+            st.session_state["pix_size_um"] = pix_size_um
+            st.session_state["estimate_conc"] = estimate_conc
+            st.session_state["axial_depth_um"] = axial_depth_um
+
+            cmap_options = ["gray", "viridis", "magma", "hot",  "hsv"]
+            current_cmap = st.session_state.get("monomers_cmap", "gray")
             try:
                 default_cmap_index = cmap_options.index(current_cmap)
             except ValueError:
-                default_cmap_index = cmap_options.index("plasma")
-            cmap = st.selectbox("Colormap", options=cmap_options, index=default_cmap_index)            
+                default_cmap_index = cmap_options.index("gray")
+            cmap = st.selectbox("Colormap", options=cmap_options, index=default_cmap_index)
             st.session_state["monomers_cmap"] = cmap
-            show_fits = st.checkbox("Show fits", value=True)
-            normalization = st.checkbox("Log Image Scaling", value = True)
-            save_format = st.selectbox("Download format", ["svg", "png", "jpeg"]).lower()
+            show_fits = st.checkbox("Show fits", key="mono_show_fits")
+            normalization = st.checkbox("Log Image Scaling", key="mono_normalization")
+            save_format = st.selectbox(
+                "Download format", ["svg", "png", "jpeg"], key="mono_save_format"
+            ).lower()
 
-            if st.button("Process uploaded files"):
+            gen_summary = st.checkbox(
+                "Generate summary image", key="mono_gen_summary",
+                help="Build a downloadable TIFF of the field whose PSF count is "
+                     "closest to the average, annotated with Avg PPV ± SD and dilution.",
+            )
+            if gen_summary:
+                st.checkbox("• include % monomers", key="mono_summ_monomer")
+                st.checkbox("• include PSF fits", key="mono_summ_psf")
+                st.checkbox("• include brightness fits", key="mono_summ_bright")
+
+            # Process automatically. _process_files_cached is @st.cache_data keyed on
+            # (saved_records, region, threshold, signal, pix_size_um), so tuning any of
+            # these re-runs analysis, while display-only params (cmap, bins, brightness
+            # range…) hit the cache and re-render instantly — no "Process" button needed.
+            saved_records = tuple(normalized_records)
+            # Custom ROI (drawn in the main panel on a prior rerun) overrides the
+            # region. If enabled but not yet drawn, hold off until it exists.
+            custom_roi = (st.session_state.get("monomers_roi")
+                          if use_custom_roi else None)
+            if use_custom_roi and custom_roi is None:
+                st.session_state.processed = None
+            else:
                 with st.spinner("Processing…"):
-                    saved_records = tuple(normalized_records)
                     processed_data, combined_df = _process_files_cached(
                         saved_records,
                         region=region,
-                        threshold=threshold,   
-                        signal=signal,         
+                        threshold=threshold,
+                        signal=signal,
+                        pix_size_um=pix_size_um,
+                        roi=custom_roi,
                     )
-                    st.session_state.processed = (processed_data, combined_df)
+                st.session_state.processed = (processed_data, combined_df)
 
         else:
             st.session_state.selected_file_name = None
+            st.session_state.processed = None
+
+    # CUSTOM ROI: draw on the selected file (main panel) and stash for the next
+    # rerun's processing. One ROI is applied to every file.
+    active_roi = None
+    if st.session_state.get("monomers_use_roi") and file_options:
+        st.subheader("Custom region")
+        sel_name = st.session_state.get("selected_file_name") or file_options[0]
+        sel_path = next((p for (d, p) in normalized_records if d == sel_name), None)
+        ref_img = roi_tool.read_sif_raw_from_path(sel_path) if sel_path else None
+        if ref_img is None:
+            st.warning("Could not read the selected file to draw an ROI.")
+        else:
+            active_roi = roi_tool.draw_roi(
+                ref_img, key="monomers_roi_canvas",
+                cmap=st.session_state.get("monomers_cmap", "plasma"), log=True,
+            )
+            st.session_state["monomers_roi"] = active_roi
+            if active_roi is None:
+                st.info("Draw a rectangle above to run the analysis inside it.")
 
     # DISPLAY
     if st.session_state.get("processed"):
         processed_data, combined_df = st.session_state.processed
+        roi_tool.stamp_roi(combined_df, active_roi)
+        if combined_df is not None and not combined_df.empty:
+            st.download_button(
+                "Download data (CSV)",
+                combined_df.to_csv(index=False).encode("utf-8"),
+                file_name="monomers_compiled.csv",
+                mime="text/csv",
+                key="monomers_csv",
+            )
         selected_file_name = st.session_state.get("selected_file_name")
         if not selected_file_name and processed_data:
             selected_file_name = next(iter(processed_data.keys()))
@@ -393,19 +911,31 @@ def run():
         df_selected = data_to_plot.get("df") if data_to_plot else None
         image_data_cps = data_to_plot.get("image") if data_to_plot else None
 
-        plot_col1, plot_col2 = st.columns(2)
+        microscope = st.session_state.get("microscope", "MCL")
+        pix = float(st.session_state.get("pix_size_um", 0.107))
+
+        # Both MCL and Nikon image through a circular aperture (field stop), so
+        # fit it in either case: used to overlay on the preview and to get an
+        # accurate FOV area for concentration. Seeded on the ROI center with a
+        # 20 µm minimum diameter. If the fit fails, fall back to a circle
+        # inscribed in the region (not the full square crop). Skipped for the
+        # 'custom' region (not a full circular aperture).
+        aperture = aperture_or_inscribed(image_data_cps, region, pix)
+
+        top_left, top_right = st.columns(2)
         fig_pie = None
         thresholds = None
         single_ucnp_brightness_value = st.session_state.get("single_ucnp_brightness")
 
-        with plot_col2:
+        with top_right:
             if not combined_df.empty:
                 brightness_vals = combined_df['brightness_integrated'].values
                 default_min_val = float(np.min(brightness_vals))
                 default_max_val = float(np.max(brightness_vals))
 
-                user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
-                user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
+                mc1, mc2 = st.columns(2)
+                user_min_val_str = mc1.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
+                user_max_val_str = mc2.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
 
                 try:
                     user_min_val = float(user_min_val_str)
@@ -417,15 +947,15 @@ def run():
                 if user_min_val >= user_max_val:
                     st.warning("Min brightness must be less than max brightness.")
                 else:
-                    num_bins = st.number_input("# Bins:", value=50)
-
                     if single_ucnp_brightness_value is None:
                         default_spb = float(np.mean(brightness_vals))
                     else:
                         default_spb = float(single_ucnp_brightness_value)
                     default_spb = float(np.clip(default_spb, user_min_val, user_max_val))
 
-                    single_ucnp_brightness_value = st.number_input(
+                    bc1, bc2 = st.columns(2)
+                    num_bins = bc1.number_input("# Bins:", min_value=1, step=1, key="mono_num_bins")
+                    single_ucnp_brightness_value = bc2.number_input(
                         "Single Particle Brightness (pps)",
                         min_value=user_min_val,
                         max_value=user_max_val,
@@ -442,7 +972,10 @@ def run():
                         num_bins=num_bins,
                         thresholds=thresholds,
                     )
+                    fig_hist_final.set_size_inches(5, 3)
+                    fig_hist_final.tight_layout()
                     st.pyplot(fig_hist_final)
+                    plt.close(fig_hist_final)
 
                     bins_for_pie = [user_min_val] + [t for t in thresholds if user_min_val < t < user_max_val] + [user_max_val]
                     bins_for_pie = sorted(bins_for_pie)
@@ -469,10 +1002,11 @@ def run():
                             color='Category',
                             color_discrete_map=CATEGORY_COLORS,
                         )
-                        fig_pie.update_traces(textposition='inside', textinfo='percent+label', textfont_size=18)
+                        fig_pie.update_traces(textposition='inside', textinfo='percent+label', textfont_size=11)
                         fig_pie.update_layout(
-                            font=dict(size=18),
-                            legend=dict(font=dict(size=16)),
+                            font=dict(size=11),
+                            showlegend=False,
+                            height=260,
                             margin=dict(l=0, r=0, t=0, b=0),
                         )
 
@@ -481,11 +1015,9 @@ def run():
         )
 
 
-        with plot_col1:
-
-
+        with top_left:
             if not selected_file_name:
-                st.info("Upload .sif files and click 'Process uploaded files' to view results.")
+                st.info("Upload .sif files to view results.")
             elif data_to_plot is None:
                 st.error(f"Data for file '{selected_file_name}' not found.")
             else:
@@ -494,12 +1026,20 @@ def run():
                     df_selected,
                     show_fits=show_fits,
                     normalization=normalization,
-                    pix_size_um=0.1,
+                    pix_size_um=pix,
                     cmap=st.session_state.get("monomers_cmap", "plasma"),
                     single_ucnp_brightness=single_ucnp_brightness_value,
                     interactive=True,
                 )
-                fig_image.update_layout(height=640)
+                if aperture is not None:
+                    a = aperture
+                    fig_image.add_shape(
+                        type='circle', xref='x', yref='y',
+                        x0=a['cx'] - a['r'], x1=a['cx'] + a['r'],
+                        y0=a['cy'] - a['r'], y1=a['cy'] + a['r'],
+                        line=dict(color='cyan', width=2, dash='dot'),
+                    )
+                fig_image.update_layout(height=430, margin=dict(l=0, r=0, t=20, b=0))
                 fmt = save_format.lower()
                 if fmt not in {"png", "jpeg", "jpg", "svg", "webp"}:
                     fmt = "png"
@@ -512,7 +1052,6 @@ def run():
                         "toImageButtonOptions": {"format": fmt},
                     },
                 )
-
                 html_bytes = fig_image.to_html().encode("utf-8")
                 st.download_button(
                     label="Download PSFs (HTML)",
@@ -520,8 +1059,6 @@ def run():
                     file_name=f"{selected_file_name}.html",
                     mime="text/html",
                 )
-                if fig_pie is not None:
-                    st.plotly_chart(fig_pie, use_container_width=True)
 
         processed = st.session_state.processed[0]
         if processed:
@@ -535,19 +1072,226 @@ def run():
             counts = list(psf_counts.values())
             mean_count = np.mean(counts) if counts else 0
 
-            fig_count, ax_count = plt.subplots(figsize=(5, 3))
-            ax_count.bar(file_names, counts)
-            ax_count.axhline(
-                mean_count,
-                color=CATEGORY_COLORS["Multimers"],
-                linestyle='--',
-                label=f'Avg = {mean_count:.1f}',
-                linewidth=0.8,
-            )
-            ax_count.set_ylabel("# Fit PSFs", fontsize=10)
-            ax_count.set_xlabel("SIF #", fontsize=10)
-            ax_count.legend(fontsize=10)
-            ax_count.tick_params(axis='x', labelsize=8)
-            ax_count.tick_params(axis='y', labelsize=8)
-            HWT_aesthetic()
-            st.pyplot(fig_count)
+            # ---------------- Row 2: pie · PSF counts · concentration ------
+            r2_pie, r2_counts, r2_conc = st.columns(3)
+
+            with r2_pie:
+                st.caption("Population breakdown")
+                if fig_pie is not None:
+                    st.plotly_chart(fig_pie, use_container_width=True)
+
+            with r2_counts:
+                st.caption("PSF counts per file")
+                fig_count, ax_count = plt.subplots(figsize=(4.5, 3))
+                ax_count.bar(file_names, counts)
+                ax_count.axhline(
+                    mean_count,
+                    color=CATEGORY_COLORS["Multimers"],
+                    linestyle='--',
+                    label=f'Avg = {mean_count:.1f}',
+                    linewidth=0.8,
+                )
+                ax_count.set_ylabel("# Fit PSFs", fontsize=10)
+                ax_count.set_xlabel("SIF #", fontsize=10)
+                ax_count.legend(fontsize=9)
+                ax_count.tick_params(axis='x', labelsize=8)
+                ax_count.tick_params(axis='y', labelsize=8)
+                HWT_aesthetic()
+                fig_count.tight_layout()
+                st.pyplot(fig_count)
+                plt.close(fig_count)
+
+            with r2_conc:
+                st.caption("Concentration estimate")
+                if not st.session_state.get("estimate_conc"):
+                    st.caption("Enable *Estimate concentration* in the sidebar.")
+                else:
+                    dilution = st.session_state.get("dilution")
+                    axial_depth_um = float(st.session_state.get("axial_depth_um", 0.5))
+
+                    # FOV area: fitted aperture, else an inscribed-circle fallback
+                    # (set above), else the full crop for the 'custom' region.
+                    if aperture is not None:
+                        fov_area = aperture["area_px"] * (pix ** 2)
+                        d_um = 2 * aperture["r"] * pix
+                        if aperture.get("fit") == "inscribed":
+                            fov_desc = (f"inscribed circle Ø{2 * aperture['r']:.0f} px "
+                                        f"({d_um:.1f} µm) — aperture fit failed")
+                        else:
+                            # Counting area = actual illuminated pixels (excludes any
+                            # occluded part). Fitted r/Ø describe the full circle.
+                            fov_desc = (f"illuminated aperture: {aperture['area_px']:.0f} px "
+                                        f"(fit r={aperture['r']:.0f} px, Ø{d_um:.1f} µm)")
+                    elif image_data_cps is not None and getattr(image_data_cps, "ndim", 0) >= 2:
+                        fh, fw = image_data_cps.shape[:2]
+                        fov_area = fh * fw * (pix ** 2)
+                        fov_desc = f"{fw}×{fh} px full crop (custom region)"
+                    else:
+                        fov_area = 0.0
+                        fov_desc = "unknown"
+
+                    if dilution is None:
+                        st.warning("Enter a valid dilution.")
+                    elif not counts:
+                        st.info("No particles detected.")
+                    elif fov_area <= 0:
+                        st.warning("Could not determine FOV area.")
+                    else:
+                        est = estimate_concentration(
+                            ppv=mean_count, fov_area_um2=fov_area,
+                            dilution=dilution,
+                            plane_thickness_um=axial_depth_um,
+                        )
+
+                        # --- Error analysis -------------------------------
+                        # Concentration is linear in ppv (all other terms treated
+                        # as exact), so the fractional error carries straight
+                        # through: σ_M/M = σ_ppv/ppv. We use the field-to-field
+                        # SD of the PSF counts and report the standard error of
+                        # the mean (SD/√N) as the uncertainty on the mean-derived
+                        # concentration.
+                        n_fields = len(counts)
+                        counts_sd = float(np.std(counts, ddof=1)) if n_fields > 1 else 0.0
+                        counts_sem = counts_sd / np.sqrt(n_fields) if n_fields > 1 else 0.0
+                        rel_err = counts_sem / mean_count if mean_count else 0.0
+                        cv = counts_sd / mean_count if mean_count else 0.0
+                        molarity_err = est["molarity"] * rel_err
+                        diluted_err = est["conc_diluted_M"] * rel_err
+
+                        st.metric("Stock concentration", _format_molarity(est["molarity"]))
+                        if n_fields > 1:
+                            st.caption(
+                                f"± {_format_molarity(molarity_err)}  "
+                                f"(SEM, n={n_fields} fields, CV={cv:.0%})"
+                            )
+                        else:
+                            st.caption("Single field — no error estimate (need ≥2 files).")
+                        st.metric("Avg particles / view", f"{est['ppv']:.1f} ppv")
+
+                        with st.expander("Show calculation", expanded=False):
+                            obs_l = est["obs_volume_um3"] * 1e-15
+                            density_l = est["ppv"] / obs_l if obs_l else 0.0
+                            calc = "\n".join([
+                                f"ppv (avg particles/view) = {est['ppv']:.4g}",
+                                f"FOV area  A_fov          = {fov_area:,.1f} µm²",
+                                f"   ({fov_desc}, pixel {pix:g} µm)",
+                                f"axial depth  t           = {axial_depth_um * 1000:.0f} nm  (detection range)",
+                                f"obs volume V = A_fov·t    = {est['obs_volume_um3']:.4g} µm³",
+                                f"                         = {obs_l:.3e} L",
+                                "",
+                                f"density  = ppv / V        = {density_l:.3e} /L",
+                                f"diluted molarity          = {_format_molarity(est['conc_diluted_M'])}"
+                                + (f" ± {_format_molarity(diluted_err)}" if n_fields > 1 else ""),
+                                f"× dilution {dilution:g}",
+                                f"stock molarity            = {_format_molarity(est['molarity'])}"
+                                + (f" ± {_format_molarity(molarity_err)}" if n_fields > 1 else ""),
+                                "",
+                                "-- error analysis (from PSF-count spread) --",
+                                f"n fields                 = {n_fields}",
+                                f"PSF count SD             = {counts_sd:.3g}",
+                                f"SEM = SD/√n              = {counts_sem:.3g}",
+                                f"relative error SEM/mean  = {rel_err:.1%}",
+                                f"CV = SD/mean             = {cv:.1%}",
+                                "σ_M/M = σ_ppv/ppv  (M is linear in ppv)",
+                                "",
+                                "M_stock = ppv · dilution / (A_fov · t · N_A)",
+                            ])
+                            st.code(calc, language="text")
+
+            # ---------------- Summary image (downloadable TIFF) -----------
+            if st.session_state.get("mono_gen_summary", True) and counts:
+                st.divider()
+                st.subheader("Summary image")
+
+                # Field whose PSF count is closest to the average.
+                best_name = min(processed.keys(),
+                                key=lambda nm: abs(len(processed[nm]["df"]) - mean_count))
+                best = processed[best_name]
+                summ_img = best.get("image")
+                summ_df = best.get("df")
+
+                ppv_sd = float(np.std(counts, ddof=1)) if len(counts) > 1 else 0.0
+                summ_ap = aperture_or_inscribed(summ_img, region, pix)
+
+                spb = st.session_state.get("single_ucnp_brightness")
+                dilution = st.session_state.get("dilution")
+                microscope = st.session_state.get("microscope", "MCL")
+                axial_depth_um = float(st.session_state.get("axial_depth_um", 0.5))
+
+                # FOV area for the summary field (aperture, else full crop for custom).
+                if summ_ap is not None:
+                    fov_area_summ = summ_ap["area_px"] * (pix ** 2)
+                elif summ_img is not None and getattr(summ_img, "ndim", 0) >= 2:
+                    fh_s, fw_s = summ_img.shape[:2]
+                    fov_area_summ = fh_s * fw_s * (pix ** 2)
+                else:
+                    fov_area_summ = 0.0
+
+                # Build annotation lines — estimated concentration first (always).
+                ann = []
+                if dilution is not None and fov_area_summ > 0 and mean_count:
+                    est_s = estimate_concentration(
+                        ppv=mean_count, fov_area_um2=fov_area_summ,
+                        dilution=dilution, plane_thickness_um=axial_depth_um,
+                    )
+                    rel = (ppv_sd / np.sqrt(len(counts)) / mean_count
+                           if len(counts) > 1 else 0.0)
+                    ann.append(_format_molarity_pm(est_s['molarity'],
+                                                   est_s['molarity'] * rel if rel else None))
+                else:
+                    ann.append("set dilution for conc.")
+                ann.append(f"{mean_count:.1f} ± {ppv_sd:.0f} ppv")
+                if dilution is not None:
+                    ann.append(f"{_sci_compact(dilution)} dilution")
+                ann.append(f"{microscope}")
+
+                want_monomer = st.session_state.get("mono_summ_monomer", False)
+                if (want_monomer and spb and combined_df is not None
+                        and not combined_df.empty):
+                    t1_m = thresholds_from_single_brightness(float(spb))[0]
+                    b_all = combined_df['brightness_integrated'].to_numpy()
+                    if b_all.size:
+                        ann.append(f"{100.0 * float(np.mean(b_all < t1_m)):.0f}% monomers")
+
+                if summ_img is None:
+                    st.info("No image available for the summary.")
+                else:
+                    fig_summ = build_summary_image(
+                        summ_img, summ_df,
+                        pix_size_um=pix,
+                        cmap=st.session_state.get("monomers_cmap", "gray"),
+                        normalization=st.session_state.get("mono_normalization", True),
+                        single_ucnp_brightness=float(spb) if spb else None,
+                        aperture=summ_ap,
+                        annotation_lines=ann,
+                        title=os.path.basename(best_name),
+                        show_psf_fits=st.session_state.get("mono_summ_psf", False),
+                        show_brightness_fits=st.session_state.get("mono_summ_bright", False),
+                    )
+                    # Show in a half-width column so the high-DPI render is
+                    # downscaled (crisp) rather than stretched up (pixelated).
+                    prev_col = st.columns([1, 1])[0]
+                    prev_col.pyplot(fig_summ, use_container_width=True)
+
+                    base = extract_sif_number(os.path.basename(best_name))
+                    buf = io.BytesIO()
+                    try:
+                        fig_summ.savefig(buf, format="tiff", dpi=800, bbox_inches="tight")
+                        mime, ext = "image/tiff", "tif"
+                    except Exception:
+                        buf = io.BytesIO()
+                        fig_summ.savefig(buf, format="png", dpi=800, bbox_inches="tight")
+                        mime, ext = "image/png", "png"
+                        st.caption("TIFF unavailable (Pillow missing?) — exported PNG instead.")
+                    plt.close(fig_summ)
+                    buf.seek(0)
+                    st.download_button(
+                        "Download summary image",
+                        data=buf.getvalue(),
+                        file_name=f"summary_sif{base}.{ext}",
+                        mime=mime,
+                    )
+                    st.caption(
+                        f"Closest-to-average field: {os.path.basename(best_name)} "
+                        f"({len(summ_df)} PSFs vs avg {mean_count:.1f})."
+                    )

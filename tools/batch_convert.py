@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 import io
-from utils import integrate_sif, plot_brightness, plot_histogram, plot_all_sifs
+from utils import integrate_sif, plot_brightness, plot_histogram, plot_all_sifs, file_uploader_with_clear
 from tools.process_files import process_files
 from matplotlib.colors import LogNorm
 import matplotlib
@@ -12,7 +12,7 @@ def run():
 
     with col1:
         st.header("Convert SIF Files")
-        uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
+        uploaded_files = file_uploader_with_clear("Upload .sif file", key="batch_convert_uploads", type=["sif"], accept_multiple_files=True)
         if uploaded_files and not isinstance(uploaded_files, list):
             uploaded_files = [uploaded_files]
         threshold = st.number_input("Threshold", min_value=0, value=2, help = '''

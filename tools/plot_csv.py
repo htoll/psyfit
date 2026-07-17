@@ -12,9 +12,7 @@ import streamlit as st
 
 
 def run():
-  
-  st.set_page_config(page_title="CSV Plotter", layout="wide")
-  
+  # Note: st.set_page_config is owned by app.py (called once, first); not called here.
   st.title("CSV Plotter — Flexible, Tidy or Paired XY")
   
   with st.sidebar:

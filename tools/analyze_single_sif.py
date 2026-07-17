@@ -1,23 +1,21 @@
 import streamlit as st
 import os
 import io
-from utils import integrate_sif, plot_brightness, plot_histogram
+from utils import integrate_sif, plot_brightness, plot_histogram, file_uploader_with_clear
 from tools.process_files import process_files
+from tools import roi as roi_tool
 import numpy as np
 import pandas as pd
 import seaborn as sns
 
-
-
+import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 
 from matplotlib.colors import LogNorm
 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from scipy.stats import norm
 from scipy.stats import norm
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import cKDTree
@@ -106,7 +104,7 @@ def run():
 
     with st.sidebar:
         st.header("Analyze SIF Files")
-        uploaded_files = st.file_uploader("Upload .sif file", type=["sif"], accept_multiple_files=True)
+        uploaded_files = file_uploader_with_clear("Upload .sif file", key="wf_uploads", type=["sif"], accept_multiple_files=True)
         threshold = st.number_input("Threshold", min_value=0, value=10, help='''
         Stringency of fit, higher value is more selective:
         -UCNP signal sets absolute peak cut off
@@ -119,7 +117,7 @@ def run():
         │ 3 │ 4 │
         └─┴─┘
         """
-        region = st.selectbox("Region", options=["1", "2", "3", "4", "all"], help=diagram)
+        region = st.selectbox("Region", options=["1", "2", "3", "4", "all", "Custom"], help=diagram)
         gmm_components = st.sidebar.number_input("GMM Components", min_value=1, value=2)
 
 
@@ -146,17 +144,37 @@ def run():
     if mcl_toggle:
         region = "all"
 
+    # --- Custom ROI: draw on the first file, one ROI applied to all files ---
+    custom_roi = None
+    if region == "Custom" and uploaded_files:
+        st.subheader("Custom region")
+        _roi_name, ref_img = roi_tool.read_first_sif_raw(uploaded_files)
+        if ref_img is None:
+            st.warning("Could not read the first file to draw an ROI.")
+        else:
+            custom_roi = roi_tool.draw_roi(
+                ref_img, key="wf_roi", cmap=cmap, log=normalization,
+            )
+            if custom_roi is None:
+                st.info("Draw a rectangle above, then click Analyze.")
+
     brightness_col, hist_col = st.columns([3, 1])
     mime_map = {"svg": "image/svg+xml", "png": "image/png", "jpeg": "image/jpeg"}
 
+    if region == "Custom" and custom_roi is None:
+        return
+
     if st.session_state.analyze_clicked and uploaded_files:
         try:
-            processed_data, combined_df = process_files(uploaded_files, 
-                                                        region, 
-                                                        threshold=threshold, 
+            processed_data, combined_df = process_files(uploaded_files,
+                                                        region,
+                                                        threshold=threshold,
                                                         signal=signal,
                                                        min_distance = min_distance,
-                                                       pix_size_um = pix_size_um)
+                                                       pix_size_um = pix_size_um,
+                                                       roi=custom_roi)
+            if combined_df is not None:
+                roi_tool.stamp_roi(combined_df, custom_roi)
             if mcl_toggle and combined_df is not None and not combined_df.empty:
                 # Assign quadrants based on pixel coordinates
                 conditions = [
@@ -213,6 +231,7 @@ def run():
                     if hasattr(fig_image, "savefig"):
                         fig_image.set_size_inches(8, 8)
                         st.pyplot(fig_image, use_container_width=True)
+                        plt.close(fig_image)
                         buffer = io.BytesIO()
                         fig_image.savefig(buffer, format=save_format)
                         st.download_button(
@@ -273,7 +292,6 @@ def run():
 
                         if user_min < user_max:
                             if mcl_toggle:
-                                import matplotlib.pyplot as plt
                                 # Create a 4-panel subplot for the channels
                                 fig_hist, axes = plt.subplots(4, 1, figsize=(4, 8), sharex=True)
                                 channels = ['Blue', 'Green', 'Red', 'NIR']
@@ -334,7 +352,8 @@ def run():
                                 axes[-1].set_xlabel('Brightness (pps)')
                                 fig_hist.tight_layout()
                                 st.pyplot(fig_hist, use_container_width=True)
-                                
+                                plt.close(fig_hist)
+
                                 # Download button for the MCL histogram
                                 hist_buffer = io.BytesIO()
                                 fig_hist.savefig(hist_buffer, format=save_format)
@@ -354,9 +373,10 @@ def run():
                                     max_val=user_max,
                                     num_bins='auto',
                                     n_components = int(gmm_components)
-                                    
+
                                 )
                                 st.pyplot(fig_hist, use_container_width=True)
+                                plt.close(fig_hist)
                         else:
                             st.warning("Min greater than max.")
                         
@@ -407,7 +427,6 @@ def run():
                                 )
                                 heatmap = (windows * kernel).sum(axis=(-1, -2))
 
-                    import matplotlib.pyplot as plt
                     fig_hm, ax_hm = plt.subplots()
                     im = ax_hm.imshow(heatmap, origin="lower", cmap=heat_cmap, norm=None)
                     ax_hm.set_title("Brightness Heatmap (All SIFs)")
@@ -422,6 +441,7 @@ def run():
                     cbar.set_label("Summed brightness (pps)")
 
                     st.pyplot(fig_hm)
+                    plt.close(fig_hm)
 
                     hm_svg_buf = io.StringIO()
                     fig_hm.savefig(hm_svg_buf, format="svg")
@@ -442,7 +462,15 @@ def run():
 
     #  Cross-Channel Analysis ---
     plot_channels = st.checkbox("Plot brightness of channels")
-    if plot_channels:
+    _xchan_ready = (
+        'combined_df' in locals()
+        and isinstance(combined_df, pd.DataFrame)
+        and not combined_df.empty
+        and 'quadrant' in combined_df.columns
+    )
+    if plot_channels and not _xchan_ready:
+        st.info("Run an analysis with MCL quadrant detection enabled to compare channels.")
+    if plot_channels and _xchan_ready:
         ch_options = ['Blue', 'Green', 'Red', 'NIR']
         
         # We can use columns here just for the dropdowns so they sit nicely side-by-side
@@ -513,12 +541,12 @@ def run():
                     
                     st.markdown("**Registration Alignment**")
                     st.caption(f"Colors match channels. NIR is White.")
-                    import matplotlib.pyplot as plt
                     fig_merge, ax_merge = plt.subplots(figsize=(4, 4))
                     ax_merge.imshow(rgb_merge)
                     ax_merge.axis('off')
                     st.pyplot(fig_merge)
-                    
+                    plt.close(fig_merge)
+
                     # 3. Aggregates Filter & LinReg Options (Moved under the image)
                     filter_aggs = st.checkbox("Filter out aggregates (GMM)", help="Uses a 2-component GMM to isolate the primary monomer population.")
                     fit_line = st.checkbox("Fit linear regression")
@@ -564,6 +592,7 @@ def run():
                         
                         g.set_axis_labels(f'{x_ch} Brightness (pps)', f'{y_ch} Brightness (pps)')
                         st.pyplot(g.figure)
+                        plt.close(g.figure)
                         
                         # 5. Downloads (Side by side)
                         dl1, dl2 = st.columns(2)

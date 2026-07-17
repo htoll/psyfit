@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import io
 from utilsJFS import plot_histogram
-from utils import integrate_sif, plot_brightness
+from utils import integrate_sif, plot_brightness, file_uploader_with_clear
 from tools.process_files import process_files
 from matplotlib.colors import LogNorm
 import numpy as np
@@ -224,9 +224,10 @@ def run():
     with col1:
         st.header("Analyze SIF Files")
         
-        uploaded_files = st.file_uploader(
-            "Upload .sif files (e.g., 100_1.sif, 120_1.sif)", 
-            type=["sif"], 
+        uploaded_files = file_uploader_with_clear(
+            "Upload .sif files (e.g., 100_1.sif, 120_1.sif)",
+            key="saturation_uploads",
+            type=["sif"],
             accept_multiple_files=True
         )
         
@@ -312,6 +313,7 @@ def run():
                         st.pyplot(fig_image)
                         svg_buffer_img = io.StringIO()
                         fig_image.savefig(svg_buffer_img, format='svg')
+                        plt.close(fig_image)
                         st.download_button("Download Image (SVG)", svg_buffer_img.getvalue(), f"{selected_file}.svg")
 
                     with plot_col2:
@@ -328,9 +330,10 @@ def run():
                             
                             fig_hist, _, _ = plot_histogram(df_for_file, min_val=min_val, max_val=max_val, num_bins=num_bins)
                             st.pyplot(fig_hist)
-                            
+
                             svg_buffer_hist = io.StringIO()
                             fig_hist.savefig(svg_buffer_hist, format='svg')
+                            plt.close(fig_hist)
                             st.download_button("Download Histogram (SVG)", svg_buffer_hist.getvalue(), f"{selected_file}_histogram.svg")
                             
                             csv_bytes = df_to_csv_bytes(df_for_file)
@@ -351,6 +354,7 @@ def run():
                     st.pyplot(fig_currents)
                     svg_buffer_currents = io.StringIO()
                     fig_currents.savefig(svg_buffer_currents, format='svg')
+                    plt.close(fig_currents)
                     st.download_button("Download Current Plot (SVG)", svg_buffer_currents.getvalue(), "all_quad_brightness_vs_current.svg", key="dl_current")
 
                     st.markdown("---") # Visual separator
@@ -361,6 +365,7 @@ def run():
                     st.pyplot(fig_quad_hist)
                     svg_buffer_quad = io.StringIO()
                     fig_quad_hist.savefig(svg_buffer_quad, format='svg')
+                    plt.close(fig_quad_hist)
                     st.download_button("Download Quadrant Plot (SVG)", svg_buffer_quad.getvalue(), "quadrant_histogram.svg", key="dl_quad")
                 else:
                     st.warning("No particle data found across any quadrant. Cannot generate summary plots.") 
