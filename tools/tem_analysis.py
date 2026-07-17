@@ -70,6 +70,21 @@ def _clear_cache():
         st.session_state.full_run_complete = False
 
 
+def _is_streamlit_cloud() -> bool:
+    """Best-effort detection of Streamlit Community Cloud.
+
+    Community Cloud mounts the repo under /mount/src and runs on Linux; that
+    path does not exist in local runs, so it is a reliable signal. The
+    PSYFIT_FORCE_CLOUD env var overrides the heuristic ("1"/"true" forces the
+    cloud banner on, "0"/"false" forces it off) for testing or if the mount
+    path ever changes.
+    """
+    override = os.environ.get("PSYFIT_FORCE_CLOUD")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes")
+    return os.path.isdir("/mount/src")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Unit conversion & File Reading 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1411,7 +1426,14 @@ def run() -> None:
         st.header("1. Upload and Setup")
         accepted_types = ["dm3"] if _HAS_DM3 else []
         if _HAS_H5PY: accepted_types.append("emd")
-        
+
+        if _is_streamlit_cloud():
+            st.warning(
+                "⚠️ **Running on Streamlit Cloud** — memory here is limited. "
+                "Upload only **1–2 TEM images** at a time or the app may crash. "
+                "For larger batches, run the app locally."
+            )
+
         files = file_uploader_with_clear("Upload TEM image(s)", key="tem_uploads", accept_multiple_files=True, type=accepted_types, on_change=_clear_cache, on_clear=_clear_cache)
         shape_type = st.selectbox("Particle shape", list(SHAPE_CHOICES), index=0)
         
