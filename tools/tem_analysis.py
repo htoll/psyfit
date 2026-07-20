@@ -70,6 +70,21 @@ def _clear_cache():
         st.session_state.full_run_complete = False
 
 
+def _is_streamlit_cloud() -> bool:
+    """Best-effort detection of Streamlit Community Cloud.
+
+    Community Cloud mounts the repo under /mount/src and runs on Linux; that
+    path does not exist in local runs, so it is a reliable signal. The
+    PSYFIT_FORCE_CLOUD env var overrides the heuristic ("1"/"true" forces the
+    cloud banner on, "0"/"false" forces it off) for testing or if the mount
+    path ever changes.
+    """
+    override = os.environ.get("PSYFIT_FORCE_CLOUD")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes")
+    return os.path.isdir("/mount/src")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Unit conversion & File Reading 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -566,19 +581,20 @@ def segment_and_measure(
 # Drawing Helper
 # ═══════════════════════════════════════════════════════════════════════════
 def plot_annotated_image(ax, image_data, draw_shapes, nm_per_px: float = float("nan"),
-                         unit: str = "px", show_mag: bool = False):
+                         unit: str = "px", show_mag: bool = False, mask_alpha: float = 0.4):
     """Grayscale image with the fitted-shape overlays. When the image is calibrated a scale
     bar (sized 'nicely' relative to the field of view) is drawn lower-left; ``show_mag`` adds
-    the estimated magnification below it — only valid for a full image, not a cropped ROI."""
+    the estimated magnification below it — only valid for a full image, not a cropped ROI.
+    ``mask_alpha`` controls the fill opacity of the fitted-shape overlays."""
     zmin, zmax = np.percentile(image_data, [0.1, 99.9])
     ax.imshow(image_data, cmap="gray", vmin=zmin, vmax=zmax)
     for s in draw_shapes:
         if s["type"] == "circle":
-            ax.add_patch(patches.Circle((s["cx"], s["cy"]), s["r"], edgecolor=s["color"], facecolor=s["color"], alpha=0.4, lw=2))
+            ax.add_patch(patches.Circle((s["cx"], s["cy"]), s["r"], edgecolor=s["color"], facecolor=s["color"], alpha=mask_alpha, lw=2))
         elif s["type"] == "polygon":
-            ax.add_patch(patches.Polygon(s["vertices"], closed=True, edgecolor=s["color"], facecolor=s["color"], alpha=0.4, lw=2))
+            ax.add_patch(patches.Polygon(s["vertices"], closed=True, edgecolor=s["color"], facecolor=s["color"], alpha=mask_alpha, lw=2))
         elif s["type"] == "ellipse":
-            ax.add_patch(patches.Ellipse((s["cx"], s["cy"]), s["w"], s["h"], angle=s["angle"], edgecolor=s["color"], facecolor=s["color"], alpha=0.4, lw=2))
+            ax.add_patch(patches.Ellipse((s["cx"], s["cy"]), s["w"], s["h"], angle=s["angle"], edgecolor=s["color"], facecolor=s["color"], alpha=mask_alpha, lw=2))
     if np.isfinite(nm_per_px) and nm_per_px > 0:
         h_px, w_px = image_data.shape[:2]
         mag_kx = _estimate_mag_kx(w_px * nm_per_px) if show_mag else float("nan")
@@ -1411,7 +1427,14 @@ def run() -> None:
         st.header("1. Upload and Setup")
         accepted_types = ["dm3"] if _HAS_DM3 else []
         if _HAS_H5PY: accepted_types.append("emd")
-        
+
+        if _is_streamlit_cloud():
+            st.warning(
+                "⚠️ **Running on Streamlit Cloud** — memory here is limited. "
+                "Upload only **1–2 TEM images** at a time or the app may crash. "
+                "For larger batches, run the app locally."
+            )
+
         files = file_uploader_with_clear("Upload TEM image(s)", key="tem_uploads", accept_multiple_files=True, type=accepted_types, on_change=_clear_cache, on_clear=_clear_cache)
         shape_type = st.selectbox("Particle shape", list(SHAPE_CHOICES), index=0)
         
@@ -1468,11 +1491,15 @@ def run() -> None:
             st.image(seg_roi["rgb_ws"], use_container_width=True)
         with plot_c2:
             st.caption("Fitted Shapes (ROI)")
+            plot_slot = st.empty()
+            roi_mask_alpha = st.slider("Mask Opacity", 0.0, 1.0, 0.4, 0.05,
+                                       key="roi_mask_alpha",
+                                       help="Adjust the transparency of the fitted shape overlays to see how well they fit.")
             fig, ax = plt.subplots(figsize=(5, 5), dpi=150)
             plot_annotated_image(ax, seg_roi["data"], seg_roi["draw_shapes"],
-                                 seg_roi["nm_per_px"], seg_roi["unit"])
+                                 seg_roi["nm_per_px"], seg_roi["unit"], mask_alpha=roi_mask_alpha)
             fig.tight_layout(pad=0)
-            st.pyplot(fig)
+            plot_slot.pyplot(fig)
             plt.close(fig)
 
         if st.button("Apply to All Images and Run Full Analysis", type="primary"):
@@ -1506,11 +1533,15 @@ def run() -> None:
                 st.image(sel_res["rgb_ws"], use_container_width=True)
             with img_c2:
                 st.caption(f"Annotated Full Image ({sel_res['unit']})")
+                full_plot_slot = st.empty()
+                full_mask_alpha = st.slider("Mask Opacity", 0.0, 1.0, 0.4, 0.05,
+                                            key="full_mask_alpha",
+                                            help="Adjust the transparency of the fitted shape overlays to see how well they fit.")
                 fig_full, ax_full = plt.subplots(figsize=(8, 8), dpi=150)
                 plot_annotated_image(ax_full, sel_res["data"], sel_res["draw_shapes"],
-                                     sel_res["nm_per_px"], sel_res["unit"], show_mag=True)
+                                     sel_res["nm_per_px"], sel_res["unit"], show_mag=True, mask_alpha=full_mask_alpha)
                 fig_full.tight_layout(pad=0)
-                st.pyplot(fig_full)
+                full_plot_slot.pyplot(fig_full)
                 plt.close(fig_full)
 
             st.markdown("---")
@@ -1578,7 +1609,10 @@ def run() -> None:
                     ),
                 )
 
-                hex_vol = lambda x: (np.sqrt(3) / 2.0) * (x[0] ** 2) * x[1]   # V = (√3/2)·W²·H
+                # W is the vertex-to-vertex hexagon width (as the notes below state and as the
+                # side-on rectangle short axis reports), so the cross-section area is
+                # (3√3/8)·W² — the same vertex-to-vertex convention used by the Tic Tac model.
+                hex_vol = lambda x: (3.0 * np.sqrt(3.0) / 8.0) * (x[0] ** 2) * x[1]   # V = (3√3/8)·W²·H
 
                 if use_rect_gmm:
                     # Pool both rectangle axes (height = major, width = minor) so the
@@ -1613,7 +1647,7 @@ def run() -> None:
                                 value=f"{r_eff:.2f} ± {r_eff_sd:.2f} {unit_full}",
                                 help=(
                                     f"From rectangle GMM: width (smaller μ) = {mean_w:.2f}, height (larger μ) "
-                                    f"= {mean_h:.2f} {unit_full}. V = (√3/2)·W²·H; ± is 1 SD propagated from the GMM peak widths."
+                                    f"= {mean_h:.2f} {unit_full}. V = (3√3/8)·W²·H (vertex-to-vertex W); ± is 1 SD propagated from the GMM peak widths."
                                 ),
                             )
                             summary_export_ui(
@@ -1677,7 +1711,7 @@ def run() -> None:
                         st.metric(
                             label="Effective Radius (r_eff)",
                             value=f"{r_eff:.2f} ± {r_eff_sd:.2f} {unit_full}",
-                            help=f"Mean width = {mean_w:.2f}, mean height = {mean_h:.2f} {unit_full}. V = (√3/2)·W²·H; ± is 1 SD.",
+                            help=f"Mean width = {mean_w:.2f}, mean height = {mean_h:.2f} {unit_full}. V = (3√3/8)·W²·H (vertex-to-vertex W); ± is 1 SD.",
                         )
                         summary_export_ui(
                             shape_type, hist_specs, {"W": mean_w, "H": mean_h},
@@ -1734,7 +1768,10 @@ def run() -> None:
                     st.pyplot(fig, use_container_width=True)
                     _download_row(fig, pd.DataFrame({"combined_axes": axes_crop}), f"{prefix}_octahedron")
 
-                    oct_vol = lambda x: (np.sqrt(2) / 3.0) * x[1] * (x[0] ** 2)   # V = (√2/3)·major·minor²
+                    # Axes are vertex-to-vertex (tip-to-tip) projected distances, not edge
+                    # lengths, so a regular octahedron of diameter D has V = D³/6. The general
+                    # (elongated) form with distinct major/minor axes is V = (1/6)·major·minor².
+                    oct_vol = lambda x: (1.0 / 6.0) * x[1] * (x[0] ** 2)   # V = (1/6)·major·minor²
                     notes = []
                     # Calculate r_eff using the two dominant GMM peaks; fall back to a
                     # regular octahedron (major = minor) when the sample is too small to
@@ -1758,7 +1795,7 @@ def run() -> None:
                     st.metric(
                         label="Effective Radius (r_eff)",
                         value=f"{r_eff:.2f} ± {r_eff_sd:.2f} {unit_full}",
-                        help=f"{help_txt} V = (√2/3)·major·minor²; ± is 1 SD.",
+                        help=f"{help_txt} V = (1/6)·major·minor² (vertex-to-vertex axes); ± is 1 SD.",
                     )
                     summary_export_ui(
                         shape_type,
