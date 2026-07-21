@@ -91,6 +91,30 @@ COMBINED_TOOLS = [TOOL_NONE, TOOL_RATIO, TOOL_POP]
 # Fill opacity for the population Gaussian shadings.
 POP_FILL_ALPHA = 0.18
 
+# Crameri "romaO" cyclic colormap, sampled at 33 evenly spaced anchors (RGB in
+# 0–1). Embedded so the population plot can color peaks without a runtime
+# dependency on ``cmcrameri``. See _wavelength_color for how peaks are mapped.
+ROMAO_LUT = [
+    (0.4514, 0.2235, 0.3419), (0.4735, 0.2196, 0.2982), (0.4957, 0.2254, 0.2602),
+    (0.5188, 0.2408, 0.2278), (0.5439, 0.2663, 0.2016), (0.5713, 0.3016, 0.1825),
+    (0.6013, 0.3461, 0.1718), (0.6335, 0.3987, 0.1715), (0.6678, 0.4583, 0.1842),
+    (0.7039, 0.5241, 0.2125), (0.7414, 0.5945, 0.2584), (0.7781, 0.6669, 0.3217),
+    (0.8100, 0.7363, 0.3989), (0.8316, 0.7963, 0.4829), (0.8379, 0.8418, 0.5654),
+    (0.8262, 0.8707, 0.6395), (0.7960, 0.8832, 0.7012), (0.7488, 0.8807, 0.7491),
+    (0.6877, 0.8642, 0.7829), (0.6173, 0.8352, 0.8031), (0.5433, 0.7952, 0.8109),
+    (0.4721, 0.7468, 0.8077), (0.4094, 0.6927, 0.7956), (0.3596, 0.6355, 0.7760),
+    (0.3256, 0.5767, 0.7499), (0.3090, 0.5170, 0.7167), (0.3097, 0.4572, 0.6752),
+    (0.3249, 0.3986, 0.6250), (0.3491, 0.3443, 0.5673), (0.3765, 0.2978, 0.5062),
+    (0.4033, 0.2619, 0.4464), (0.4282, 0.2373, 0.3913), (0.4486, 0.2246, 0.3477),
+]
+
+# Wavelength → romaO position control points. romaO is cyclic (its raw order is
+# not blue→red), so we pick positions where each hue lives to make a peak's color
+# roughly match its visible-emission color: ~400 nm blue, ~530 green, ~570
+# yellow, ~600 orange, ~640–700 red. Interpolated (and clamped) in _wavelength_color.
+POP_WL_CTRL = [400.0, 450.0, 490.0, 530.0, 570.0, 600.0, 640.0, 700.0]
+POP_T_CTRL = [0.82, 0.78, 0.70, 0.56, 0.45, 0.28, 0.12, 0.02]
+
 
 # --- Signal processing ------------------------------------------------------
 def _spline_baseline(wvl, y, lam=1e3, p=0.01, num_knots=100, niter=10):
@@ -299,6 +323,21 @@ def _fit_population_gaussians(wvl, y, centers, max_shift=POP_MAX_SHIFT):
             "sigma": float(sigma), "area": float(amp * sigma * np.sqrt(2 * np.pi)),
         })
     return comps
+
+
+def _romao(t):
+    """Sample the embedded romaO colormap at ``t`` ∈ [0, 1] → ``#rrggbb``."""
+    lut = np.asarray(ROMAO_LUT)
+    xp = np.linspace(0.0, 1.0, len(lut))
+    t = float(np.clip(t, 0.0, 1.0))
+    r, g, b = (np.interp(t, xp, lut[:, c]) for c in range(3))
+    return "#{:02x}{:02x}{:02x}".format(
+        int(round(r * 255)), int(round(g * 255)), int(round(b * 255)))
+
+
+def _wavelength_color(wl):
+    """Color a peak wavelength (nm) via romaO so it roughly matches its emission."""
+    return _romao(float(np.interp(wl, POP_WL_CTRL, POP_T_CTRL)))
 
 
 def _rgba(color, alpha):
@@ -734,6 +773,7 @@ def run():
     st.session_state.setdefault("ratio_last", {})    # key -> last box signature
     st.session_state.setdefault("pop_centers", {})   # key -> [peak x, ...]
     st.session_state.setdefault("pop_last", {})      # key -> last click signature
+    st.session_state.setdefault("combined_nonce", 0)  # remount combined chart to clear selection
     st.session_state.setdefault("reff_store", {})    # file -> r_eff (survives toggling)
 
     with st.sidebar:
@@ -956,6 +996,11 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None):
     """
     key = "__combined__"
     tool = st.session_state.get("combined_tool", TOOL_NONE)
+    # Nonce is baked into the interactive chart key so consuming a selection can
+    # remount the chart and wipe plotly's lingering selection box — without it
+    # the same static-keyed widget holds a stale box and the next drag never
+    # registers as a fresh event (the "toggle tools to make it draw" bug).
+    nonce = st.session_state.combined_nonce
     centers = sorted(st.session_state.pop_centers.setdefault(key, []))
     ranges = st.session_state.ratio_ranges.setdefault(key, [None, None])
 
@@ -1042,7 +1087,7 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None):
                    "(the integrated-area ratio is computed per file).")
         event = st.plotly_chart(
             cfig, use_container_width=True,
-            on_select="rerun", selection_mode="box", key="combined_ratio",
+            on_select="rerun", selection_mode="box", key=f"combined_ratio_{nonce}",
         )
         _handle_ratio_selection(event, key, ranges, ptr)
     else:  # TOOL_POP
@@ -1051,7 +1096,7 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None):
                    "with one Gaussian per peak.")
         event = st.plotly_chart(
             cfig, use_container_width=True,
-            on_select="rerun", selection_mode=["points", "box"], key="combined_pop",
+            on_select="rerun", selection_mode=["points", "box"], key=f"combined_pop_{nonce}",
         )
         _handle_pop_click(event, key)
 
@@ -1099,6 +1144,9 @@ def _handle_ratio_selection(event, key, ranges, ptr):
             st.session_state.ratio_last[key] = sig
             ranges[ptr] = (lo, hi)
             st.session_state.ratio_ptr[key] = ptr ^ 1
+            # Remount the chart so the drawn box is cleared and the next drag
+            # (for the other region) registers as a fresh selection.
+            st.session_state.combined_nonce += 1
             st.rerun()
 
 
@@ -1110,6 +1158,7 @@ def _render_ratio_results(averages, key, ranges):
             st.session_state.ratio_ranges[key] = [None, None]
             st.session_state.ratio_ptr[key] = 0
             st.session_state.ratio_last.pop(key, None)
+            st.session_state.combined_nonce += 1  # remount → wipe any lingering box
             st.rerun()
     with rc1:
         a_rg, b_rg = ranges
@@ -1169,6 +1218,9 @@ def _handle_pop_click(event, key):
     lst = st.session_state.pop_centers.setdefault(key, [])
     if not any(abs(x_new - c) < 3.0 for c in lst):  # ignore near-duplicate clicks
         lst.append(x_new)
+        # Remount the chart so the drawn box is cleared and the next drag
+        # registers as a fresh selection (otherwise only the first peak drops).
+        st.session_state.combined_nonce += 1
         st.rerun()
 
 
@@ -1191,6 +1243,7 @@ def _render_population_results(averages, key, centers, pop_results):
         if st.button("Reset peaks", key="combined_pop_reset"):
             st.session_state.pop_centers[key] = []
             st.session_state.pop_last.pop(key, None)
+            st.session_state.combined_nonce += 1  # remount → wipe any lingering box
             st.rerun()
 
     if centers:
@@ -1206,8 +1259,13 @@ def _render_population_results(averages, key, centers, pop_results):
                 "or removing a peak.")
         return
 
+    # Build the table rows in the SAME file order as everything else (the
+    # `averages` order) and with population % normalized per trace.
     rows = []
-    for label, comps in pop_results.items():
+    for label, _grid, _mean, _color in averages:
+        comps = pop_results.get(label)
+        if not comps:
+            continue
         total = sum(c["area"] for c in comps) or 1.0
         for j, c in enumerate(comps):
             rows.append({
@@ -1216,15 +1274,49 @@ def _render_population_results(averages, key, centers, pop_results):
                 "Population %": 100.0 * c["area"] / total,
             })
     df = pd.DataFrame(rows)
+
+    # --- Stacked-bar view (one bar per file, one segment per peak) -----------
+    # Peaks are colored by their clicked wavelength via romaO so the color
+    # roughly matches the visible emission; the segment order/colors are shared
+    # across every bar because comps are aligned to sorted(centers).
     st.caption("Relative steady-state populations — each trace's Gaussian areas as "
-               "a percentage of that trace's total fitted area.")
-    st.dataframe(
-        df.style.format({
-            "Clicked (nm)": "{:.0f}", "Fitted μ (nm)": "{:.1f}", "σ (nm)": "{:.1f}",
-            "Area": "{:.3g}", "Population %": "{:.1f}",
-        }),
-        use_container_width=True, hide_index=True,
+               "a percentage of that trace's total fitted area. Peaks colored by "
+               "wavelength (romaO), roughly matching their emission color.")
+    labels = [label for label, *_ in averages if label in pop_results]
+    pfig = go.Figure()
+    for j, center in enumerate(centers):
+        ys, mus = [], []
+        for label in labels:
+            comps = pop_results[label]
+            total = sum(c["area"] for c in comps) or 1.0
+            comp = comps[j] if j < len(comps) else None
+            ys.append(100.0 * comp["area"] / total if comp else 0.0)
+            mus.append(comp["mu"] if comp else float("nan"))
+        color = _wavelength_color(center)
+        pfig.add_trace(go.Bar(
+            x=labels, y=ys, name=f"≈{center:.0f} nm", marker_color=color,
+            customdata=mus,
+            hovertemplate=("%{x}<br>peak ≈" + f"{center:.0f}" +
+                           " nm (fit μ %{customdata:.0f} nm)<br>"
+                           "%{y:.1f}%<extra></extra>"),
+        ))
+    pfig.update_layout(
+        barmode="stack", xaxis_title="Sample",
+        yaxis=dict(title="Population %", range=[0, 100]),
+        height=430, legend_title="Peak",
+        margin=dict(l=10, r=10, t=10, b=10),
     )
+    st.plotly_chart(pfig, use_container_width=True, key="combined_pop_stack")
+
+    # Full numeric table remains available (collapsed) plus the CSV export.
+    with st.expander("Show population table"):
+        st.dataframe(
+            df.style.format({
+                "Clicked (nm)": "{:.0f}", "Fitted μ (nm)": "{:.1f}", "σ (nm)": "{:.1f}",
+                "Area": "{:.3g}", "Population %": "{:.1f}",
+            }),
+            use_container_width=True, hide_index=True,
+        )
     st.download_button(
         "Download population table (CSV)",
         data=df.to_csv(index=False).encode("utf-8"),
