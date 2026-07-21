@@ -665,6 +665,143 @@ def gaussian2d(xy, amp, x0, sigma_x, y0, sigma_y, offset):
                  np.exp(-((y - y0)**2)/(2*sigma_y**2)) + offset).ravel()
 
 
+def detect_peaks(image_cps, threshold=10, signal='UCNP', min_distance=5):
+    """Detect candidate emitter centres in a (cropped) cps image.
+
+    This mirrors the peak-detection step of :func:`integrate_sif` so tools that
+    do their own per-frame fitting (e.g. the movie brightness tool) can reuse the
+    exact same detection behaviour. Returns an ``(N, 2)`` array of ``(row, col)``
+    = ``(y, x)`` integer coordinates.
+    """
+    smoothed_image = gaussian_filter(image_cps, sigma=1)
+    threshold_abs = np.mean(smoothed_image) + threshold * np.std(smoothed_image)
+    if signal == 'UCNP':
+        coords = peak_local_max(
+            smoothed_image, min_distance=min_distance, threshold_abs=threshold_abs
+        )
+    else:
+        blobs = blob_log(
+            smoothed_image, min_sigma=1, max_sigma=3, num_sigma=5, threshold=5 * threshold
+        )
+        coords = blobs[:, :2]
+    return np.asarray(coords, dtype=float)
+
+
+def fit_psf_brightness(image_cps, center_x, center_y, *, pix_size_um=0.1,
+                       radius_um_fine=0.5, sig_threshold=0.5, sigma_ub=0.5,
+                       refine=False, strict=False):
+    """Fit a single 2-D Gaussian PSF at a (roughly) known location.
+
+    This is the per-emitter fit extracted from :func:`integrate_sif`, exposed so
+    a movie can be fit frame-by-frame at *fixed* positions (kept stable across
+    frames so each emitter keeps its identity). The centre is only allowed to
+    drift +/- 1 px during the fit.
+
+    Parameters
+    ----------
+    image_cps : 2-D ndarray
+        Single frame in counts-per-second.
+    center_x, center_y : float
+        Approximate emitter centre in pixels (col, row).
+    refine : bool
+        If True, re-localise the peak inside the subregion before fitting (as
+        ``integrate_sif`` does). Leave False for movies so a blinking-off frame
+        does not snap the fit onto a neighbouring noise peak.
+    strict : bool
+        If True, apply ``integrate_sif``'s rejection filters (brightness range
+        and sigma threshold) and return ``None`` on failure. If False (default,
+        used for time traces) always return the fitted values plus a ``fit_ok``
+        flag, so dark/blinking frames are recorded rather than dropped.
+
+    Returns
+    -------
+    dict or None
+        Fit results, or ``None`` if the fit could not be performed (or was
+        rejected in ``strict`` mode).
+    """
+    radius_pix_fine = max(1, int(radius_um_fine / pix_size_um))
+
+    center_x_refined = float(center_x)
+    center_y_refined = float(center_y)
+    if refine:
+        sub_img, x0_idx, y0_idx = extract_subregion(
+            image_cps, center_x, center_y, radius_pix_fine
+        )
+        if sub_img.size == 0:
+            return None
+        blurred = gaussian_filter(sub_img, sigma=1)
+        local_peak = peak_local_max(blurred, num_peaks=1)
+        if local_peak.shape[0] == 0:
+            return None
+        local_y, local_x = local_peak[0]
+        center_x_refined = x0_idx + local_x
+        center_y_refined = y0_idx + local_y
+
+    sub_img_fine, x0_idx_fine, y0_idx_fine = extract_subregion(
+        image_cps, center_x_refined, center_y_refined, radius_pix_fine
+    )
+    if sub_img_fine.size == 0 or min(sub_img_fine.shape) < 2:
+        return None
+
+    interp_size = 20
+    sub_img_interp = zoom(sub_img_fine, interp_size / sub_img_fine.shape[0], order=1)
+    H, W = sub_img_interp.shape
+    x_indices, y_indices = np.meshgrid(np.arange(W), np.arange(H))
+    x_coords = ((x_indices / (W - 1)) * (sub_img_fine.shape[1] - 1) + x0_idx_fine) * pix_size_um
+    y_coords = ((y_indices / (H - 1)) * (sub_img_fine.shape[0] - 1) + y0_idx_fine) * pix_size_um
+    x_flat = x_coords.ravel()
+    y_flat = y_coords.ravel()
+    z_flat = sub_img_interp.ravel()
+
+    amp_guess = float(np.max(sub_img_fine))
+    offset_guess = float(np.min(sub_img_fine))
+    x0_guess = center_x_refined * pix_size_um
+    y0_guess = center_y_refined * pix_size_um
+    sigma_guess = 0.3
+    p0 = [amp_guess, x0_guess, sigma_guess, y0_guess, sigma_guess, offset_guess]
+
+    def residuals(params, x, y, z):
+        A, x0, sx, y0, sy, offset = params
+        model = A * np.exp(-((x - x0)**2 / (2 * sx**2) + (y - y0)**2 / (2 * sy**2))) + offset
+        return model - z
+
+    # Amplitude lower bound must stay < upper bound even for near-dark frames.
+    amp_ub = max(2 * amp_guess, amp_guess + 1.0, 2.0)
+    lb = [0.0, x0_guess - 1, 0.0, y0_guess - 1, 0.0, 0.0]
+    ub = [amp_ub, x0_guess + 1, sigma_ub, y0_guess + 1, sigma_ub, max(offset_guess * 1.2, 1e-6)]
+
+    try:
+        res = least_squares(residuals, p0, args=(x_flat, y_flat, z_flat), bounds=(lb, ub))
+    except (RuntimeError, ValueError):
+        return None
+
+    amp_fit, x0_fit, sigx_fit, y0_fit, sigy_fit, offset_fit = res.x
+    brightness_fit = 2 * np.pi * amp_fit * sigx_fit * sigy_fit / pix_size_um**2
+    brightness_integrated = float(np.sum(sub_img_fine) - sub_img_fine.size * offset_fit)
+
+    EPS = 1e-3
+    sigma_ok = (sigx_fit <= sig_threshold + EPS) and (sigy_fit <= sig_threshold + EPS)
+    brightness_ok = 1 <= brightness_integrated <= 1e9
+    fit_ok = bool(res.success and sigma_ok and brightness_ok)
+
+    if strict and not fit_ok:
+        return None
+
+    return {
+        'x_pix': center_x_refined,
+        'y_pix': center_y_refined,
+        'x_um': x0_fit,
+        'y_um': y0_fit,
+        'amp_fit': amp_fit,
+        'sigx_fit': sigx_fit,
+        'sigy_fit': sigy_fit,
+        'offset_fit': offset_fit,
+        'brightness_fit': brightness_fit,
+        'brightness_integrated': brightness_integrated,
+        'fit_ok': fit_ok,
+    }
+
+
 def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, normalization=None, save_format = 'SVG', univ_minmax=False, cmap = 'grey'):
     required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_integrated']
     all_matched_pairs = []

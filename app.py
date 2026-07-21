@@ -70,6 +70,7 @@ except Exception:
 SHORT_TOOL_NAMES = {
     "Brightness (WF)": "Brightness WF",
     "Brightness (Conf)": "Brightness Conf",
+    "Movie Brightness": "Movie Bright",
     "Saturation Series": "Sat Series",
     "Confocal Visualization": "Confocal Viz",
     "Dye Colocalization": "Coloc",
@@ -151,6 +152,12 @@ TOOLS = {
         "tools.confocal_brightness", "run", "Brightness & Intensity",
         "Analyze confocal .dat files for per-particle brightness with tunable fit thresholds.",
         False,
+    ),
+    "Movie Brightness": (
+        "tools.movie_brightness", "run", "Brightness & Intensity",
+        "Fit per-PSF brightness across every frame of a .sif movie; per-emitter "
+        "and region intensity-vs-time traces. Local-only (disabled on cloud).",
+        True,
     ),
     "Saturation Series": (
         "tools.SaturationSeries", "run", "Brightness & Intensity",
