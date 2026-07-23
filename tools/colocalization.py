@@ -31,9 +31,9 @@ def _hash_file(uf) -> str:
         uf.seek(pos)
     return hashlib.md5(b).hexdigest()
 
-def _build_proc_key(sif_files, region_ucnp, region_dye, threshold, ucnp_id, dye_id):
+def _build_proc_key(sif_files, region_ucnp, region_dye, threshold, ucnp_id, dye_id, min_distance):
     names_hashes = tuple(sorted((f.name, _hash_file(f)) for f in (sif_files or [])))
-    return (names_hashes, str(region_ucnp), str(region_dye), int(threshold), str(ucnp_id), str(dye_id))
+    return (names_hashes, str(region_ucnp), str(region_dye), int(threshold), str(ucnp_id), str(dye_id), int(min_distance))
 
 def _extract_common_stem(uploaded_files):
     if not uploaded_files:
@@ -63,7 +63,7 @@ try:
 except Exception:
     _process_files_external = None
 
-def _process_files_fallback(uploaded_files, region, threshold=1, signal="UCNP", pix_size_um=PIX_SIZE_UM, sig_threshold=0.3):
+def _process_files_fallback(uploaded_files, region, threshold=1, signal="UCNP", pix_size_um=PIX_SIZE_UM, sig_threshold=0.3, min_distance=5):
     processed_data: Dict[str, Dict[str, object]] = {}
     all_dfs = []
     temp_dir = Path(tempfile.gettempdir()) / "coloc_temp"
@@ -80,6 +80,7 @@ def _process_files_fallback(uploaded_files, region, threshold=1, signal="UCNP", 
                 signal=signal,
                 pix_size_um=pix_size_um,
                 sig_threshold=sig_threshold,
+                min_distance=min_distance,
             )
             processed_data[uf.name] = {"df": df, "image": image_data_cps}
             all_dfs.append(df)
@@ -88,10 +89,14 @@ def _process_files_fallback(uploaded_files, region, threshold=1, signal="UCNP", 
     combined_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
     return processed_data, combined_df
 
-def _process_files(uploaded_files, region, threshold, signal):
+def _process_files(uploaded_files, region, threshold, signal, min_distance=5):
     if _process_files_external is not None:
-        return _process_files_external(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM)
-    return _process_files_fallback(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM)
+        try:
+            return _process_files_external(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM, min_distance=min_distance)
+        except TypeError:
+            # Older external process_files signature without min_distance support.
+            return _process_files_external(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM)
+    return _process_files_fallback(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM, min_distance=min_distance)
 
 # --- Plotting Helpers ---
 
@@ -227,6 +232,10 @@ def run():
         st.divider()
         st.header("Fitting")
         threshold = st.number_input("Threshold", min_value=0.0, value=2.0,  step=0.05)
+        min_distance = st.number_input(
+            "Minimum distance (px)", min_value=1, value=5,
+            help="Minimum separation between detected PSFs. Increase to avoid fitting PSFs that are too close together.",
+        )
         region_ucnp = st.selectbox("Region (UCNP)", options=["1","2","3","4","all"], index=0)
         region_dye  = st.selectbox("Region (Dye)",  options=["1","2","3","4","all"], index=0)
         radius_px = st.number_input("Colocalization radius (pixels)", min_value=1, value=2)
@@ -245,11 +254,11 @@ def run():
         return
 
     # --- Processing ---
-    proc_key = _build_proc_key(sif_files, region_ucnp, region_dye, threshold, ucnp_id, dye_id)
+    proc_key = _build_proc_key(sif_files, region_ucnp, region_dye, threshold, ucnp_id, dye_id, min_distance)
     if "proc_key" not in st.session_state or st.session_state["proc_key"] != proc_key:
         ucnp_files, dye_files = _split_ucnp_dye(sif_files, ucnp_id=ucnp_id, dye_id=dye_id)
-        u_data, _ = _process_files(ucnp_files, region=region_ucnp, threshold=threshold, signal="UCNP") if ucnp_files else ({}, pd.DataFrame())
-        d_data, _ = _process_files(dye_files,  region=region_dye,  threshold=threshold, signal="dye")  if dye_files  else ({}, pd.DataFrame())
+        u_data, _ = _process_files(ucnp_files, region=region_ucnp, threshold=threshold, signal="UCNP", min_distance=min_distance) if ucnp_files else ({}, pd.DataFrame())
+        d_data, _ = _process_files(dye_files,  region=region_dye,  threshold=threshold, signal="dye",  min_distance=min_distance)  if dye_files  else ({}, pd.DataFrame())
 
         u_names = sorted(list(u_data.keys()), key=natural_sort_key)
         d_names = sorted(list(d_data.keys()), key=natural_sort_key)
