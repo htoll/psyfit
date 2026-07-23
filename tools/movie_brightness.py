@@ -30,7 +30,14 @@ import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 
-from utils import detect_peaks, fit_psf_brightness, file_uploader_with_clear
+from utils import (
+    detect_peaks,
+    fit_psf_brightness,
+    file_uploader_with_clear,
+    detect_steps_kv,
+    staircase_from_bounds,
+    plot_histogram,
+)
 from tools import roi as roi_tool
 
 try:
@@ -240,6 +247,41 @@ def _box_trace(frames, meta, region, roi, box, *, bg_percentile=20):
             "summed_intensity": summed, "integrated_brightness": integrated,
         })
     return pd.DataFrame(rows)
+
+
+def _psf_bleaching_steps(fit_df, psf_id, *, metric="brightness_integrated",
+                         penalty=1.0, min_drop=0.0):
+    """Run KV step detection on one PSF's trace.
+
+    Returns ``(trace, steps)`` where ``trace`` is the cleaned (finite) per-frame
+    DataFrame with a ``level`` column (the fitted staircase), and ``steps`` is a
+    list of downward-step dicts (``frame``, ``time_s``, ``level_before``,
+    ``level_after``, ``drop``) with ``drop >= min_drop``.
+    """
+    sub = fit_df[fit_df["psf_id"] == psf_id].sort_values("frame").copy()
+    sub = sub[np.isfinite(sub[metric])]
+    if sub.empty:
+        return sub, []
+    y = sub[metric].to_numpy(dtype=float)
+    bounds = detect_steps_kv(y, penalty=penalty)
+    levels, raw_steps = staircase_from_bounds(y, bounds)
+    sub["level"] = levels
+
+    frames_arr = sub["frame"].to_numpy()
+    times_arr = sub["time_s"].to_numpy()
+    steps = []
+    for s in raw_steps:
+        if s["drop"] >= max(min_drop, 0.0) and s["drop"] > 0:  # downward only
+            i = s["index"]
+            steps.append({
+                "psf_id": psf_id,
+                "frame": int(frames_arr[i]) if i < len(frames_arr) else int(frames_arr[-1]),
+                "time_s": float(times_arr[i]) if i < len(times_arr) else float(times_arr[-1]),
+                "level_before": s["level_before"],
+                "level_after": s["level_after"],
+                "drop": s["drop"],
+            })
+    return sub, steps
 
 
 def _csv_bytes(df: pd.DataFrame) -> bytes:
@@ -550,9 +592,181 @@ def run():
     else:
         st.info("Select one or more PSF IDs to plot their traces.")
 
-    # 8) Box region intensity over time.
+    # 8) Bleaching step analysis (single-dye brightness).
     st.divider()
-    st.subheader("4 · Region-of-interest intensity over time")
+    st.subheader("4 · Bleaching step analysis")
+    st.caption(
+        "Rank PSFs by initial brightness, take the brightest clusters, detect "
+        "photobleaching steps (Kalafut–Visscher), then compile every step-drop "
+        "into a single-dye brightness histogram."
+    )
+
+    metric_bl = "brightness_integrated"
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        n_init = st.slider(
+            "Frames for initial brightness", min_value=1,
+            max_value=min(20, T), value=min(5, T),
+            help="Per-PSF ranking metric = mean brightness over the first N frames "
+                 "(brightest while all dyes are still on).",
+        )
+    with b2:
+        top_pct = st.slider(
+            "Top % brightest to analyze", min_value=1, max_value=100, value=10,
+        )
+    with b3:
+        penalty = st.slider(
+            "Step sensitivity (BIC penalty)", min_value=0.5, max_value=3.0,
+            value=1.0, step=0.1,
+            help="Higher = fewer, larger steps (conservative); lower = more steps.",
+        )
+
+    # Rank PSFs by mean brightness over the first n_init frames.
+    init_series = (
+        fit_df[fit_df["frame"] <= n_init]
+        .groupby("psf_id")[metric_bl].mean()
+        .dropna()
+        .sort_values(ascending=False)
+    )
+    if init_series.empty:
+        st.warning("No finite brightness values in the initial frames.")
+        return
+
+    init_vals = init_series.to_numpy()
+    cutoff = float(np.percentile(init_vals, 100 - top_pct))
+    selected_ids = init_series[init_series >= cutoff].index.tolist()
+
+    rank_col, sel_col = st.columns([2, 1])
+    with rank_col:
+        fig_rank, ax_rank = plt.subplots(figsize=(5, 3))
+        ax_rank.hist(init_vals, bins="auto", color="#88CCEE",
+                     edgecolor="#5599bb", alpha=0.8)
+        ax_rank.axvline(cutoff, color="crimson", ls="--",
+                        label=f"top {top_pct}% cutoff")
+        ax_rank.set_xlabel("Initial brightness (pps)")
+        ax_rank.set_ylabel("PSF count")
+        ax_rank.set_title(f"Per-PSF initial brightness (n={len(init_vals)})")
+        ax_rank.legend(fontsize=8)
+        fig_rank.tight_layout()
+        st.pyplot(fig_rank, use_container_width=True)
+        plt.close(fig_rank)
+    with sel_col:
+        st.metric("PSFs selected", f"{len(selected_ids)} / {len(init_vals)}")
+        st.caption(f"Cutoff ≥ {cutoff:.3g} pps")
+        min_drop = st.number_input(
+            "Min step drop (pps)", min_value=0.0, value=0.0,
+            help="Ignore down-steps smaller than this (noise floor).",
+        )
+
+    if not selected_ids:
+        st.info("No PSFs pass the brightness cutoff. Lower the threshold.")
+        return
+
+    # Detect steps for each selected PSF.
+    all_steps = []
+    traces = {}
+    for pid in selected_ids:
+        trace, steps = _psf_bleaching_steps(
+            fit_df, pid, metric=metric_bl, penalty=penalty, min_drop=min_drop,
+        )
+        traces[pid] = trace
+        all_steps.extend(steps)
+
+    n_show = min(len(selected_ids), 12)
+    st.markdown(f"**Traces with detected steps** (showing {n_show} of {len(selected_ids)})")
+    ncols = min(4, n_show)
+    nrows = int(np.ceil(n_show / ncols))
+    fig_grid, axes = plt.subplots(nrows, ncols, figsize=(3.2 * ncols, 2.6 * nrows),
+                                  squeeze=False)
+    axes_flat = axes.flatten()
+    for ax, pid in zip(axes_flat, selected_ids[:n_show]):
+        tr = traces[pid]
+        ax.plot(tr["time_s"], tr[metric_bl], ".", ms=3, color="#4477AA", alpha=0.6)
+        ax.plot(tr["time_s"], tr["level"], "-", color="crimson", lw=1.2)
+        pid_steps = [s for s in all_steps if s["psf_id"] == pid]
+        if pid_steps:
+            ax.scatter([s["time_s"] for s in pid_steps],
+                       [s["level_after"] for s in pid_steps],
+                       marker="v", color="black", s=25, zorder=5)
+        ax.set_title(f"PSF {pid} · {len(pid_steps)} steps", fontsize=9)
+        ax.tick_params(labelsize=7)
+    for ax in axes_flat[n_show:]:
+        ax.axis("off")
+    fig_grid.supxlabel("Time (s)", fontsize=10)
+    fig_grid.supylabel("Brightness (pps)", fontsize=10)
+    fig_grid.tight_layout()
+    st.pyplot(fig_grid, use_container_width=True)
+    grid_buf = io.BytesIO()
+    fig_grid.savefig(grid_buf, format="png", bbox_inches="tight", dpi=150)
+    plt.close(fig_grid)
+    st.download_button(
+        "Download step-trace grid (PNG)", data=grid_buf.getvalue(),
+        file_name="bleaching_step_traces.png", mime="image/png",
+    )
+
+    # Optional single-PSF detail view.
+    detail_pid = st.selectbox("Inspect a single PSF trace", options=selected_ids)
+    tr = traces[detail_pid]
+    fig_detail = go.Figure()
+    fig_detail.add_trace(go.Scatter(
+        x=tr["time_s"], y=tr[metric_bl], mode="markers", name="brightness",
+        marker=dict(size=5, color="#4477AA"),
+    ))
+    fig_detail.add_trace(go.Scatter(
+        x=tr["time_s"], y=tr["level"], mode="lines", name="KV staircase",
+        line=dict(color="crimson", width=2),
+    ))
+    detail_steps = [s for s in all_steps if s["psf_id"] == detail_pid]
+    if detail_steps:
+        fig_detail.add_trace(go.Scatter(
+            x=[s["time_s"] for s in detail_steps],
+            y=[s["level_after"] for s in detail_steps],
+            mode="markers", name="step", marker=dict(symbol="triangle-down",
+                                                      size=11, color="black"),
+        ))
+    fig_detail.update_layout(
+        xaxis_title="Time (s)", yaxis_title="Brightness (pps)",
+        margin=dict(l=0, r=0, t=10, b=0), height=360,
+    )
+    st.plotly_chart(fig_detail, use_container_width=True,
+                    config={"displaylogo": False})
+
+    # Single-dye brightness histogram from all step drops.
+    st.markdown("**Single-dye brightness (compiled step drops)**")
+    if len(all_steps) < 2:
+        st.info(
+            "Not enough steps detected to build a histogram. Try lowering the "
+            "step sensitivity, the min step drop, or widening the selection."
+        )
+    else:
+        steps_df = pd.DataFrame(all_steps)
+        h1, h2 = st.columns([2, 1])
+        with h2:
+            n_comp = st.number_input(
+                "GMM components", min_value=1, max_value=4, value=1,
+                help="1 = single-dye Gaussian; increase to resolve multi-dye "
+                     "step populations.",
+            )
+            st.metric("Total steps", len(steps_df))
+            st.metric("Median drop", f"{steps_df['drop'].median():.3g}")
+        with h1:
+            hist_input = pd.DataFrame({"brightness_integrated": steps_df["drop"].values})
+            fig_hist, mu, sigma = plot_histogram(
+                hist_input, n_components=int(n_comp),
+            )
+            st.pyplot(fig_hist, use_container_width=True)
+            plt.close(fig_hist)
+            if mu is not None:
+                st.success(f"Single-dye brightness ≈ **{mu:.3g} ± {sigma:.2g} pps** "
+                           f"(primary GMM component)")
+        st.download_button(
+            "Download step drops (CSV)", data=_csv_bytes(steps_df),
+            file_name="bleaching_step_drops.csv", mime="text/csv",
+        )
+
+    # 9) Box region intensity over time.
+    st.divider()
+    st.subheader("5 · Region-of-interest intensity over time")
     st.caption(
         "Draw a box on the accumulation image to read out the summed and "
         "background-subtracted intensity inside it, frame by frame."
