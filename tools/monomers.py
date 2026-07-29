@@ -114,8 +114,9 @@ def parse_filename_params(name):
     'HWT08_001F_1to1e5_100xOil_976nm1500mA_1.sif'
     -> {'dilution': 1e5, 'objective_mag': 100}.
 
-    Dilution: an 'AtoB' token is read as the ratio B/A (e.g. '1to1e5' -> 1e5);
-    otherwise a standalone scientific token like '1e5' is used. Magnification:
+    Dilution: an 'AtoB' token is read as the ratio B/A (e.g. '1to1e5' -> 1e5,
+    '1to10k' -> 1e4); otherwise a standalone token like '1e5' or '10k' is used.
+    Numbers may use a 'k' (thousand) or 'M' (million) suffix. Magnification:
     a '<num>x' token not followed by another digit (so '512x512' is ignored).
     Returns keys with None when a field can't be found.
     """
@@ -124,19 +125,31 @@ def parse_filename_params(name):
         return out
     stem = os.path.basename(str(name))
 
-    m = re.search(r'(\d+(?:\.\d+)?)\s*to\s*(\d+(?:\.\d+)?(?:[eE]\d+)?)', stem)
+    # A number token: plain, scientific (1e5), or with a k/M suffix (10k, 2M).
+    # Lowercase 'm' is deliberately excluded so 'milliamp' tokens like
+    # '1500mA' are not misread as a million-fold value.
+    num = r'\d+(?:\.\d+)?(?:[eE]\d+)?[kKM]?'
+
+    def _to_float(tok):
+        mult = 1.0
+        if tok[-1] in "kKM":
+            mult = 1e3 if tok[-1] in "kK" else 1e6
+            tok = tok[:-1]
+        return float(tok) * mult
+
+    m = re.search(rf'({num})\s*to\s*({num})', stem)
     if m:
         try:
-            a, b = float(m.group(1)), float(m.group(2))
+            a, b = _to_float(m.group(1)), _to_float(m.group(2))
             if a > 0:
                 out["dilution"] = b / a
         except ValueError:
             pass
     if out["dilution"] is None:
-        m2 = re.search(r'(\d+(?:\.\d+)?[eE]\d+)', stem)
+        m2 = re.search(rf'(\d+(?:\.\d+)?(?:[eE]\d+|[kKM]))', stem)
         if m2:
             try:
-                out["dilution"] = float(m2.group(1))
+                out["dilution"] = _to_float(m2.group(1))
             except ValueError:
                 pass
 
