@@ -9,7 +9,7 @@ import pandas as pd
 import hashlib
 import streamlit as st
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LogNorm, LinearSegmentedColormap
 from matplotlib.ticker import MaxNLocator
 
 # Ensure utils is accessible if needed
@@ -98,7 +98,166 @@ def _process_files(uploaded_files, region, threshold, signal, min_distance=5):
             return _process_files_external(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM)
     return _process_files_fallback(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM, min_distance=min_distance)
 
+# --- Single-emitter brightness helpers ---
+
+def _single_ucnp_brightness_ui(u_data, assume_monomers, default_manual=1e5):
+    """Return the single-UCNP brightness (pps) for the num_ucnps calculation.
+
+    If ``assume_monomers`` is True, pool every UCNP detection across all
+    processed UCNP images/regions and use the primary GMM component mean (mu) of
+    the brightness histogram as the single-UCNP brightness. Otherwise fall back
+    to a manual number input.
+    """
+    if not assume_monomers:
+        return st.number_input(
+            "Single UCNP brightness (pps)", min_value=0.0, value=default_manual,
+            format="%.2e",
+        )
+
+    # Pool all UCNP detections across every processed UCNP image / region.
+    dfs = [b.get("df") for b in (u_data or {}).values()]
+    dfs = [d for d in dfs if isinstance(d, pd.DataFrame) and not d.empty
+           and "brightness_integrated" in d.columns]
+    if not dfs:
+        st.warning("No UCNP detections available to fit — enter the brightness manually.")
+        return st.number_input(
+            "Single UCNP brightness (pps)", min_value=0.0, value=default_manual,
+            format="%.2e", key="coloc_single_ucnp_manual_fallback",
+        )
+
+    combined_ucnp = pd.concat(dfs, ignore_index=True)
+    st.markdown("**Single-UCNP brightness (monomer assumption)** — Gaussian fit of all UCNP detections.")
+    wf_components = st.number_input(
+        "GMM components (UCNP)", min_value=1, max_value=4, value=1,
+        key="coloc_ucnp_components",
+    )
+
+    hist_out = utils.plot_histogram(combined_ucnp, n_components=int(wf_components))
+    # plot_histogram returns (fig, mu, sigma) with data, or just fig if empty.
+    if isinstance(hist_out, tuple):
+        fig_u, mu_u, sigma_u = hist_out
+    else:
+        fig_u, mu_u, sigma_u = hist_out, None, None
+
+    hcol, mcol = st.columns([2, 1])
+    with hcol:
+        st.pyplot(fig_u, use_container_width=True)
+        plt.close(fig_u)
+    with mcol:
+        st.metric("UCNP PSFs fit", f"{len(combined_ucnp)}")
+        if mu_u is not None:
+            st.success(f"Single-UCNP brightness ≈ {mu_u:.3g} ± {sigma_u:.2g} pps")
+
+    if mu_u is not None and mu_u > 0:
+        st.caption(f"Using single-UCNP brightness = {float(mu_u):.3g} pps (monomer assumption).")
+        return float(mu_u)
+
+    st.warning("Could not fit a single-UCNP brightness — enter it manually.")
+    return st.number_input(
+        "Single UCNP brightness (pps)", min_value=0.0, value=default_manual,
+        format="%.2e", key="coloc_single_ucnp_manual_fallback",
+    )
+
+
+def _single_dye_brightness_ui(dye_sif_files, default_manual=5e2):
+    """Return the single-dye brightness (pps) for the num_dyes calculation.
+
+    If ``dye_sif_files`` are provided, run widefield (WF) brightness analysis on
+    them (signal='dye') and use the primary GMM component mean (mu) of the
+    brightness histogram. Region / threshold / min-distance are user-tunable so
+    the fit can be dialed in. If no files are uploaded, fall back to a manual
+    number input (same behavior as before).
+    """
+    if not dye_sif_files:
+        return st.number_input(
+            "Single Dye brightness (pps)", min_value=0.0, value=default_manual,
+            format="%.2e",
+        )
+
+    st.markdown("**Single-dye brightness (WF analysis)** — tune region/threshold for good fits.")
+    wf1, wf2, wf3, wf4 = st.columns(4)
+    with wf1:
+        wf_region = st.selectbox("Region", options=["1", "2", "3", "4", "all"],
+                                 index=4, key="coloc_wf_region")
+    with wf2:
+        wf_threshold = st.number_input("Threshold", min_value=0.0, value=10.0,
+                                       step=0.5, key="coloc_wf_threshold")
+    with wf3:
+        wf_min_distance = st.number_input("Min distance (px)", min_value=1,
+                                          value=5, key="coloc_wf_min_distance")
+    with wf4:
+        wf_components = st.number_input("GMM components", min_value=1, max_value=4,
+                                        value=1, key="coloc_wf_components")
+
+    _, dye_combined = _process_files(
+        dye_sif_files, region=wf_region, threshold=wf_threshold,
+        signal="dye", min_distance=wf_min_distance,
+    )
+
+    if (dye_combined is None or dye_combined.empty
+            or "brightness_integrated" not in dye_combined.columns):
+        st.warning(
+            "No dye PSFs detected in the uploaded images — adjust region / "
+            "threshold / min distance, or enter the brightness manually below."
+        )
+        return st.number_input(
+            "Single Dye brightness (pps)", min_value=0.0, value=default_manual,
+            format="%.2e", key="coloc_single_dye_manual_fallback",
+        )
+
+    hist_out = utils.plot_histogram(dye_combined, n_components=int(wf_components))
+    # plot_histogram returns (fig, mu, sigma) with data, or just fig if empty.
+    if isinstance(hist_out, tuple):
+        fig_dye, mu_dye, sigma_dye = hist_out
+    else:
+        fig_dye, mu_dye, sigma_dye = hist_out, None, None
+
+    hcol, mcol = st.columns([2, 1])
+    with hcol:
+        st.pyplot(fig_dye, use_container_width=True)
+        plt.close(fig_dye)
+    with mcol:
+        st.metric("Dye PSFs fit", f"{len(dye_combined)}")
+        if mu_dye is not None:
+            st.success(f"Single-dye brightness ≈ {mu_dye:.3g} ± {sigma_dye:.2g} pps")
+
+    if mu_dye is not None and mu_dye > 0:
+        st.caption(f"Using single-dye brightness = {float(mu_dye):.3g} pps (from WF analysis).")
+        return float(mu_dye)
+
+    st.warning("Could not fit a single-dye brightness — enter it manually.")
+    return st.number_input(
+        "Single Dye brightness (pps)", min_value=0.0, value=default_manual,
+        format="%.2e", key="coloc_single_dye_manual_fallback",
+    )
+
+
 # --- Plotting Helpers ---
+
+# Per-region colormaps: each fades from black up to a region-specific color.
+_REGION_COLORS = {
+    "1": (0.0, 1.0, 1.0),                    # cyan
+    "2": (0.0, 1.0, 0.0),                    # green
+    "3": (1.0, 0.2, 0.28),                   # neon red (bright, high contrast on black)
+    "4": (204 / 255, 121 / 255, 167 / 255),  # reddish purple
+}
+
+def _region_cmap(region):
+    """Return a black->region-color colormap, or None if the region has no mapping."""
+    color = _REGION_COLORS.get(str(region))
+    if color is None:
+        return None
+    return LinearSegmentedColormap.from_list(f"region_{region}", [(0.0, 0.0, 0.0), color])
+
+def _resolve_cmap(cmap_choice, region):
+    """Resolve the selected colormap for a given region.
+
+    When 'by region' is selected, use the region-specific black->color map,
+    falling back to 'magma' for regions without a mapping (e.g. 'all').
+    """
+    if cmap_choice == "by region":
+        return _region_cmap(region) or "magma"
+    return cmap_choice
 
 def HWT_aesthetic():
     """Applies basic aesthetic settings to the current matplotlib axes."""
@@ -245,7 +404,7 @@ def run():
         show_coloc_fits = st.checkbox("Show colocalized fits", value=True)
 
         st.header("Display")
-        cmap = st.selectbox("Colormap", options=["magma","viridis","plasma","hot","gray","hsv"], index=0)
+        cmap = st.selectbox("Colormap", options=["by region","magma","viridis","plasma","hot","gray","hsv"], index=0)
         use_lognorm = st.checkbox("Log image scaling", value=True)
         show_colorbars = st.checkbox("Show colorbars on images", value=False)
 
@@ -384,7 +543,7 @@ def run():
                     fig_u, ax_u = plt.subplots(figsize=(5,5))
                     ax_u.set_xticks([]); ax_u.set_yticks([])
                     norm = LogNorm() if use_lognorm else None
-                    im_u = ax_u.imshow(u_img + 1, cmap=cmap, norm=norm, origin="lower")
+                    im_u = ax_u.imshow(u_img + 1, cmap=_resolve_cmap(cmap, region_ucnp), norm=norm, origin="lower")
                     if show_colorbars:
                         fig_u.colorbar(im_u, ax=ax_u, fraction=0.046, pad=0.04)
                 else:
@@ -401,7 +560,7 @@ def run():
                     fig_d, ax_d = plt.subplots(figsize=(5,5))
                     ax_d.set_xticks([]); ax_d.set_yticks([])
                     norm = LogNorm() if use_lognorm else None
-                    im_d = ax_d.imshow(d_img + 1, cmap=cmap, norm=norm, origin="lower")
+                    im_d = ax_d.imshow(d_img + 1, cmap=_resolve_cmap(cmap, region_dye), norm=norm, origin="lower")
                     if show_colorbars:
                         fig_d.colorbar(im_d, ax=ax_d, fraction=0.046, pad=0.04)
                 else:
@@ -474,11 +633,24 @@ def run():
         if matched_df is None or matched_df.empty:
             st.info("No matched peaks yet.")
         else:
-            c1, c2 = st.columns(2)
-            with c1:
-                single_ucnp_brightness = st.number_input("Single UCNP brightness (pps)", min_value=0.0, value=1e5, format="%.2e")
-            with c2:
-                single_dye_brightness  = st.number_input("Single Dye brightness (pps)", min_value=0.0, value=5e2, format="%.2e")
+            st.markdown("#### Single-emitter calibration")
+            cal_c1, cal_c2 = st.columns(2)
+            with cal_c1:
+                assume_ucnp_monomers = st.checkbox(
+                    "Assume imaged UCNPs are monomers", value=True,
+                    help="Use the Gaussian (GMM) fit of the pooled UCNP brightness across all "
+                         "UCNP images/regions as the single-UCNP brightness. Uncheck to enter it manually.",
+                )
+            with cal_c2:
+                dye_sif_files = utils.file_uploader_with_clear(
+                    "Single-dye images (.sif) — optional",
+                    key="coloc_single_dye_uploads", type=["sif"], accept_multiple_files=True,
+                    help="Upload single-dye .sif images to measure the single-dye brightness "
+                         "via widefield (WF) brightness analysis. Leave empty to enter it manually.",
+                )
+
+            single_ucnp_brightness = _single_ucnp_brightness_ui(u_data, assume_ucnp_monomers)
+            single_dye_brightness = _single_dye_brightness_ui(dye_sif_files)
 
             md = matched_df.copy()
             md["num_ucnps"] = md["ucnp_brightness"].astype(float) / max(single_ucnp_brightness, 1e-12)
