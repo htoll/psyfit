@@ -100,6 +100,28 @@ def _process_files(uploaded_files, region, threshold, signal, min_distance=5):
 
 # --- Single-emitter brightness helpers ---
 
+def _isolated_psfs(df, min_radius_px):
+    """Keep only PSFs whose nearest neighbor (same image) is >= min_radius_px away.
+
+    Used for the monomer assumption: PSFs sitting closer than ``min_radius_px``
+    to another PSF are likely aggregates/overlapping and are dropped so the
+    brightness histogram reflects isolated single UCNPs.
+    """
+    if min_radius_px <= 0 or not isinstance(df, pd.DataFrame) or len(df) < 2:
+        return df
+    if not {"x_pix", "y_pix"}.issubset(df.columns):
+        return df
+    xs = df["x_pix"].to_numpy(dtype=float)
+    ys = df["y_pix"].to_numpy(dtype=float)
+    keep = np.ones(len(df), dtype=bool)
+    for i in range(len(df)):
+        dist = np.hypot(xs - xs[i], ys - ys[i])
+        dist[i] = np.inf
+        if np.nanmin(dist) < min_radius_px:
+            keep[i] = False
+    return df[keep]
+
+
 def _single_ucnp_brightness_ui(u_data, assume_monomers, default_manual=1e5):
     """Return the single-UCNP brightness (pps) for the num_ucnps calculation.
 
@@ -125,11 +147,39 @@ def _single_ucnp_brightness_ui(u_data, assume_monomers, default_manual=1e5):
             format="%.2e", key="coloc_single_ucnp_manual_fallback",
         )
 
-    combined_ucnp = pd.concat(dfs, ignore_index=True)
-    st.markdown("**Single-UCNP brightness (monomer assumption)** — Gaussian fit of all UCNP detections.")
-    wf_components = st.number_input(
-        "GMM components (UCNP)", min_value=1, max_value=4, value=1,
-        key="coloc_ucnp_components",
+    st.markdown("**Single-UCNP brightness (monomer assumption)** — Gaussian fit of isolated UCNP detections.")
+    ctrl_c1, ctrl_c2 = st.columns(2)
+    with ctrl_c1:
+        min_radius_px = st.number_input(
+            "Minimum PSF separation (px)", min_value=0.0, value=10.0, step=1.0,
+            key="coloc_ucnp_min_radius",
+            help="Drop UCNPs with another UCNP closer than this (likely aggregates), "
+                 "so only isolated monomers contribute to the brightness fit.",
+        )
+    with ctrl_c2:
+        wf_components = st.number_input(
+            "GMM components (UCNP)", min_value=1, max_value=4, value=1,
+            key="coloc_ucnp_components",
+        )
+
+    # Filter to isolated PSFs per image before pooling.
+    iso_dfs = [_isolated_psfs(d, min_radius_px) for d in dfs]
+    iso_dfs = [d for d in iso_dfs if isinstance(d, pd.DataFrame) and not d.empty]
+    n_total = int(sum(len(d) for d in dfs))
+    if not iso_dfs:
+        st.warning(
+            f"No isolated UCNPs remain after the {min_radius_px:.0f} px separation "
+            "filter — lower the minimum separation, or enter the brightness manually."
+        )
+        return st.number_input(
+            "Single UCNP brightness (pps)", min_value=0.0, value=default_manual,
+            format="%.2e", key="coloc_single_ucnp_manual_fallback",
+        )
+
+    combined_ucnp = pd.concat(iso_dfs, ignore_index=True)
+    st.caption(
+        f"Isolated UCNPs used: {len(combined_ucnp)} / {n_total} "
+        f"(≥ {min_radius_px:.0f} px from any neighbor)."
     )
 
     hist_out = utils.plot_histogram(combined_ucnp, n_components=int(wf_components))

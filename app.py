@@ -77,6 +77,7 @@ SHORT_TOOL_NAMES = {
     "Process Spectra": "Proc Spectra",
     "Monomer Estimation": "Monomers",
     "Shelling Injection Table": "Shelling",
+    "Reaction Planner": "Rxn Planner",
     "TEM Size Analysis": "TEM Size",
     "FFT Analysis": "FFT",
 }
@@ -194,6 +195,12 @@ TOOLS = {
     "Shelling Injection Table": (
         "tools.shelling_table", "run", "Synthesis",
         "Compute shell-growth injection volumes and timing for nanocrystal synthesis.",
+        False,
+    ),
+    "Reaction Planner": (
+        "tools.reaction_planner", "run", "Synthesis",
+        "Plan reactions: stoichiometry/final-concentration functionalization, and "
+        "mmol→mg weigh-outs for lanthanide acetates/chlorides and common precursors.",
         False,
     ),
     "TEM Size Analysis": (

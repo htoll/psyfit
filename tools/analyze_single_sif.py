@@ -279,16 +279,25 @@ def run():
                         default_min_val = float(np.min(brightness_vals))
                         default_max_val = float(np.max(brightness_vals))
 
-
+                        # Bounds inputs are rendered *before* the plot so edits actually
+                        # crop the histogram x-range (previously they were ignored).
+                        user_min_val_str = st.text_input(
+                            "Min Brightness (pps)", value=f"{default_min_val:.2e}",
+                            key="wf_hist_min",
+                        )
+                        user_max_val_str = st.text_input(
+                            "Max Brightness (pps)", value=f"{default_max_val:.2e}",
+                            key="wf_hist_max",
+                        )
 
                         try:
-                            user_min = float(default_min_val)
-                            user_max = float(default_max_val)
+                            user_min = float(user_min_val_str)
+                            user_max = float(user_max_val_str)
                         except ValueError:
                             st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
                             return
 
-                        
+
 
                         if user_min < user_max:
                             if mcl_toggle:
@@ -379,10 +388,6 @@ def run():
                                 plt.close(fig_hist)
                         else:
                             st.warning("Min greater than max.")
-                        
-                        user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
-                        user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
-                       # num_bins = st.number_input("# Bins:", value=20)
             else:
                 st.error(f"Data for file '{selected_file_name}' not found.")
 
