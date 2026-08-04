@@ -850,6 +850,51 @@ def _mean_sd(values: np.ndarray) -> Tuple[float, float]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Surface area + uncertainty
+# ═══════════════════════════════════════════════════════════════════════════
+def measure_with_sd(fn, dims: List[Tuple[float, float]]) -> Tuple[float, float]:
+    """Evaluate ``fn(means)`` and its 1σ uncertainty by the same linearised propagation used
+    for r_eff: σ_f = sqrt(Σ_i (∂f/∂x_i · σ_i)²), with each ∂f/∂x_i taken numerically. ``dims``
+    is a list of ``(mean, sd)`` pairs in the argument order ``fn`` expects. General enough for
+    the surface-area models below (which mix products, squares and the ellipsoid formula)."""
+    means = np.array([m for m, _ in dims], dtype=float)
+    sds = np.array([s for _, s in dims], dtype=float)
+    if not np.all(np.isfinite(means)):
+        return float("nan"), float("nan")
+    f0 = float(fn(means))
+    if not np.isfinite(f0):
+        return float("nan"), float("nan")
+    var = 0.0
+    for i in range(len(means)):
+        h = max(abs(means[i]) * 1e-4, 1e-6)
+        bumped = means.copy()
+        bumped[i] += h
+        df_dxi = (float(fn(bumped)) - f0) / h
+        sd_i = sds[i] if np.isfinite(sds[i]) else 0.0
+        var += (df_dxi * sd_i) ** 2
+    return f0, float(np.sqrt(var))
+
+def _hexagon_perimeter(ax_x: float, ax_y: float) -> float:
+    """Perimeter of the (possibly anisotropic) hexagon whose vertices sit at
+    ``(ax_x·cosθ, ax_y·sinθ)`` for θ = 0,60,…,300° — the same cross-section the wireframe
+    draws. Reduces to ``6·(W/2) = 3W`` for a regular hexagon of vertex-to-vertex width ``W``
+    (``ax_x = ax_y = W/2``)."""
+    ang = np.pi / 3.0 * np.arange(6)
+    pts = np.column_stack((ax_x * np.cos(ang), ax_y * np.sin(ang)))
+    seg = np.diff(np.vstack((pts, pts[:1])), axis=0)
+    return float(np.sum(np.hypot(seg[:, 0], seg[:, 1])))
+
+def _ellipsoid_surface_area(a: float, b: float, c: float) -> float:
+    """Knud Thomsen approximation to the surface of an ellipsoid with semi-axes ``a,b,c``
+    (no exact closed form exists; relative error < ~1.06%). ``p = 1.6075``."""
+    if a <= 0 or b <= 0:
+        return 0.0
+    p = 1.6075
+    ap, bp, cp = a ** p, b ** p, c ** p
+    return 4.0 * np.pi * (((ap * bp + ap * cp + bp * cp) / 3.0) ** (1.0 / p))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Reported geometry — 2-D projections + an orthographically-projected 3-D wireframe
 # ═══════════════════════════════════════════════════════════════════════════
 # 30 kx on this microscope images a 393.19 × 261.34 nm field of view; the summary
@@ -1229,7 +1274,7 @@ SUMMARY_NOTES_FS = 9.5
 def build_summary_figure(
     shape_type: str, hist_specs: List[dict], geom: Dict[str, float],
     reff: float, reff_sd: float, unit: str, prefix: str, notes: str = "",
-    tem: Optional[dict] = None,
+    tem: Optional[dict] = None, area: float = float("nan"), area_sd: float = float("nan"),
 ) -> plt.Figure:
     """One figure at a locked page size/aspect: the TEM image with the reported geometry (2-D
     projections + 3-D wireframe) overlaid to scale on the left, and every histogram + fit in
@@ -1268,12 +1313,19 @@ def build_summary_figure(
             spec.get("n_components", 1), spec.get("fit_min"), spec.get("fit_max"), spec.get("mu_ranges"),
         )
 
-    # File name is the heading; r_eff ± SD is the second line — same bold size, one suptitle.
-    # Wrap a long prefix/notes so nothing clips at the fixed page edge (no bbox expansion now).
+    # File name is the heading; r_eff ± SD and surface area ± SD share the second line — same
+    # bold size, one suptitle. Wrap a long prefix/notes so nothing clips at the fixed page edge
+    # (no bbox expansion now).
     head = "\n".join(textwrap.wrap(prefix, width=72)) or prefix
+    stat_parts = []
     if np.isfinite(reff):
         sd_txt = f" ± {reff_sd:.2f}" if np.isfinite(reff_sd) else ""
-        head += f"\n$r_{{eff}}$ = {reff:.2f}{sd_txt} {unit}"
+        stat_parts.append(f"$r_{{eff}}$ = {reff:.2f}{sd_txt} {unit}")
+    if np.isfinite(area):
+        asd_txt = f" ± {area_sd:.1f}" if np.isfinite(area_sd) else ""
+        stat_parts.append(f"S.A. = {area:.1f}{asd_txt} {unit}$^2$")
+    if stat_parts:
+        head += "\n" + "     ".join(stat_parts)
     fig.suptitle(head, fontsize=SUMMARY_SUPTITLE_FS, weight="bold")
     if notes:
         # supxlabel is managed by constrained_layout, so it gets its own reserved band below the
@@ -1376,7 +1428,7 @@ def _select_tem_for_summary(results: Optional[list], key: str) -> Optional[dict]
 def summary_export_ui(
     shape_type: str, hist_specs: List[dict], geom: Dict[str, float],
     reff: float, reff_sd: float, unit: str, prefix: str, notes: str = "",
-    results: Optional[list] = None,
+    results: Optional[list] = None, area: float = float("nan"), area_sd: float = float("nan"),
 ) -> None:
     """A checkbox that builds the comprehensive summary figure on demand, previews it,
     and offers a high-resolution PNG download."""
@@ -1395,7 +1447,8 @@ def summary_export_ui(
         kx = float(zoom_choice.split()[0])
         crop_w_nm, crop_h_nm = _fov_for_kx(kx)
         tem = _crop_tem_to_fov(tem, crop_w_nm, crop_h_nm, hist_specs)
-    fig = build_summary_figure(shape_type, hist_specs, geom, reff, reff_sd, unit, prefix, notes, tem)
+    fig = build_summary_figure(shape_type, hist_specs, geom, reff, reff_sd, unit, prefix, notes,
+                               tem, area, area_sd)
     st.pyplot(fig, use_container_width=True)
     st.selectbox(
         "Crop field of view", zoom_labels, index=zoom_labels.index(zoom_default), key=zoom_key,
@@ -1569,6 +1622,8 @@ def run() -> None:
                             )
                         mean_d, sd_d = _mean_sd(d_crop)
                         r_eff, r_eff_sd = reff_with_sd(lambda x: (np.pi / 6.0) * x[0] ** 3, [(mean_d, sd_d)])
+                        # Sphere surface area S = π·D².
+                        area, area_sd = measure_with_sd(lambda x: np.pi * x[0] ** 2, [(mean_d, sd_d)])
                         st.metric(
                             label="Effective Radius (r_eff)",
                             value=f"{r_eff:.2f} ± {r_eff_sd:.2f} {unit_full}",
@@ -1579,6 +1634,7 @@ def run() -> None:
                             [{"values": all_d, "title": "Diameter", "fit_min": fmin, "fit_max": fmax,
                               "keys": ["diameters"]}],
                             {"R": mean_d / 2.0}, r_eff, r_eff_sd, unit_full, prefix, results=results,
+                            area=area, area_sd=area_sd,
                         )
                     else:
                         st.warning("No particles within the selected range.")
@@ -1613,6 +1669,10 @@ def run() -> None:
                 # side-on rectangle short axis reports), so the cross-section area is
                 # (3√3/8)·W² — the same vertex-to-vertex convention used by the Tic Tac model.
                 hex_vol = lambda x: (3.0 * np.sqrt(3.0) / 8.0) * (x[0] ** 2) * x[1]   # V = (3√3/8)·W²·H
+                # Surface area: two hexagonal faces + six rectangular sides. For a regular hexagon
+                # of vertex-to-vertex width W the face area is (3√3/8)·W² and the perimeter is 3W,
+                # so S = 2·(3√3/8)·W² + 3·W·H = (3√3/4)·W² + 3·W·H.
+                hex_area = lambda x: (3.0 * np.sqrt(3.0) / 4.0) * (x[0] ** 2) + 3.0 * x[0] * x[1]
 
                 if use_rect_gmm:
                     # Pool both rectangle axes (height = major, width = minor) so the
@@ -1640,6 +1700,7 @@ def run() -> None:
                         if len(mus) >= 2:
                             mean_w, mean_h = mus[0], mus[1]
                             r_eff, r_eff_sd = reff_with_sd(hex_vol, [(mean_w, stds[0]), (mean_h, stds[1])])
+                            area, area_sd = measure_with_sd(hex_area, [(mean_w, stds[0]), (mean_h, stds[1])])
                             for msg in notes:
                                 st.warning(msg)
                             st.metric(
@@ -1656,7 +1717,7 @@ def run() -> None:
                                   "n_components": 2, "fit_min": amin, "fit_max": amax, "mu_ranges": mu_ranges,
                                   "keys": ["hex_heights", "hex_rect_widths"]}],
                                 {"W": mean_w, "H": mean_h}, r_eff, r_eff_sd, unit_full, prefix, " ".join(notes),
-                                results=results,
+                                results=results, area=area, area_sd=area_sd,
                             )
                         else:
                             st.warning("Not enough rectangle data to fit two distinct peaks for r_eff.")
@@ -1708,6 +1769,7 @@ def run() -> None:
 
                     if np.isfinite(mean_w) and np.isfinite(mean_h):
                         r_eff, r_eff_sd = reff_with_sd(hex_vol, [(mean_w, sd_w), (mean_h, sd_h)])
+                        area, area_sd = measure_with_sd(hex_area, [(mean_w, sd_w), (mean_h, sd_h)])
                         st.metric(
                             label="Effective Radius (r_eff)",
                             value=f"{r_eff:.2f} ± {r_eff_sd:.2f} {unit_full}",
@@ -1716,6 +1778,7 @@ def run() -> None:
                         summary_export_ui(
                             shape_type, hist_specs, {"W": mean_w, "H": mean_h},
                             r_eff, r_eff_sd, unit_full, prefix, " ".join(notes), results=results,
+                            area=area, area_sd=area_sd,
                         )
                     else:
                         st.warning("Both face-on (width) and side-on (height) measurements are needed to calculate r_eff for hexagonal prisms.")
@@ -1738,6 +1801,8 @@ def run() -> None:
                             )
                         mean_s, sd_s = _mean_sd(s_crop)
                         r_eff, r_eff_sd = reff_with_sd(lambda x: x[0] ** 3, [(mean_s, sd_s)])
+                        # Cube surface area S = 6·s².
+                        area, area_sd = measure_with_sd(lambda x: 6.0 * x[0] ** 2, [(mean_s, sd_s)])
                         st.metric(
                             label="Effective Radius (r_eff)",
                             value=f"{r_eff:.2f} ± {r_eff_sd:.2f} {unit_full}",
@@ -1748,6 +1813,7 @@ def run() -> None:
                             [{"values": all_s, "title": "Cube side length", "fit_min": smin, "fit_max": smax,
                               "keys": ["side_lengths"]}],
                             {"s": mean_s}, r_eff, r_eff_sd, unit_full, prefix, results=results,
+                            area=area, area_sd=area_sd,
                         )
                     else:
                         st.warning("No particles within the selected range.")
@@ -1772,6 +1838,11 @@ def run() -> None:
                     # lengths, so a regular octahedron of diameter D has V = D³/6. The general
                     # (elongated) form with distinct major/minor axes is V = (1/6)·major·minor².
                     oct_vol = lambda x: (1.0 / 6.0) * x[1] * (x[0] ** 2)   # V = (1/6)·major·minor²
+                    # Surface area of the square bipyramid (8 congruent triangles): with an
+                    # equatorial square of diagonal = minor (x[0]) and tip-to-tip major = x[1],
+                    # each face has base minor/√2 and slant height √(major²/4 + minor²/8), giving
+                    # S = 2√2·minor·√(major²/4 + minor²/8) (→ √3·D² for a regular octahedron).
+                    oct_area = lambda x: 2.0 * np.sqrt(2.0) * x[0] * np.sqrt((x[1] ** 2) / 4.0 + (x[0] ** 2) / 8.0)
                     notes = []
                     # Calculate r_eff using the two dominant GMM peaks; fall back to a
                     # regular octahedron (major = minor) when the sample is too small to
@@ -1790,6 +1861,7 @@ def run() -> None:
                         )
                         help_txt = f"Regular-octahedron assumption: major = minor = {mu_minor:.2f} {unit_full}."
                     r_eff, r_eff_sd = reff_with_sd(oct_vol, dims)
+                    area, area_sd = measure_with_sd(oct_area, dims)
                     for msg in notes:
                         st.warning(msg)
                     st.metric(
@@ -1803,7 +1875,7 @@ def run() -> None:
                           "fit_min": omin, "fit_max": omax, "mu_ranges": mu_ranges,
                           "keys": ["oct_major", "oct_minor"]}],
                         {"major": mu_major, "minor": mu_minor}, r_eff, r_eff_sd, unit_full, prefix, " ".join(notes),
-                        results=results,
+                        results=results, area=area, area_sd=area_sd,
                     )
                 else:
                     st.info("No octahedral particles detected.")
@@ -1912,13 +1984,21 @@ def run() -> None:
                     def tictac_vol(x):
                         return (3.0 * np.sqrt(3.0) / 8.0) * x[0] * x[1] * x[2] + (np.pi / 3.0) * x[0] * x[1] * x[3]
 
+                    # Surface area = the (possibly anisotropic) hexagonal body lateral surface,
+                    # perimeter(W,T)·L_body, plus the two half-ellipsoid caps — whose outer surface
+                    # together equals one full ellipsoid of semi-axes (W/2, T/2, d). No flat end
+                    # faces (the caps replace them).
+                    def tictac_area(x):
+                        return (_hexagon_perimeter(x[0] / 2.0, x[1] / 2.0) * x[2]
+                                + _ellipsoid_surface_area(x[0] / 2.0, x[1] / 2.0, x[3]))
+
                     for msg in notes:
                         st.warning(msg)
 
                     if np.isfinite(W_dim) and np.isfinite(T_dim) and np.isfinite(mean_body):
-                        r_eff, r_eff_sd = reff_with_sd(
-                            tictac_vol, [(W_dim, sd_W), (T_dim, sd_T), (mean_body, sd_body), (mean_cap, sd_cap)]
-                        )
+                        dims_tt = [(W_dim, sd_W), (T_dim, sd_T), (mean_body, sd_body), (mean_cap, sd_cap)]
+                        r_eff, r_eff_sd = reff_with_sd(tictac_vol, dims_tt)
+                        area, area_sd = measure_with_sd(tictac_area, dims_tt)
                         v_body = (3.0 * np.sqrt(3.0) / 8.0) * W_dim * T_dim * mean_body
                         v_caps = (np.pi / 3.0) * W_dim * T_dim * mean_cap
                         st.metric(
@@ -1934,6 +2014,7 @@ def run() -> None:
                             shape_type, hist_specs,
                             {"W": W_dim, "T": T_dim, "L_body": mean_body, "d": mean_cap},
                             r_eff, r_eff_sd, unit_full, prefix, " ".join(notes), results=results,
+                            area=area, area_sd=area_sd,
                         )
                     else:
                         st.warning("Both width and body-length measurements are needed to compute r_eff for Tic Tacs.")
