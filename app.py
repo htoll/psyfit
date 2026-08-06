@@ -75,6 +75,7 @@ SHORT_TOOL_NAMES = {
     "Confocal Visualization": "Confocal Viz",
     "Dye Colocalization": "Coloc",
     "Process Spectra": "Proc Spectra",
+    "Spectra Saturation Series": "Spec Sat",
     "Monomer Estimation": "Monomers",
     "Shelling Injection Table": "Shelling",
     "Reaction Planner": "Rxn Planner",
@@ -184,6 +185,13 @@ TOOLS = {
         "tools.process_spectra", "run", "Spectral & Colocalization",
         "Compare Get Spectra CSVs: per-file plots, click-to-exclude, averaging, normalization, and volume scaling.",
         False,
+    ),
+    "Spectra Saturation Series": (
+        "tools.spectra_saturation_series", "run", "Spectral & Colocalization",
+        "Extract spectra from a saturation series, pool particles by condition and "
+        "laser current across FOVs, curate them, and plot spectral evolution and "
+        "brightness vs power density.",
+        True,
     ),
     "Monomer Estimation": (
         "tools.monomers", "run", "Quantification",
