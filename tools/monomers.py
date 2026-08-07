@@ -61,26 +61,35 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # --- Concentration-estimation constants -----------------------------------
-# Experimental linear calibration mapping average particles-per-view (ppv) to
-# the imaged (diluted) sample molarity:  M_diluted = slope * ppv.
-# The earlier geometric derivation (FOV area, axial slab, Avogadro) is folded
-# into this single fitted slope, measured at 60× on MCL (pixel 0.1011 µm).
-CONC_FIT_SLOPE = 1.44e-14                # molar per ppv, at the reference pixel
-CONC_FIT_PIX_UM = 0.1011                 # reference pixel size (60× MCL)
+# Settled ("2D collection") model. Every particle in the column of solution
+# directly above a field of view is assumed to sediment onto the imaging plane,
+# so a field of footprint A_fov (the illuminated field-stop area) counts every
+# particle in the volume A_fov · h, where h is the solution column height
+# (loaded volume ÷ well cross-sectional area). The well diameter cancels out of
+# the final conversion — only the FOV footprint and column height matter:
+#
+#     C_imaged = ppv / (N_A · A_fov · h)          (imaged droplet)
+#     C_stock  = C_imaged · dilution
+#
+# i.e. the per-particle conversion is 1 / (N_A · A_fov · h): the reciprocal of
+# the volume of solution sitting directly above one FOV footprint (in moles).
+# No calibration slope and no baked-in dilution — all dilution is supplied by
+# the caller.
+N_AVOGADRO = 6.022e23                     # mol⁻¹
+WELL_DIAMETER_UM = 3000.0                 # PDMS well diameter (3 mm)
+LOADED_VOLUME_UL = 5.0                    # solution volume loaded into the well
 
 
-def conc_fit_slope(pix_size_um):
+def column_height_um(loaded_volume_ul=LOADED_VOLUME_UL,
+                     well_diameter_um=WELL_DIAMETER_UM):
     """
-    Fit slope (M per ppv) rescaled for the current pixel size.
-
-    ppv scales with the imaged FOV area (∝ pixel_size² at a fixed pixel count),
-    so for a fixed concentration the slope M/ppv scales as 1/pixel_size². The
-    calibration was measured at 60× on MCL (pixel CONC_FIT_PIX_UM µm); at a
-    different magnification/pixel size the slope is rescaled by (ref/current)².
+    Solution column height h (µm) = loaded volume ÷ well cross-sectional area.
+    e.g. 5 µL in a 3 mm well → A_well = π·(1500 µm)² = 7.07e6 µm² → h ≈ 707 µm.
     """
-    if not pix_size_um or pix_size_um <= 0:
-        return CONC_FIT_SLOPE
-    return CONC_FIT_SLOPE * (CONC_FIT_PIX_UM / float(pix_size_um)) ** 2
+    a_well_um2 = np.pi * (float(well_diameter_um) / 2.0) ** 2
+    if a_well_um2 <= 0:
+        return float("nan")
+    return (float(loaded_volume_ul) * 1e9) / a_well_um2   # 1 µL = 1e9 µm³
 
 
 def _format_molarity(molar: float) -> str:
@@ -180,25 +189,36 @@ def parse_filename_params(name):
     return out
 
 
-def estimate_concentration(ppv, dilution, pix_size_um=CONC_FIT_PIX_UM):
+def estimate_concentration(ppv, dilution, area_um2,
+                           loaded_volume_ul=LOADED_VOLUME_UL,
+                           well_diameter_um=WELL_DIAMETER_UM):
     """
     Estimate molarity from the average particles-per-view (ppv) using the
-    experimental linear calibration (slope rescaled for the current pixel size):
+    settled (2D collection) model:
 
-        M_diluted = slope(pix) * ppv        (imaged sample)
-        M_stock   = M_diluted * dilution
+        h        = loaded_volume / well_area         (solution column height)
+        C_imaged = ppv / (N_A · A_fov · h)           (imaged droplet)
+        C_stock  = C_imaged · dilution
 
-    The fitted slope subsumes the earlier geometric derivation (FOV area,
-    axial slab, Avogadro), so no FOV/depth terms enter here. Molarity is
-    intensive, so no bulk (stock/prep) volume enters the formula.
+    `area_um2` is A_fov, the illuminated field-stop (aperture) area of the
+    imaged field — the true counting footprint, which differs between
+    microscopes (MCL 60× vs Nikon 100×). The well diameter cancels from the
+    conversion and enters only through the column height h; all dilution is
+    supplied by the caller (nothing is baked into a calibration slope).
     """
-    slope = conc_fit_slope(pix_size_um)
-    conc_diluted = slope * ppv                             # M (imaged sample)
+    h_um = column_height_um(loaded_volume_ul, well_diameter_um)
+    # Volume of solution directly above one FOV footprint (µm³ → L).
+    v_fov_L = float(area_um2) * h_um * 1e-15 if area_um2 else float("nan")
+    if np.isfinite(v_fov_L) and v_fov_L > 0:
+        conc_diluted = ppv / (N_AVOGADRO * v_fov_L)        # M (imaged sample)
+    else:
+        conc_diluted = float("nan")
     molarity = conc_diluted * dilution                     # M (stock)
 
     return {
         "ppv": ppv,
-        "slope": slope,
+        "area_um2": float(area_um2) if area_um2 else float("nan"),
+        "column_height_um": h_um,
         "conc_diluted_M": conc_diluted,
         "molarity": molarity,
     }
@@ -336,6 +356,23 @@ def aperture_or_inscribed(image, region, pix_size_um, min_diameter_um=20.0):
         ap = {"cx": w_px / 2.0, "cy": h_px / 2.0, "r": r_px,
               "area_px": float(np.pi * r_px ** 2), "fit": "inscribed"}
     return ap
+
+
+def aperture_area_um2(image, region, pix_size_um):
+    """
+    Illuminated field-stop area (µm²) for `image`, used as the counting area in
+    the concentration estimate: the fitted aperture's pixel area × pixel_size²,
+    or the full crop area when no single circular aperture applies (the 'custom'
+    and 'all' regions). Returns None when no image is available.
+    """
+    if image is None or getattr(image, "ndim", 0) < 2:
+        return None
+    ap = aperture_or_inscribed(image, region, pix_size_um)
+    if ap is not None:
+        return float(ap["area_px"]) * float(pix_size_um) ** 2
+    # 'custom' / 'all' region: no circular aperture — count over the full crop.
+    h, w = image.shape[:2]
+    return float(h) * float(w) * float(pix_size_um) ** 2
 
 
 def build_summary_image(image, df, *, pix_size_um, cmap, normalization,
@@ -741,9 +778,20 @@ def run():
             microscope = st.selectbox(
                 "Microscope",
                 options=["MCL", "Nikon "],
-                help="Microscope used to acquire the images.",
+                help="Microscope used to acquire the images. MCL is a 60× "
+                     "scope, Nikon a 100× scope — the choice sets the objective "
+                     "magnification and pixel size below, and therefore the "
+                     "field of view used for the concentration estimate.",
                 key="mono_microscope",
             )
+            # Bind the objective magnification to the microscope (MCL 60×,
+            # Nikon 100×). Update only when the microscope selection changes, so
+            # a manual edit isn't clobbered on every rerun.
+            if st.session_state.get("_mono_scope") != microscope:
+                st.session_state["_mono_scope"] = microscope
+                st.session_state["mono_objective_mag"] = (
+                    60 if microscope == "MCL" else 100
+                )
 
             # Parameters (kept to preserve existing UI)
             threshold = st.number_input(
@@ -1094,6 +1142,19 @@ def run():
             counts = list(psf_counts.values())
             mean_count = np.mean(counts) if counts else 0
 
+            # Illuminated FOV area (µm²) per file, averaged: the counting area
+            # that turns particle counts into a concentration. Fit per image so
+            # MCL (60×) and Nikon (100×) automatically get their true, different
+            # fields of view (differing in both pixel size and pixel count).
+            _areas = [
+                a for a in (
+                    aperture_area_um2(processed[nm].get("image"), region, pix)
+                    for nm in processed.keys()
+                )
+                if a and np.isfinite(a) and a > 0
+            ]
+            mean_area_um2 = float(np.mean(_areas)) if _areas else None
+
             # ---------------- Row 2: pie · PSF counts · concentration ------
             r2_pie, r2_counts, r2_conc = st.columns(3)
 
@@ -1136,13 +1197,14 @@ def run():
                         st.info("No particles detected.")
                     else:
                         est = estimate_concentration(
-                            ppv=mean_count, dilution=dilution, pix_size_um=pix
+                            ppv=mean_count, dilution=dilution, area_um2=mean_area_um2
                         )
 
                         # --- Error analysis -------------------------------
-                        # Concentration is linear in ppv (the fitted slope is
-                        # treated as exact), so the fractional error carries
-                        # straight through: σ_M/M = σ_ppv/ppv. We use the
+                        # Concentration is linear in ppv (the geometric factors
+                        # A_fov and h are treated as exact), so the fractional
+                        # error carries straight through: σ_M/M = σ_ppv/ppv.
+                        # We use the
                         # field-to-field SD of the PSF counts and report the
                         # standard error of the mean (SD/√N) as the uncertainty
                         # on the mean-derived concentration.
@@ -1167,17 +1229,28 @@ def run():
                                   f"{reported_ppv:.3g} ppv")
 
                         with st.expander("Show calculation", expanded=False):
+                            area_now = est.get("area_um2")
+                            h_um = est.get("column_height_um")
+                            v_fov_L = (area_now * h_um * 1e-15
+                                       if area_now and h_um
+                                       and np.isfinite(area_now) and np.isfinite(h_um)
+                                       else float("nan"))
                             calc = "\n".join([
                                 f"measured ppv (avg/view)  = {est['ppv']:.4g}",
                                 f"reported ppv = measured·dilution = {reported_ppv:.4g}",
                                 "",
-                                f"fit slope (60× MCL ref)  = {CONC_FIT_SLOPE:.3g} M / ppv",
-                                f"pixel size               = {pix:.4f} µm  (ref {CONC_FIT_PIX_UM:.4f} µm)",
-                                f"slope(pix) = slope·(ref/pix)² = {est['slope']:.3g} M / ppv",
-                                f"diluted molarity = slope·ppv = {_format_molarity(est['conc_diluted_M'])}"
+                                "-- settled (2D collection) model --",
+                                f"well diameter            = {WELL_DIAMETER_UM:.0f} µm",
+                                f"loaded volume            = {LOADED_VOLUME_UL:g} µL",
+                                f"column height h = V/A_well = {h_um:.4g} µm",
+                                (f"FOV footprint A_fov      = {area_now:.4g} µm²  (aperture, avg of {len(_areas)})"
+                                 if area_now and np.isfinite(area_now)
+                                 else "FOV footprint A_fov      = (unavailable)"),
+                                f"volume above 1 FOV = A_fov·h = {v_fov_L:.4g} L",
+                                f"diluted molarity = ppv/(N_A·A_fov·h) = {_format_molarity(est['conc_diluted_M'])}"
                                 + (f" ± {_format_molarity(diluted_err)}" if n_fields > 1 else ""),
                                 f"× dilution {dilution:g}",
-                                f"stock molarity            = {_format_molarity(est['molarity'])}"
+                                f"stock molarity           = {_format_molarity(est['molarity'])}"
                                 + (f" ± {_format_molarity(molarity_err)}" if n_fields > 1 else ""),
                                 "",
                                 "-- error analysis (from PSF-count spread) --",
@@ -1188,7 +1261,7 @@ def run():
                                 f"CV = SD/mean             = {cv:.1%}",
                                 "σ_M/M = σ_ppv/ppv  (M is linear in ppv)",
                                 "",
-                                "M_stock = slope(pix) · ppv · dilution",
+                                "C_stock = ppv/(N_A·A_fov·h) · dilution",
                             ])
                             st.code(calc, language="text")
 
@@ -1216,7 +1289,7 @@ def run():
                 dil_for_ppv = dilution if dilution is not None else 1.0
                 if dilution is not None and mean_count:
                     est_s = estimate_concentration(
-                        ppv=mean_count, dilution=dilution, pix_size_um=pix
+                        ppv=mean_count, dilution=dilution, area_um2=mean_area_um2
                     )
                     rel = (ppv_sd / np.sqrt(len(counts)) / mean_count
                            if len(counts) > 1 else 0.0)

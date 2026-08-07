@@ -22,6 +22,7 @@ cellpose
 # --- Visualization ---
 matplotlib
 seaborn
+cmcrameri
 plotly>=5.19
 pydeck
 kaleido>=0.2.1
