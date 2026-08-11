@@ -30,6 +30,7 @@ kaleido>=0.2.1
 # --- Microscopy & Specialized Formats ---
 ncempy>=1.10
 h5py
+msr-reader>=0.2.1  # Abberior Imspector .msr / OBF reader
 
 # --- Git Dependencies (Parsers) ---
 git+https://github.com/fujiisoup/sif_parser.git

@@ -73,6 +73,7 @@ SHORT_TOOL_NAMES = {
     "Movie Brightness": "Movie Bright",
     "Saturation Series": "Sat Series",
     "Confocal Visualization": "Confocal Viz",
+    "MSR Analysis": "MSR",
     "Dye Colocalization": "Coloc",
     "Process Spectra": "Proc Spectra",
     "Spectra Saturation Series": "Spec Sat",
@@ -170,6 +171,13 @@ TOOLS = {
         "tools.confocal_visualizer", "run", "Visualization",
         "Visualize and merge confocal channels with custom colormaps and grid layouts.",
         False,
+    ),
+    "MSR Analysis": (
+        "tools.msr_analysis", "run", "Visualization",
+        "Load Abberior Imspector .msr files: preview/select images, inspect saved "
+        "metadata (excitation wavelength, imaging window, intensity), run confocal "
+        "brightness, change colormaps, and overlay fields of view.",
+        True,
     ),
     "Dye Colocalization": (
         "tools.colocalization", "run", "Spectral & Colocalization",
