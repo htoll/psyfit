@@ -729,6 +729,11 @@ def run():
         # 3) If the set of saved files changed (added/removed), invalidate results
         if changed or (set(st.session_state.saved_files.keys()) != prev_keys):
             st.session_state.processed = None
+            # Drop the fitted single-particle brightness so it is re-fit from
+            # the new data (the widget falls back to mean(brightness) when this
+            # is None). Otherwise a value fit on the previous session's files
+            # would carry over and skew the category thresholds.
+            st.session_state["single_ucnp_brightness"] = None
             # If selected file no longer exists, clear selection
             current_names = [v[0] if isinstance(v, (tuple, list)) else os.path.basename(v)
                              for v in st.session_state.saved_files.values()]
