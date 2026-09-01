@@ -897,9 +897,11 @@ def _ellipsoid_surface_area(a: float, b: float, c: float) -> float:
 # ═══════════════════════════════════════════════════════════════════════════
 # Reported geometry — 2-D projections + an orthographically-projected 3-D wireframe
 # ═══════════════════════════════════════════════════════════════════════════
-# 30 kx on this microscope images a 393.19 × 261.34 nm field of view; the summary
-# figure defaults to whichever uploaded image is closest to this magnification.
-MAG_30KX_FOV_NM = (393.19, 261.34)
+# 30 kx on this microscope images an 848.37 × 565.58 nm field of view — measured from
+# HWT08_047L_Er02Yb05_5mmolNaOH_90min_1001.dm3, a 4008 × 2672 px frame at 0.21167 nm/px
+# whose "Indicated Magnification" tag reads 30000. The summary figure defaults to
+# whichever uploaded image is closest to this magnification.
+MAG_30KX_FOV_NM = (848.37, 565.58)
 
 def _circle_poly(R: float, n: int = 64) -> np.ndarray:
     t = np.linspace(0, 2 * np.pi, n, endpoint=False)
@@ -1030,7 +1032,7 @@ def _layout_fits(items: List[dict], scale: float) -> Tuple[list, float, float]:
 
 def _nice_bar_nm(fov_nm: float) -> float:
     """Largest 'nice' round length not exceeding ~18% of the field of view, so the bar scales
-    sensibly at any magnification (a 393 nm 30 kx FOV → 50 nm; a 50 nm FOV → 5 nm)."""
+    sensibly at any magnification (an 848 nm 30 kx FOV → 100 nm; a 50 nm FOV → 5 nm)."""
     target = fov_nm * 0.18
     for b in (1000, 500, 200, 100, 50, 20, 10, 5, 2, 1, 0.5, 0.2, 0.1):
         if b <= target:
@@ -1339,7 +1341,7 @@ ZOOM_OPTIONS_KX = (10.0, 30.0, 67.0, 100.0)
 
 def _fov_for_kx(kx: float) -> Tuple[float, float]:
     """Field of view (width, height) in nm at magnification ``kx``, linear in 1/FOV against the
-    known 30 kx reference (393.19 × 261.34 nm): a higher kx ⇒ a smaller FOV."""
+    known 30 kx reference (848.37 × 565.58 nm): a higher kx ⇒ a smaller FOV."""
     f = 30.0 / kx
     return MAG_30KX_FOV_NM[0] * f, MAG_30KX_FOV_NM[1] * f
 
@@ -1406,7 +1408,7 @@ def _crop_tem_to_fov(tem: Optional[dict], crop_w_nm: float, crop_h_nm: float,
 
 def _select_tem_for_summary(results: Optional[list], key: str) -> Optional[dict]:
     """Dropdown to pick the TEM image shown in the summary; defaults to the image whose
-    field of view is closest to 30 kx (393.19 × 261.34 nm)."""
+    field of view is closest to 30 kx (848.37 × 565.58 nm)."""
     if not results:
         return None
     names = [r["name"] for r in results]
