@@ -35,6 +35,61 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 
+def install_canvas_image_compat():
+    """Make ``streamlit_drawable_canvas`` work on current Streamlit.
+
+    The canvas package does ``import streamlit.elements.image as st_image`` and then calls
+    ``st_image.image_to_url(image, width:int, clamp, channels, output_format, image_id)`` when
+    rendering a background image. Streamlit has since moved that function to
+    ``streamlit.elements.lib.image_utils`` (so the attribute lookup raises ``AttributeError:
+    module 'streamlit.elements.image' has no attribute 'image_to_url'``) and retyped the 2nd
+    argument from an int width to a ``layout_config`` object accessed as ``layout_config.width``.
+
+    This resolves the real implementation and reinstates it under the old name, wrapping the int
+    width in a minimal duck-typed object when the new signature expects one. The lookup happens
+    at call time, so this only has to run before the first ``st_canvas()`` call.
+
+    Every tool that uses the canvas must call this — the patch is process-wide, so a tool that
+    skips it works only by luck when another tool imported first. Idempotent.
+    """
+    import streamlit.elements.image as st_image
+
+    if getattr(st_image, "_canvas_compat_shim", False):
+        return
+
+    try:
+        from streamlit.elements.lib.image_utils import image_to_url as _real_itu
+    except ImportError:
+        _real_itu = getattr(st_image, "image_to_url", None)
+
+    uses_layout_config = False
+    if _real_itu is not None:
+        try:
+            import inspect
+            params = list(inspect.signature(_real_itu).parameters)
+            uses_layout_config = len(params) >= 2 and params[1] == "layout_config"
+        except (TypeError, ValueError):
+            pass
+
+    class _LayoutShim:
+        __slots__ = ("width", "height")
+
+        def __init__(self, width):
+            self.width = width if isinstance(width, int) else None
+            self.height = None
+
+    def _canvas_image_to_url(image, width, clamp, channels, output_format, image_id,
+                             allow_emoji=False):
+        if _real_itu is None:
+            return ""
+        if uses_layout_config:
+            return _real_itu(image, _LayoutShim(width), clamp, channels, output_format, image_id)
+        return _real_itu(image, width, clamp, channels, output_format, image_id)
+
+    st_image.image_to_url = _canvas_image_to_url
+    st_image._canvas_compat_shim = True
+
+
 def HWT_aesthetic():
     sns.set_style("ticks")
     sns.set_context("notebook", font_scale=1.5,

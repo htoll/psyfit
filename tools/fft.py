@@ -34,46 +34,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-import streamlit.elements.image as st_image
+from utils import install_canvas_image_compat
 
-# streamlit_drawable_canvas calls
-#   st_image.image_to_url(image, width:int, clamp, channels, output_format, image_id)
-# but Streamlit ≥1.5x renamed/retyped the 2nd arg from an int width to a `layout_config`
-# object (accessed as layout_config.width). Install a compatibility adapter that resolves
-# the genuine implementation and, when it expects a layout_config, wraps the int width in a
-# minimal duck-typed object. Guarded so re-importing this module doesn't double-wrap.
-if not getattr(st_image, "_canvas_compat_shim", False):
-    try:
-        from streamlit.elements.lib.image_utils import image_to_url as _real_itu
-    except ImportError:
-        _real_itu = getattr(st_image, "image_to_url", None)
-
-    _itu_uses_layout_config = False
-    if _real_itu is not None:
-        try:
-            import inspect as _inspect
-            _p = list(_inspect.signature(_real_itu).parameters)
-            _itu_uses_layout_config = len(_p) >= 2 and _p[1] == "layout_config"
-        except (TypeError, ValueError):
-            pass
-
-    class _LayoutShim:
-        __slots__ = ("width", "height")
-
-        def __init__(self, width):
-            self.width = width if isinstance(width, int) else None
-            self.height = None
-
-    def _canvas_image_to_url(image, width, clamp, channels, output_format,
-                             image_id, allow_emoji=False):
-        if _real_itu is None:
-            return ""
-        if _itu_uses_layout_config:
-            return _real_itu(image, _LayoutShim(width), clamp, channels, output_format, image_id)
-        return _real_itu(image, width, clamp, channels, output_format, image_id)
-
-    st_image.image_to_url = _canvas_image_to_url
-    st_image._canvas_compat_shim = True
+# Must run before the first st_canvas() call — see install_canvas_image_compat.
+install_canvas_image_compat()
 
 from scipy.ndimage import gaussian_filter
 from scipy.signal import find_peaks

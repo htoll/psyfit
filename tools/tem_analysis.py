@@ -37,7 +37,7 @@ from skimage.morphology import disk, opening
 from skimage.feature import peak_local_max
 from skimage.segmentation import watershed
 
-from utils import file_uploader_with_clear
+from utils import file_uploader_with_clear, install_canvas_image_compat
 
 # Optional — emd support requires h5py
 try:
@@ -54,6 +54,17 @@ try:
 except ImportError:
     pyDM3reader = None
     _HAS_DM3 = False
+
+# Optional — annotation-driven tuning needs a drawing canvas
+try:
+    from PIL import Image, ImageDraw
+    from streamlit_drawable_canvas import st_canvas
+    # Must run before the first st_canvas() call — see install_canvas_image_compat.
+    install_canvas_image_compat()
+    _HAS_CANVAS = True
+except ImportError:
+    Image = ImageDraw = st_canvas = None
+    _HAS_CANVAS = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -432,56 +443,50 @@ def _fit_stadium(prop) -> Optional[Dict[str, float]]:
 # ═══════════════════════════════════════════════════════════════════════════
 # Fast Computer Vision Segmentation
 # ═══════════════════════════════════════════════════════════════════════════
-def segment_and_measure(
-    data: np.ndarray, nm_per_px: float, shape_type: str, min_size_value: float,
-    measurement_unit: str, smoothing_sigma: float, contrast_clip: float,
-    thresh_offset: float, min_peak_distance: float
-) -> Dict[str, Any]:
-    
-    # 1. Preprocess the image
-    preprocessed = preprocess_image(data, smoothing_sigma, contrast_clip)
-    
-    # TEM particles are usually dark on a lighter background. 
-    # We invert it so particles are bright (closer to 1.0)
-    inverted_img = preprocessed.max() - preprocessed
-    
-    # 2. Otsu Thresholding to create a binary mask
-    # We add a slight offset multiplier to allow the user to make the mask stricter or looser
-    global_thresh = threshold_otsu(inverted_img) * thresh_offset
-    binary_mask = inverted_img > global_thresh
-    
-    # 3. Morphological opening to remove tiny noise specs (salt noise)
-    binary_mask = opening(binary_mask, disk(2))
-    
-    # 4. Euclidean Distance Transform & Watersheding
-    # This separates clumped particles by finding their distinct centers
-    # 4. Euclidean Distance Transform & Watersheding
-    distance = distance_transform_edt(binary_mask)
-    
-    # --- NEW: Smooth the distance map to fix fragmented rectangles ---
-    # Rectangles create flat "ridges" that cause multiple peaks.
-    # Blurring it slightly forces a single peak in the absolute center.
-    distance_smoothed = gaussian_filter(distance, sigma=2.0)
-    
-    # Find peaks on the *smoothed* distance map. min_peak_distance is given in measurement
-    # units (nm when calibrated); convert to pixels for peak_local_max.
+# The segmentation pipeline is split into four stages (preprocess → mask → watershed → measure)
+# because each stage depends on only some of the tunable parameters. The annotation-driven
+# auto-tuner (below) walks the parameter grid in that nesting order and reuses each stage's
+# output across every setting that cannot change it, which is where most of its speed comes
+# from. Keep the stages side-effect free so that caching stays valid.
+def _min_peak_px(min_peak_distance: float, measurement_unit: str, nm_per_px: float) -> int:
+    """``min_peak_distance`` arrives in measurement units (nm when calibrated); convert it to the
+    pixel spacing ``peak_local_max`` expects."""
     if measurement_unit == "nm" and not np.isnan(nm_per_px) and nm_per_px > 0:
-        min_peak_px = max(int(round(min_peak_distance / nm_per_px)), 1)
-    else:
-        min_peak_px = max(int(round(min_peak_distance)), 1)
+        return max(int(round(min_peak_distance / nm_per_px)), 1)
+    return max(int(round(min_peak_distance)), 1)
+
+def _binary_mask_from(preprocessed: np.ndarray, thresh_offset: float) -> np.ndarray:
+    """Otsu-threshold the preprocessed image, then open it to drop tiny salt-noise specks.
+
+    TEM particles are usually dark on a lighter background, so the image is inverted first and
+    particles become bright. ``thresh_offset`` scales the Otsu level so the user can make the
+    mask stricter (higher) or looser (lower).
+    """
+    inverted_img = preprocessed.max() - preprocessed
+    binary_mask = inverted_img > threshold_otsu(inverted_img) * thresh_offset
+    return opening(binary_mask, disk(2))
+
+def _watershed_labels(binary_mask: np.ndarray, min_peak_px: int) -> np.ndarray:
+    """Separate clumped particles with an EDT watershed seeded on distance-map peaks.
+
+    Rectangles produce flat distance-map "ridges" that yield several peaks per particle and so
+    fragment the fit, so the distance map is blurred before peak-finding to force a single peak
+    at each particle's centre.
+    """
+    distance = distance_transform_edt(binary_mask)
+    distance_smoothed = gaussian_filter(distance, sigma=2.0)
     coords = peak_local_max(distance_smoothed, min_distance=min_peak_px, labels=binary_mask)
-    
     mask = np.zeros(distance.shape, dtype=bool)
     mask[tuple(coords.T)] = True
     markers, _ = label(mask)
-    
-    # Apply watershed
-    labels_ws = watershed(-distance, markers, mask=binary_mask)
+    return watershed(-distance, markers, mask=binary_mask)
 
-    # 5. Extract Measurements
-    sf = nm_per_px if measurement_unit == "nm" else 1.0
-    img_h, img_w = data.shape
-    
+def _measure_labels(
+    labels_ws: np.ndarray, shape_type: str, min_size_value: float, sf: float,
+    img_h: int, img_w: int,
+) -> Tuple[Dict[str, list], list, List[Dict[str, Any]]]:
+    """Classify and measure every watershed region, returning
+    ``(measurements, draw_shapes, objects)``. ``sf`` scales pixels into the reported unit."""
     measurements = {
         "diameters": [], "hex_widths": [], "hex_heights": [], "hex_rect_widths": [],
         "side_lengths": [], "oct_major": [], "oct_minor": [],
@@ -503,6 +508,7 @@ def segment_and_measure(
         color = _COLORS.get(cls, "white")
         maj_px = float(getattr(prop, "major_axis_length", 0.0)) or 0.0
         min_px = float(getattr(prop, "minor_axis_length", 0.0)) or 0.0
+        n_before = len(objects)   # anything appended below belongs to this region (see loop end)
 
         if cls == "circle":
             d_px = (maj_px + min_px) / 2.0
@@ -565,12 +571,35 @@ def segment_and_measure(
                     "tic_tac_major": L_total, "tic_tac_width": fit["W"] * sf,
                     "tic_tac_body_length": fit["L_body"] * sf, "tic_tac_cap_depth": fit["d"] * sf}})
 
+        # Tag whatever this region produced with its watershed label, so a hand-drawn
+        # annotation can be matched to an object by looking its midpoint up in labels_ws.
+        for o in objects[n_before:]:
+            o["label"] = int(prop.label)
+
+    return measurements, draw_shapes, objects
+
+def segment_and_measure(
+    data: np.ndarray, nm_per_px: float, shape_type: str, min_size_value: float,
+    measurement_unit: str, smoothing_sigma: float, contrast_clip: float,
+    thresh_offset: float, min_peak_distance: float
+) -> Dict[str, Any]:
+    preprocessed = preprocess_image(data, smoothing_sigma, contrast_clip)
+    binary_mask = _binary_mask_from(preprocessed, thresh_offset)
+    labels_ws = _watershed_labels(
+        binary_mask, _min_peak_px(min_peak_distance, measurement_unit, nm_per_px))
+
+    sf = nm_per_px if measurement_unit == "nm" else 1.0
+    img_h, img_w = data.shape
+    measurements, draw_shapes, objects = _measure_labels(
+        labels_ws, shape_type, min_size_value, sf, img_h, img_w)
+
     # Generate random colored mask for visualization
     rand_cmap = np.random.RandomState(42).rand(max(int(labels_ws.max()) + 1, 1), 3)
     rand_cmap[0] = [1.0, 1.0, 1.0] # Background is white
-    
+
     out = {
         "data": data, "draw_shapes": draw_shapes, "objects": objects,
+        "labels_ws": labels_ws,
         "rgb_ws": (rand_cmap[labels_ws] * 255).astype(np.uint8),
         "unit": measurement_unit, "nm_per_px": float(nm_per_px) if measurement_unit == "nm" else float("nan")
     }
@@ -1256,6 +1285,685 @@ def render_dimension_guide(shape_type: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Annotation-driven auto-tuning
+# ═══════════════════════════════════════════════════════════════════════════
+# The user draws a small box, exhaustively annotates every particle inside it (one drawn line
+# per particle per dimension), and the tuner searches the segmentation parameters for the
+# setting whose measurements best reproduce those annotations.
+#
+# Why the box must be *exhaustively* annotated: the score penalises detected particles inside
+# the box that no annotation matches. Without that penalty the search has a degenerate optimum —
+# over-segment the image into many small blobs and something will overlap every annotation, so
+# recall is perfect and nothing is ever charged for the spurious detections.
+#
+# Cost of one wrong particle (missed or spurious) relative to the mean relative size error. At
+# 1.0, getting 1 particle in 10 wrong costs the same as a 10% size error on every particle.
+GT_COUNT_PENALTY = 1.0
+# A hand-drawn midpoint may land just off the particle; look this far (as a fraction of the
+# annotated length) for a nearby watershed region before calling the annotation a miss.
+GT_SNAP_FRAC = 0.25
+
+def _dim_annotation_specs(shape_type: str) -> List[Dict[str, Any]]:
+    """The dimensions that can be annotated for ``shape_type``, each with the diagram (outline +
+    the single arrow being annotated) shown while drawing.
+
+    Geometry deliberately mirrors ``build_dimension_guide_figure`` so the drawing prompt and the
+    reference guide cannot drift apart.
+    """
+    if shape_type == "Sphere":
+        return [dict(key="diameters", label="Diameter (D)", proj="Sphere → circle",
+                     outline=_circle_poly(1.0), arrow=((-1, 0), (1, 0)), guides=(),
+                     lim=(-1.5, 1.5, -1.4, 1.5), lab_off=(0, 0.13), va="bottom")]
+    if shape_type == "Cube":
+        s = 2.0
+        sq = np.array([[-s/2, -s/2], [s/2, -s/2], [s/2, s/2], [-s/2, s/2]])
+        return [dict(key="side_lengths", label="Side length (s)", proj="Cube → square",
+                     outline=sq, arrow=((-s/2, -s/2 - 0.35), (s/2, -s/2 - 0.35)), guides=(),
+                     lim=(-1.7, 1.7, -2.0, 1.4), lab_off=(0, -0.16), va="top")]
+    if shape_type == "Hexagonal Prism":
+        W, Hh = 2.0, 3.0
+        rect = np.array([[-W/2, -Hh/2], [W/2, -Hh/2], [W/2, Hh/2], [-W/2, Hh/2]])
+        rlim = (-2.5, 1.8, -2.5, 2.0)
+        return [
+            dict(key="hex_widths", label="Width (W)\nvertex-to-vertex", proj="Face-on (0001)",
+                 outline=_hexagon_vertices(0, 0, 1.0, 0.0), arrow=((-1, -1.35), (1, -1.35)),
+                 guides=(((-1, 0), (-1, -1.35)), ((1, 0), (1, -1.35))),
+                 lim=(-1.7, 1.7, -2.2, 1.3), lab_off=(0, -0.18), va="top"),
+            dict(key="hex_heights", label="Height (H)", proj="Side-on (10-10)", outline=rect,
+                 arrow=((-W/2 - 0.4, -Hh/2), (-W/2 - 0.4, Hh/2)), guides=(),
+                 lim=rlim, lab_off=(-0.15, 0), ha="right"),
+            dict(key="hex_rect_widths", label="Width (W)", proj="Side-on (10-10)", outline=rect,
+                 arrow=((-W/2, -Hh/2 - 0.4), (W/2, -Hh/2 - 0.4)), guides=(),
+                 lim=rlim, lab_off=(0, -0.16), va="top"),
+        ]
+    if shape_type == "Octahedron":
+        maj, mn = 3.0, 2.0
+        rh = np.array([[0, maj/2], [mn/2, 0], [0, -maj/2], [-mn/2, 0]])
+        lim = (-1.9, 2.6, -2.4, 2.1)
+        return [
+            dict(key="oct_major", label="Major axis", proj="Octahedron → rhombus", outline=rh,
+                 arrow=((mn/2 + 0.4, -maj/2), (mn/2 + 0.4, maj/2)), guides=(),
+                 lim=lim, lab_off=(0.13, 0), ha="left"),
+            dict(key="oct_minor", label="Minor axis", proj="Octahedron → rhombus", outline=rh,
+                 arrow=((-mn/2, -maj/2 - 0.4), (mn/2, -maj/2 - 0.4)), guides=(),
+                 lim=lim, lab_off=(0, -0.16), va="top"),
+        ]
+    if shape_type == "Tic Tac":
+        W, L_body, d = 1.6, 2.0, 0.7
+        half, L_tot = W / 2.0, L_body + 2.0 * d
+        st_out = _stadium_vertices(0, 0, L_body, W, d, 0.0)
+        caps = (((-L_body/2, -half), (-L_body/2, half + 0.95)),
+                ((L_body/2, -half), (L_body/2, half + 0.95)))
+        lim = (-L_tot/2 - 1.3, L_tot/2 + 1.7, -half - 1.8, half + 1.3)
+        return [
+            dict(key="tic_tac_major", label="Total length (L)", proj="Tic Tac → stadium",
+                 outline=st_out, arrow=((-L_tot/2, -half - 0.55), (L_tot/2, -half - 0.55)),
+                 guides=(), lim=lim, lab_off=(0, -0.17), va="top"),
+            dict(key="tic_tac_width", label="Width (W)", proj="Tic Tac → stadium", outline=st_out,
+                 arrow=((L_tot/2 + 0.4, -half), (L_tot/2 + 0.4, half)), guides=(),
+                 lim=lim, lab_off=(0.13, 0), ha="left"),
+            dict(key="tic_tac_body_length", label="Body length (L_body)", proj="Tic Tac → stadium",
+                 outline=st_out, arrow=((-L_body/2, -half - 1.05), (L_body/2, -half - 1.05)),
+                 guides=caps, lim=lim, lab_off=(0, -0.17), va="top"),
+            dict(key="tic_tac_cap_depth", label="Cap depth (d)", proj="Tic Tac → stadium",
+                 outline=st_out, arrow=((L_body/2, half + 0.6), (L_tot/2, half + 0.6)),
+                 guides=caps, lim=lim, lab_off=(0, 0.15), va="bottom"),
+        ]
+    return []
+
+def build_dim_annotation_figure(shape_type: str, dim_key: str) -> Optional[plt.Figure]:
+    """Diagram for a single annotation pass: the projection outline with only the dimension
+    currently being drawn arrowed and highlighted."""
+    spec = next((s for s in _dim_annotation_specs(shape_type) if s["key"] == dim_key), None)
+    if spec is None:
+        return None
+    fig, ax = plt.subplots(figsize=(3.3, 3.1), dpi=130, layout="constrained")
+    _dim_outline(ax, spec["outline"], IBM_DARK[0])
+    for g0, g1 in spec["guides"]:
+        _dim_guide(ax, g0, g1)
+    _dim_arrow(ax, spec["arrow"][0], spec["arrow"][1], spec["label"], spec["lab_off"],
+               ha=spec.get("ha", "center"), va=spec.get("va", "center"), color=IBM_DARK[1])
+    x0, x1, y0, y1 = spec["lim"]
+    _dim_finish(ax, x0, x1, y0, y1, f"Draw this distance\n{spec['proj']}")
+    return fig
+
+def _canvas_lines_to_truth(json_data: Optional[dict], scale: float, nm_per_px: float, unit: str,
+                           origin: Tuple[float, float] = (0.0, 0.0)) -> List[Dict[str, Any]]:
+    """Convert drawn canvas lines into ``{"mid": (x_px, y_px), "value": <length in unit>}``.
+
+    Results are in full-ROI pixel coordinates: ``scale`` is ROI px per canvas px and ``origin``
+    is the ROI pixel the canvas's top-left corner corresponds to (non-zero when the canvas shows
+    a zoomed crop rather than the whole ROI).
+    """
+    sf = nm_per_px if unit == "nm" else 1.0
+    out: List[Dict[str, Any]] = []
+    for obj in (json_data or {}).get("objects", []):
+        if obj.get("type") != "line":
+            continue
+        w = float(obj.get("width", 0.0)) * float(obj.get("scaleX", 1.0)) * scale
+        h = float(obj.get("height", 0.0)) * float(obj.get("scaleY", 1.0)) * scale
+        # streamlit-drawable-canvas builds line objects with originX/originY = "center", so
+        # fabric reports `left`/`top` as the line's MIDPOINT, not its bounding-box corner. Its
+        # endpoints are opposite corners of that box, so the length is the box diagonal —
+        # both quantities are independent of which way the user dragged.
+        mx = origin[0] + float(obj.get("left", 0.0)) * scale
+        my = origin[1] + float(obj.get("top", 0.0)) * scale
+        len_px = float(np.hypot(w, h))
+        if len_px < 2.0:      # a stray click, not a measurement
+            continue
+        out.append({"mid": (mx, my), "value": len_px * sf})
+    return out
+
+def _canvas_rect_to_box(json_data: Optional[dict], scale: float) -> Optional[Tuple[float, float, float, float]]:
+    """The last drawn rectangle as ``(x0, y0, x1, y1)`` in full-ROI pixel coordinates.
+
+    Rectangles are built with originX/originY = "left"/"top", so ``left``/``top`` really is the
+    corner; the result is still normalised so a box dragged in any direction comes back with
+    x0 < x1 and y0 < y1.
+    """
+    rects = [o for o in (json_data or {}).get("objects", []) if o.get("type") == "rect"]
+    if not rects:
+        return None
+    o = rects[-1]
+    w = float(o.get("width", 0.0)) * float(o.get("scaleX", 1.0)) * scale
+    h = float(o.get("height", 0.0)) * float(o.get("scaleY", 1.0)) * scale
+    x, y = float(o.get("left", 0.0)) * scale, float(o.get("top", 0.0)) * scale
+    x0, x1 = sorted((x, x + w))
+    y0, y1 = sorted((y, y + h))
+    if (x1 - x0) < 8 or (y1 - y0) < 8:
+        return None
+    return (x0, y0, x1, y1)
+
+def _label_at(labels_ws: np.ndarray, x: float, y: float, search_px: int) -> int:
+    """Watershed label under a hand-drawn point. If the point lands on background, the most
+    common non-background label within ``search_px`` wins, so a slightly-off line still
+    matches its particle."""
+    h, w = labels_ws.shape
+    xi, yi = int(round(x)), int(round(y))
+    if not (0 <= xi < w and 0 <= yi < h):
+        return 0
+    lab = int(labels_ws[yi, xi])
+    if lab:
+        return lab
+    r = max(int(search_px), 1)
+    win = labels_ws[max(0, yi - r):min(h, yi + r + 1), max(0, xi - r):min(w, xi + r + 1)]
+    nz = win[win > 0]
+    if nz.size == 0:
+        return 0
+    vals, counts = np.unique(nz, return_counts=True)
+    return int(vals[int(np.argmax(counts))])
+
+def score_against_annotations(
+    labels_ws: np.ndarray, objects: List[Dict[str, Any]],
+    truth: Dict[str, List[Dict[str, Any]]], box_px: Tuple[float, float, float, float],
+    nm_per_px: float, unit: str,
+) -> Dict[str, Any]:
+    """Score a segmentation against exhaustively-annotated ground truth inside ``box_px``.
+
+    Returns a scalar ``score`` (lower is better) plus a per-dimension breakdown and, for each
+    annotation, whether it was matched — the caller uses those flags to spot annotations that no
+    parameter setting can ever reach.
+    """
+    x0, y0, x1, y1 = box_px
+    sf = nm_per_px if unit == "nm" else 1.0
+    per_dim: Dict[str, Any] = {}
+    total, n_dims = 0.0, 0
+    for dim, lines in truth.items():
+        if not lines:
+            continue
+        # Candidates: detections of this dimension whose centre lies in the annotated box.
+        cands = {o["label"]: o for o in objects
+                 if dim in o["dims"] and x0 <= o["cx"] <= x1 and y0 <= o["cy"] <= y1}
+        errs: List[float] = []
+        flags: List[bool] = []
+        matched: set = set()
+        n_missed = 0
+        for ln in lines:
+            snap = max(int(round(GT_SNAP_FRAC * ln["value"] / max(sf, 1e-9))), 1)
+            lab = _label_at(labels_ws, ln["mid"][0], ln["mid"][1], snap)
+            o = cands.get(lab)
+            # `lab in matched` means two annotations fell in one region: the segmentation merged
+            # two particles, so one of them counts as missed.
+            if o is None or lab in matched:
+                n_missed += 1
+                flags.append(False)
+                continue
+            matched.add(lab)
+            errs.append(abs(o["dims"][dim] - ln["value"]) / max(ln["value"], 1e-9))
+            flags.append(True)
+        n_extra = max(len(cands) - len(matched), 0)
+        # No match at all scores as a 100% size error — bad, but bounded, so a setting that finds
+        # nothing still ranks below one that finds particles at slightly wrong sizes.
+        size_err = float(np.mean(errs)) if errs else 1.0
+        count_err = (n_missed + n_extra) / len(lines)
+        per_dim[dim] = {
+            "n_gt": len(lines), "n_matched": len(matched), "n_missed": n_missed,
+            "n_extra": n_extra, "size_err": size_err,
+            "median_size_err": float(np.median(errs)) if errs else float("nan"),
+            "flags": flags,
+        }
+        total += size_err + GT_COUNT_PENALTY * count_err
+        n_dims += 1
+    return {"score": total / n_dims if n_dims else float("inf"), "per_dim": per_dim}
+
+# Search design, measured on real annotated data rather than assumed. The objective turns out to
+# be jagged and multi-basin — thresh_offset can score well at 0.85 and at 1.00 while scoring
+# poorly at 0.95 in between, and the two best settings found sat in unrelated regions of
+# (contrast_clip, thresh_offset). Three consequences, all baked in below:
+#   * gradient/simplex methods are useless (plateaus and cliffs), so this is a grid sweep;
+#   * smoothing_sigma and thresh_offset need fine sampling and are refined *jointly*, since
+#     descending them one at a time gets trapped between basins;
+#   * refinement runs from several coarse starts, because good basins are isolated.
+TUNE_SIGMA_GRID = (1.0, 1.25, 1.5, 1.75, 2.25)
+TUNE_CLIP_GRID = (0.01, 0.04, 0.08)
+TUNE_THRESH_GRID = (0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.15)
+# Peak spacing matters only relative to particle size, so candidates are fractions of the
+# largest annotated dimension rather than absolute values. Empirically only the small end of
+# this range ever wins — larger spacings under-split clumps — hence the downward bias.
+TUNE_PEAK_FRACS = (0.15, 0.22, 0.30, 0.40, 0.55)
+# Its effect is close to separable from the other three (every top-scoring setting observed
+# shared the same peak spacing), so the main sweep holds it fixed here and it gets its own
+# pass afterwards. That turns a 4-D product into two much cheaper sweeps.
+TUNE_PEAK_SEED_FRAC = 0.30
+TUNE_N_PEAK_STARTS = 4      # coarse settings that get the dedicated peak-spacing sweep
+TUNE_N_STARTS = 3           # coarse settings that get local refinement
+# Parameter bounds, matching the manual sliders so a tuned value is always dialable by hand.
+TUNE_BOUNDS = {"smoothing_sigma": (0.5, 5.0), "contrast_clip": (0.01, 0.10),
+               "thresh_offset": (0.5, 1.5), "min_peak_distance": (0.5, 1e9)}
+# Local refinement: offsets applied one parameter at a time, then a joint sigma × thresh grid.
+TUNE_REFINE_STEPS = {"smoothing_sigma": (-0.25, -0.10, 0.10, 0.25),
+                     "contrast_clip": (-0.02, -0.01, 0.01, 0.02),
+                     "thresh_offset": (-0.05, -0.025, 0.025, 0.05)}
+TUNE_REFINE_PEAK_FACTORS = (0.85, 0.925, 1.075, 1.15)
+TUNE_JOINT_SIGMA_OFFSETS = (-0.25, 0.0, 0.25)
+TUNE_JOINT_THRESH_OFFSETS = (-0.10, -0.05, 0.0, 0.05, 0.10)
+# A tuned setting is only useful if the user can also dial it in by hand, so every value the
+# search visits is snapped to the resolution of the corresponding manual widget. Snapping on the
+# way *in* (rather than rounding the winner on the way out) keeps the reported score exactly
+# equal to the score of the parameters that get applied.
+TUNE_SNAP = {"smoothing_sigma": 0.05, "contrast_clip": 0.01,
+             "thresh_offset": 0.025, "min_peak_distance": 0.1}
+
+def _clamp(name: str, v: float) -> float:
+    lo, hi = TUNE_BOUNDS[name]
+    return float(min(max(v, lo), hi))
+
+def _snap(name: str, v: float) -> float:
+    step = TUNE_SNAP[name]
+    return _clamp(name, round(round(float(v) / step) * step, 4))
+
+def autotune_parameters(
+    data: np.ndarray, nm_per_px: float, shape_type: str, min_size_value: float,
+    measurement_unit: str, truth: Dict[str, List[Dict[str, Any]]],
+    box_px: Tuple[float, float, float, float], progress=None,
+) -> Dict[str, Any]:
+    """Search segmentation parameters for the setting that best reproduces ``truth``.
+
+    Runs on the whole ROI rather than a crop of the annotated box: Otsu's threshold depends on
+    the histogram of whatever it is given, so scoring on a tight crop would tune
+    ``thresh_offset`` against a histogram the full-image run never sees. Only detections inside
+    ``box_px`` are scored.
+
+    Stages are cached by the parameters they actually depend on — preprocessing by
+    (sigma, clip), the binary mask additionally by thresh_offset — which is where the bulk of
+    the speed-up comes from, since preprocessing alone is roughly half the cost of one
+    segmentation.
+    """
+    sf = nm_per_px if measurement_unit == "nm" else 1.0
+    img_h, img_w = data.shape
+    pre_cache: Dict[tuple, np.ndarray] = {}
+    mask_cache: Dict[tuple, np.ndarray] = {}
+    memo: Dict[tuple, Dict[str, Any]] = {}
+    # Annotations that no evaluated setting ever matched — usually rejected by
+    # classify_projection's fixed thresholds rather than by any parameter under search.
+    ever_matched: Dict[str, np.ndarray] = {d: np.zeros(len(v), dtype=bool) for d, v in truth.items() if v}
+
+    def _eval(smoothing_sigma: float, contrast_clip: float, thresh_offset: float,
+              min_peak_distance: float) -> Dict[str, Any]:
+        smoothing_sigma = _snap("smoothing_sigma", smoothing_sigma)
+        contrast_clip = _snap("contrast_clip", contrast_clip)
+        thresh_offset = _snap("thresh_offset", thresh_offset)
+        min_peak_distance = _snap("min_peak_distance", min_peak_distance)
+        key = (smoothing_sigma, contrast_clip, thresh_offset, min_peak_distance)
+        if key in memo:
+            return memo[key]
+        pk = key[:2]
+        if pk not in pre_cache:
+            pre_cache[pk] = preprocess_image(data, smoothing_sigma, contrast_clip)
+        mk = key[:3]
+        if mk not in mask_cache:
+            mask_cache[mk] = _binary_mask_from(pre_cache[pk], thresh_offset)
+        labels_ws = _watershed_labels(
+            mask_cache[mk], _min_peak_px(min_peak_distance, measurement_unit, nm_per_px))
+        _, _, objects = _measure_labels(labels_ws, shape_type, min_size_value, sf, img_h, img_w)
+        sc = score_against_annotations(labels_ws, objects, truth, box_px, nm_per_px, measurement_unit)
+        for dim, info in sc["per_dim"].items():
+            ever_matched[dim] |= np.array(info["flags"], dtype=bool)
+        out = {"params": {"smoothing_sigma": smoothing_sigma, "contrast_clip": contrast_clip,
+                          "thresh_offset": thresh_offset, "min_peak_distance": min_peak_distance},
+               "score": sc["score"], "per_dim": sc["per_dim"], "n_objects": len(objects)}
+        memo[key] = out
+        return out
+
+    # Peak-spacing candidates scale with the largest annotated dimension, which is what sets how
+    # far apart two particle centres actually are.
+    medians = [float(np.median([ln["value"] for ln in v])) for v in truth.values() if v]
+    ref = max(medians) if medians else 10.0
+    peak_grid = sorted({round(_clamp("min_peak_distance", f * ref), 2) for f in TUNE_PEAK_FRACS})
+    peak_seed = _clamp("min_peak_distance", TUNE_PEAK_SEED_FRAC * ref)
+
+    n_total = (len(TUNE_SIGMA_GRID) * len(TUNE_CLIP_GRID) * len(TUNE_THRESH_GRID)
+               + TUNE_N_PEAK_STARTS * len(peak_grid)
+               + TUNE_N_STARTS * (sum(len(v) for v in TUNE_REFINE_STEPS.values())
+                                  + len(TUNE_REFINE_PEAK_FACTORS)
+                                  + len(TUNE_JOINT_SIGMA_OFFSETS) * len(TUNE_JOINT_THRESH_OFFSETS)))
+    done = 0
+
+    def _tick():
+        nonlocal done
+        done += 1
+        if progress:
+            progress(min(done / max(n_total, 1), 1.0))
+
+    # Stage 1 — sweep sigma × clip × thresh at a fixed, deliberately small peak spacing.
+    coarse: List[Dict[str, Any]] = []
+    for sigma in TUNE_SIGMA_GRID:
+        for clip in TUNE_CLIP_GRID:
+            for thresh in TUNE_THRESH_GRID:
+                coarse.append(_eval(sigma, clip, thresh, peak_seed))
+                _tick()
+    coarse.sort(key=lambda r: r["score"])
+    coarse_score = coarse[0]["score"]
+
+    # Stage 2 — give the most promising settings their own peak-spacing sweep.
+    pool = list(coarse)
+    for r0 in coarse[:TUNE_N_PEAK_STARTS]:
+        for peak in peak_grid:
+            cand = dict(r0["params"]); cand["min_peak_distance"] = peak
+            pool.append(_eval(**cand))
+            _tick()
+    pool.sort(key=lambda r: r["score"])
+
+    # Stage 3 — refine from several starts, since the good basins are isolated. Each start gets
+    # one-at-a-time steps plus a joint sigma × thresh grid (the two coupled, jagged parameters).
+    starts, seen = [], set()
+    for r in pool:
+        sig = (round(r["params"]["smoothing_sigma"], 3), round(r["params"]["contrast_clip"], 4),
+               round(r["params"]["thresh_offset"], 4))
+        if sig in seen:
+            continue
+        seen.add(sig)
+        starts.append(r)
+        if len(starts) >= TUNE_N_STARTS:
+            break
+
+    best = pool[0]
+    for start in starts:
+        local = start
+        for name, steps in TUNE_REFINE_STEPS.items():
+            for step in steps:
+                cand = dict(local["params"])
+                cand[name] = _clamp(name, cand[name] + step)
+                r = _eval(**cand)
+                _tick()
+                if r["score"] < local["score"]:
+                    local = r
+        for factor in TUNE_REFINE_PEAK_FACTORS:
+            cand = dict(local["params"])
+            cand["min_peak_distance"] = _clamp("min_peak_distance",
+                                               cand["min_peak_distance"] * factor)
+            r = _eval(**cand)
+            _tick()
+            if r["score"] < local["score"]:
+                local = r
+        base = dict(local["params"])
+        for ds in TUNE_JOINT_SIGMA_OFFSETS:
+            for dt in TUNE_JOINT_THRESH_OFFSETS:
+                cand = dict(base)
+                cand["smoothing_sigma"] = _clamp("smoothing_sigma", base["smoothing_sigma"] + ds)
+                cand["thresh_offset"] = _clamp("thresh_offset", base["thresh_offset"] + dt)
+                r = _eval(**cand)
+                _tick()
+                if r["score"] < local["score"]:
+                    local = r
+        if local["score"] < best["score"]:
+            best = local
+
+    if progress:
+        progress(1.0)
+    return {**best, "n_evals": len(memo), "coarse_score": coarse_score,
+            "unreachable": {d: int((~m).sum()) for d, m in ever_matched.items()}}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Annotation-driven auto-tuning — UI
+# ═══════════════════════════════════════════════════════════════════════════
+ANNO_CANVAS_W = 560          # annotation canvases are drawn large: 1 canvas px ≈ 1.7 ROI px at
+                             # the default 200 nm ROI, so hand precision, not display
+                             # resolution, is what limits the annotations
+TUNE_PARAM_KEYS = {"smoothing_sigma": "tem_sigma", "contrast_clip": "tem_clip",
+                   "thresh_offset": "tem_thresh", "min_peak_distance": "tem_peak"}
+# Staging slot for tuned parameters on their way into the manual widgets — see
+# consume_pending_tuned_params.
+TUNE_PENDING_KEY = "tem_pending_params"
+
+def consume_pending_tuned_params() -> bool:
+    """Move any parameters staged by the auto-tuner into the manual widgets' session-state
+    entries, returning whether anything was applied.
+
+    Must be called *before* those widgets are instantiated: Streamlit raises
+    ``StreamlitAPIException`` if a widget's session-state entry is written after the widget
+    exists, so the auto-tuner's Apply button cannot assign them directly — it stages them and
+    reruns, and this consumes the staged values at the one point in the script where writing
+    them is legal.
+    """
+    pending = st.session_state.get(TUNE_PENDING_KEY)
+    if not pending:
+        return False
+    del st.session_state[TUNE_PENDING_KEY]
+    for name, widget_key in TUNE_PARAM_KEYS.items():
+        if name in pending:
+            st.session_state[widget_key] = pending[name]
+    return True
+
+def _crop_bounds(shape: Tuple[int, ...],
+                 box: Tuple[float, float, float, float]) -> Tuple[int, int, int, int]:
+    """Integer, in-bounds pixel bounds for a drawn box.
+
+    Single source of truth for both the zoomed background image and the mapping of canvas
+    coordinates back to ROI pixels — if those two disagreed, every annotation would be offset.
+    """
+    h, w = shape[0], shape[1]
+    x0 = int(max(0, np.floor(box[0])));  y0 = int(max(0, np.floor(box[1])))
+    x1 = int(min(w, np.ceil(box[2])));   y1 = int(min(h, np.ceil(box[3])))
+    return x0, y0, max(x1, x0 + 1), max(y1, y0 + 1)
+
+def _roi_to_pil(roi: np.ndarray, width: int,
+                crop: Optional[Tuple[float, float, float, float]] = None,
+                box: Optional[Tuple[float, float, float, float]] = None):
+    """The ROI, or a ``crop`` of it, as an 8-bit PIL image scaled to ``width``.
+
+    Contrast is stretched over whatever region is actually displayed, so a zoomed crop is as
+    legible as possible rather than inheriting the full ROI's percentiles. ``box`` outlines a
+    region given in the *displayed* image's pixel coordinates (used for the locator thumbnail).
+    """
+    if crop is not None:
+        x0, y0, x1, y1 = _crop_bounds(roi.shape, crop)
+        roi = roi[y0:y1, x0:x1]
+    lo, hi = np.percentile(roi, [0.5, 99.5])
+    img = np.clip((roi - lo) / max(hi - lo, 1e-12), 0, 1)
+    pil = Image.fromarray((img * 255).astype(np.uint8)).convert("RGB")
+    h = max(int(round(width * roi.shape[0] / roi.shape[1])), 1)
+    pil = pil.resize((width, h), resample=Image.Resampling.LANCZOS)
+    if box is not None:
+        s = width / roi.shape[1]
+        ImageDraw.Draw(pil).rectangle(
+            [box[0] * s, box[1] * s, box[2] * s, box[3] * s], outline=(220, 30, 120), width=3)
+    return pil
+
+def _plot_annotation_review(ax, roi, seg, truth, box, nm_per_px, unit) -> None:
+    """The tuned segmentation over the ROI, with the annotation box and every annotated midpoint
+    marked, so a mismatch is visible rather than just a number in a table."""
+    plot_annotated_image(ax, roi, seg["draw_shapes"], nm_per_px, unit, mask_alpha=0.35)
+    x0, y0, x1, y1 = box
+    ax.add_patch(patches.Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False,
+                                   edgecolor=IBM_DARK[1], lw=2.0, zorder=6))
+    for lines in truth.values():
+        if lines:
+            ax.scatter([l["mid"][0] for l in lines], [l["mid"][1] for l in lines],
+                       s=26, marker="+", c=IBM_DARK[1], linewidths=1.4, zorder=7)
+
+def _truth_fingerprint(truth: Dict[str, List[Dict[str, Any]]],
+                       box: Tuple[float, float, float, float], min_feature: float) -> str:
+    """Identifies the exact inputs a tuning run was based on, so a displayed result can be
+    flagged as stale once the annotations, the box, or the size filter change."""
+    parts = [f"{min_feature:.4f}", ",".join(f"{v:.1f}" for v in box)]
+    for dim in sorted(truth):
+        parts.append(dim + ":" + ";".join(
+            f"{l['value']:.2f}@{l['mid'][0]:.0f},{l['mid'][1]:.0f}" for l in truth[dim]))
+    return "|".join(parts)
+
+def _annotation_token(file_name: str, roi_size: float, shape_type: str) -> str:
+    """Annotations are pixel coordinates into one specific ROI, so they are scoped to the image,
+    the ROI size that produced it, and the shape whose dimensions were drawn. Changing any of
+    those invalidates them — the token is embedded in the canvas keys to force a clean slate."""
+    return f"{file_name}|{roi_size:g}|{shape_type}"
+
+def annotation_tuning_ui(
+    roi_data: np.ndarray, nm_per_px: float, shape_type: str, unit: str,
+    min_feature: float, token: str, live_seg: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Draw-and-tune panel: annotate a small box exhaustively, then search the segmentation
+    parameters for the setting that best reproduces the annotations."""
+    if not _HAS_CANVAS:
+        st.info("Install `streamlit-drawable-canvas` to enable annotation-driven tuning.")
+        return
+    specs = _dim_annotation_specs(shape_type)
+    if not specs:
+        st.info(f"No annotatable dimensions defined for {shape_type}.")
+        return
+
+    st.markdown(
+        "Draw a box over a **small, representative** patch, then mark **every** particle inside "
+        "it — one line per particle, for each dimension in turn. Exhaustive labelling is what "
+        "lets the tuner count spurious detections; if particles inside the box are left "
+        "unmarked, the search is rewarded for over-segmenting. Around **10 particles** is "
+        "plenty."
+    )
+
+    scale = roi_data.shape[1] / ANNO_CANVAS_W
+    st.markdown("**Step A — box the patch you will annotate**")
+    box_canvas = st_canvas(
+        fill_color="rgba(220, 30, 120, 0.10)", stroke_width=2, stroke_color="#DC267F",
+        background_image=_roi_to_pil(roi_data, ANNO_CANVAS_W), update_streamlit=True,
+        height=int(round(ANNO_CANVAS_W * roi_data.shape[0] / roi_data.shape[1])),
+        width=ANNO_CANVAS_W, drawing_mode="rect", key=f"anno_box_{token}",
+    )
+    drawn_box = _canvas_rect_to_box(box_canvas.json_data if box_canvas else None, scale)
+    if drawn_box is None:
+        st.info("Draw a box to continue.")
+        return
+    # Work in the integer crop bounds from here on, so the zoomed image, the coordinate mapping
+    # and the scored region are all describing exactly the same pixels.
+    cx0, cy0, cx1, cy1 = _crop_bounds(roi_data.shape, drawn_box)
+    box = (float(cx0), float(cy0), float(cx1), float(cy1))
+    sf_unit = nm_per_px if unit == "nm" else 1.0
+    box_nm = ((cx1 - cx0) * sf_unit, (cy1 - cy0) * sf_unit)
+    n_in_box = 0
+    if live_seg is not None:
+        n_in_box = sum(1 for o in live_seg["objects"]
+                       if box[0] <= o["cx"] <= box[2] and box[1] <= o["cy"] <= box[3])
+    st.caption(f"Box {box_nm[0]:.0f} × {box_nm[1]:.0f} {unit} — the current manual settings find "
+               f"**{n_in_box}** particle(s) inside it.")
+
+    st.markdown("**Step B — annotate each dimension**")
+    # Annotate on a zoom of the box, not the whole ROI: at the default 200 nm ROI this is
+    # typically a 2–5× magnification over Step A, which is what makes hand-drawn lines precise
+    # enough for the size errors to mean anything.
+    bg = _roi_to_pil(roi_data, ANNO_CANVAS_W, crop=box)
+    scale_b = (cx1 - cx0) / ANNO_CANVAS_W
+    origin = (float(cx0), float(cy0))
+    # Both views are ANNO_CANVAS_W wide, so the magnification gained is simply the ratio of the
+    # ROI width to the box width.
+    st.caption(f"Zoomed to the box: **{roi_data.shape[1] / (cx1 - cx0):.1f}×** the Step A view "
+               f"(1 screen px ≈ {scale_b * sf_unit:.2f} {unit}).")
+    truth: Dict[str, List[Dict[str, Any]]] = {}
+    tabs = st.tabs([s["label"].replace("\n", " ") for s in specs])
+    for tab, spec in zip(tabs, specs):
+        with tab:
+            c_fig, c_draw = st.columns([1, 2])
+            with c_fig:
+                fig = build_dim_annotation_figure(shape_type, spec["key"])
+                if fig is not None:
+                    st.pyplot(fig)
+                    plt.close(fig)
+                st.caption(f"Drag one line per particle, end to end, along **{spec['label']}**. "
+                           "Leave a tab empty to skip that dimension.")
+                st.image(_roi_to_pil(roi_data, 190, box=box), caption="Region being annotated")
+            with c_draw:
+                res = st_canvas(
+                    fill_color="rgba(0,0,0,0)", stroke_width=2, stroke_color="#FFB000",
+                    background_image=bg, update_streamlit=True, height=bg.size[1],
+                    width=bg.size[0], drawing_mode="line",
+                    key=f"anno_{spec['key']}_{token}",
+                )
+                lines = _canvas_lines_to_truth(res.json_data if res else None, scale_b,
+                                               nm_per_px, unit, origin=origin)
+                # The canvas covers exactly the box, but clamp anyway so a line nudged over the
+                # edge can't be scored against a region the user never committed to labelling.
+                lines = [l for l in lines
+                         if box[0] <= l["mid"][0] <= box[2] and box[1] <= l["mid"][1] <= box[3]]
+                if lines:
+                    truth[spec["key"]] = lines
+                    vals = np.array([l["value"] for l in lines])
+                    st.caption(f"{len(lines)} line(s) — median {np.median(vals):.1f} {unit}, "
+                               f"range {vals.min():.1f}–{vals.max():.1f} {unit}")
+
+    n_anno = sum(len(v) for v in truth.values())
+    if n_anno == 0:
+        st.info("Annotate at least one dimension to enable tuning.")
+        return
+    st.caption(f"**{n_anno}** annotation(s) across {len(truth)} dimension(s).")
+
+    if st.button("🎯 Run auto-tune", type="primary", key=f"anno_run_{token}"):
+        bar = st.progress(0.0, text="Searching parameters…")
+        try:
+            res = autotune_parameters(
+                data=roi_data, nm_per_px=nm_per_px, shape_type=shape_type,
+                min_size_value=min_feature, measurement_unit=unit, truth=truth, box_px=box,
+                progress=lambda f: bar.progress(f, text=f"Searching parameters… {f*100:.0f}%"),
+            )
+        finally:
+            bar.empty()
+        st.session_state[f"tuned_{token}"] = {
+            "result": res, "truth": truth, "box": box,
+            "fp": _truth_fingerprint(truth, box, min_feature)}
+
+    stored = st.session_state.get(f"tuned_{token}")
+    if not stored:
+        return
+    res, truth_used, box_used = stored["result"], stored["truth"], stored["box"]
+
+    st.markdown("**Step C — review and apply**")
+    if stored["fp"] != _truth_fingerprint(truth, box, min_feature):
+        st.warning("Annotations, box, or min feature size have changed since this result was "
+                   "computed — re-run the auto-tune to match. The figures below still describe "
+                   "the earlier annotation set.")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Score (lower is better)", f"{res['score']:.3f}",
+              delta=f"{res['score'] - res['coarse_score']:+.3f} vs coarse", delta_color="inverse")
+    matched = sum(i["n_matched"] for i in res["per_dim"].values())
+    m2.metric("Annotations matched", f"{matched}/{n_anno}")
+    m3.metric("Evaluations", res["n_evals"])
+
+    rows = []
+    for dim, i in res["per_dim"].items():
+        label = next((s["label"].replace("\n", " ") for s in specs if s["key"] == dim), dim)
+        rows.append({"Dimension": label, "n": i["n_gt"], "Matched": i["n_matched"],
+                     "Missed": i["n_missed"], "Spurious": i["n_extra"],
+                     "Mean size error": f"{i['size_err']*100:.1f}%",
+                     "Median size error": f"{i['median_size_err']*100:.1f}%"})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    unreachable = {d: n for d, n in res.get("unreachable", {}).items() if n}
+    if unreachable:
+        st.warning(
+            "Never matched at **any** setting tried: "
+            + ", ".join(f"{n} × {d}" for d, n in unreachable.items())
+            + ". These particles are being rejected by the fixed shape-classification "
+              "thresholds in `classify_projection`, not by anything the search can change — "
+              "so the parameters below are fitted to the remaining annotations only."
+        )
+
+    p = res["params"]
+    st.code("\n".join([
+        f"Image Smoothing (Sigma)   {p['smoothing_sigma']:.2f}",
+        f"Contrast Enhancement      {p['contrast_clip']:.2f}",
+        f"Threshold Sensitivity     {p['thresh_offset']:.3f}",
+        f"Min peak distance         {p['min_peak_distance']:.1f} {unit}",
+    ]), language=None)
+
+    tuned_seg = segment_and_measure(
+        data=roi_data, nm_per_px=nm_per_px, shape_type=shape_type,
+        min_size_value=min_feature, measurement_unit=unit, **p)
+    fig, ax = plt.subplots(figsize=(5.4, 5.4), dpi=150)
+    _plot_annotation_review(ax, roi_data, tuned_seg, truth_used, box_used, nm_per_px, unit)
+    fig.tight_layout(pad=0)
+    st.pyplot(fig)
+    plt.close(fig)
+    st.caption("Tuned fit over the ROI. Pink box = annotated region, pink crosses = annotated "
+               "particles.")
+
+    if st.button("Apply these parameters to the sliders", key=f"anno_apply_{token}"):
+        # Streamlit forbids writing a widget's session_state entry once that widget exists, and
+        # this button is necessarily evaluated later in the script than the sliders. So stage the
+        # values under a non-widget key; consume_pending_tuned_params() applies them on the next
+        # run, before the widgets are created.
+        st.session_state[TUNE_PENDING_KEY] = dict(p)
+        st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Comprehensive summary figure + export
 # ═══════════════════════════════════════════════════════════════════════════
 # Locked summary-figure geometry: every exported summary has these exact page dimensions (one
@@ -1515,12 +2223,26 @@ def run() -> None:
             roi_size = st.number_input(f"ROI Size ({unit})", min_value=50, max_value=2000, value=200, step=50)
         with c_size:
             min_feature = st.number_input(f"Min feature size ({unit})", min_value=0.0, value=5.0, step=0.5)
+        # These four widgets are keyed and seeded from session state rather than given a
+        # `value=`, so the auto-tuner can write a tuned setting straight into them without
+        # Streamlit complaining that a default and a session-state value were both supplied.
+        # Their steps match TUNE_SNAP, so every tuned value lands exactly on a widget stop.
+        for _k, _v in (("tem_thresh", 1.0), ("tem_sigma", 1.5), ("tem_clip", 0.01),
+                       ("tem_peak", 10.0 if calibrated else 5.0)):
+            if _k not in st.session_state:
+                st.session_state[_k] = _v
+        # Anything the auto-tuner staged has to land here, before the widgets below exist.
+        if consume_pending_tuned_params():
+            st.success("Auto-tuned parameters applied to the controls below.")
+
         with c_thresh:
-            thresh_offset = st.slider("Threshold Sensitivity", 0.5, 1.5, 1.0, 0.05, help="Low = Picks up faint particles. High = Stricter boundaries.")
+            thresh_offset = st.slider(
+                "Threshold Sensitivity", min_value=0.5, max_value=1.5, step=0.025,
+                key="tem_thresh",
+                help="Low = Picks up faint particles. High = Stricter boundaries.")
         with c_peak:
-            peak_default = 10.0 if calibrated else 5.0
             min_peak_distance = st.number_input(
-                f"Min peak distance ({unit})", min_value=0.0, value=peak_default, step=1.0,
+                f"Min peak distance ({unit})", min_value=0.0, step=1.0, key="tem_peak",
                 help="Minimum spacing between particle centers. Increase if particles are being "
                      "overly fragmented; decrease if touching particles aren't splitting.")
 
@@ -1529,13 +2251,18 @@ def run() -> None:
         with st.expander("Advanced Settings", expanded=False):
             adv_c1, adv_c2 = st.columns(2)
             with adv_c1:
-                smoothing_sigma = st.slider("Image Smoothing (Sigma)", 0.5, 5.0, 1.5, 0.1, help="Blurs image to reduce background noise.")
+                smoothing_sigma = st.slider(
+                    "Image Smoothing (Sigma)", min_value=0.5, max_value=5.0, step=0.05,
+                    key="tem_sigma", help="Blurs image to reduce background noise.")
             with adv_c2:
-                contrast_clip = st.slider("Contrast Enhancement", 0.01, 0.10, 0.01, 0.01, help="Enhances contrast to separate particles from the background.")
+                contrast_clip = st.slider(
+                    "Contrast Enhancement", min_value=0.01, max_value=0.10, step=0.01,
+                    key="tem_clip",
+                    help="Enhances contrast to separate particles from the background.")
 
         seg_roi = segment_and_measure(
-            data=roi_data, nm_per_px=tem_tune.nm_per_px, shape_type=shape_type, 
-            min_size_value=min_feature, measurement_unit=unit, 
+            data=roi_data, nm_per_px=tem_tune.nm_per_px, shape_type=shape_type,
+            min_size_value=min_feature, measurement_unit=unit,
             smoothing_sigma=smoothing_sigma, contrast_clip=contrast_clip,
             thresh_offset=thresh_offset, min_peak_distance=min_peak_distance
         )
@@ -1556,6 +2283,14 @@ def run() -> None:
             fig.tight_layout(pad=0)
             plot_slot.pyplot(fig)
             plt.close(fig)
+
+        with st.expander("🎯 Auto-tune from annotations", expanded=False):
+            annotation_tuning_ui(
+                roi_data=roi_data, nm_per_px=tem_tune.nm_per_px, shape_type=shape_type,
+                unit=unit, min_feature=min_feature,
+                token=_annotation_token(tune_file_name, roi_size, shape_type),
+                live_seg=seg_roi,
+            )
 
         if st.button("Apply to All Images and Run Full Analysis", type="primary"):
             st.session_state.full_run_complete = True
