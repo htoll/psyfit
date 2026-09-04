@@ -222,7 +222,7 @@ def run():
         return df.to_csv(index=False).encode("utf-8")
 
     with col1:
-        st.header("Analyze SIF Files")
+        st.header("Inputs")
         
         uploaded_files = file_uploader_with_clear(
             "Upload .sif files (e.g., 100_1.sif, 120_1.sif)",

@@ -78,7 +78,7 @@ def _allowed_I41a(h: int, k: int, l: int) -> bool:
 
 
 def _allowed_P(h: int, k: int, l: int) -> bool:
-    """Primitive hexagonal P6̄ — no centring/systematic absences."""
+    """Primitive hexagonal P6-bar: no centring/systematic absences."""
     return True
 
 
@@ -209,7 +209,7 @@ def candidate_zone_axes(max_index: int = 2) -> List[Tuple[int, int, int]]:
             continue
         seen.add(red)
         out.append(red)
-    # Sort by sum of squares so the lowest-index axes ([001], [011], …) come first.
+    # Sort by sum of squares so the lowest-index axes ([001], [011], and so on) come first.
     out.sort(key=lambda t: (t[0] ** 2 + t[1] ** 2 + t[2] ** 2))
     return out
 

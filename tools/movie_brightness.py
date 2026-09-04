@@ -186,7 +186,7 @@ def _fit_movie(frames, meta, coords, region, roi, *, pix_size_um, sig_threshold,
     interval = _frame_interval_s(meta)
 
     rows = []
-    progress = st.progress(0.0, text="Fitting frames…")
+    progress = st.progress(0.0, text="Fitting frames...")
     for i in range(T):
         frame_cps = _frame_cps_cropped(frames, i, meta, region, roi)
         for pid, (cy, cx) in enumerate(coords):
@@ -214,7 +214,7 @@ def _fit_movie(frames, meta, coords, region, roi, *, pix_size_um, sig_threshold,
                     "fit_ok": fit["fit_ok"],
                 })
         if (i % 2 == 0) or (i == T - 1):
-            progress.progress((i + 1) / T, text=f"Fitting frame {i + 1}/{T}…")
+            progress.progress((i + 1) / T, text=f"Fitting frame {i + 1}/{T}...")
     progress.empty()
     df = pd.DataFrame(rows)
     df.attrs["n_psf"] = n_psf
@@ -293,7 +293,7 @@ def run():
     # 1) Hard gate: local-only.
     if _running_on_streamlit_cloud():
         st.error(
-            "🚫 **Movie Brightness is disabled on the cloud deployment.**\n\n"
+            "**Movie Brightness is disabled on the cloud deployment.**\n\n"
             "Per-frame PSF fitting across a full movie is compute/memory heavy "
             "and can crash the shared Streamlit instance. Please run PsyFit "
             "locally to use this tool.\n\n"
@@ -305,14 +305,9 @@ def run():
         st.error(f"`sif_parser` is not importable: {_sif_import_error}")
         return
 
-    st.caption(
-        "🖥️ Local-only tool. Builds an accumulation image, finds emitters, then "
-        "fits each PSF in **every** frame to produce brightness-vs-time traces."
-    )
-
     # 2) Sidebar controls.
     with st.sidebar:
-        st.header("Movie Brightness")
+        st.header("Inputs")
         uploaded = file_uploader_with_clear(
             "Upload a .sif movie", key="mb_upload", type=["sif"],
             accept_multiple_files=False,
@@ -380,7 +375,7 @@ def run():
     #    changes.
     file_key = (uploaded.name, uploaded.size)
     if st.session_state.get("mb_file_key") != file_key:
-        with st.spinner("Reading movie…"):
+        with st.spinner("Reading movie..."):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".sif") as tmp:
                 tmp.write(uploaded.getbuffer())
                 sif_path = tmp.name
@@ -414,7 +409,7 @@ def run():
 
     if T < 2:
         st.warning(
-            "This file has a single frame — it looks like an accumulated image, "
+            "This file has a single frame, so it looks like an accumulated image, "
             "not a movie. You can still run it, but time-series plots will be "
             "trivial. For single frames use **Brightness (WF)**."
         )
@@ -457,7 +452,7 @@ def run():
     with prev_col:
         fig_prev = _plot_accum_with_peaks(
             accum_cps, coords, cmap=cmap, log=log_scale,
-            title=f"Accumulation of {n_accum} frame(s) — {n_peaks} PSFs",
+            title=f"Accumulation of {n_accum} frame(s) · {n_peaks} PSFs",
         )
         st.plotly_chart(fig_prev, use_container_width=True,
                         config={"displaylogo": False})
@@ -469,7 +464,7 @@ def run():
         )
 
     if n_peaks == 0:
-        st.warning("No PSFs detected — adjust the detection parameters.")
+        st.warning("No PSFs detected. Adjust the detection parameters.")
         return
 
     # 6) Fit gate + safeguard on the total fit workload.
@@ -483,8 +478,8 @@ def run():
     proceed_ok = True
     if est_fits > WARN_FIT_COUNT:
         proceed_ok = st.checkbox(
-            f"⚠️ This is a large job ({est_fits:,} fits) and may take several "
-            "minutes. I understand — proceed.",
+            f"This is a large job ({est_fits:,} fits) and may take several "
+            "minutes. I understand, proceed.",
             value=False,
         )
 
@@ -813,7 +808,7 @@ def run():
         ))
     r0, r1, c0, c1 = box
     fig_box.update_layout(
-        title=dict(text=f"<b>Box [{r0}:{r1}, {c0}:{c1}] — {(r1-r0)}×{(c1-c0)} px</b>",
+        title=dict(text=f"<b>Box [{r0}:{r1}, {c0}:{c1}] · {(r1-r0)}×{(c1-c0)} px</b>",
                    x=0.5, xanchor="center", font=dict(color="black", size=14)),
         xaxis_title=bxlabel, yaxis_title="Intensity (pps)",
         margin=dict(l=0, r=0, t=34, b=0), height=400,

@@ -36,7 +36,7 @@ import streamlit as st
 
 from utils import install_canvas_image_compat
 
-# Must run before the first st_canvas() call — see install_canvas_image_compat.
+# Must run before the first st_canvas() call; see install_canvas_image_compat.
 install_canvas_image_compat()
 
 from scipy.ndimage import gaussian_filter
@@ -45,7 +45,7 @@ from skimage.feature import peak_local_max
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image
 
-# Crystallography engine — works whether imported as tools.fft (app) or fft (standalone).
+# Crystallography engine: works whether imported as tools.fft (app) or fft (standalone).
 try:
     from tools import crystallography as xtal
 except ImportError:  # running from within tools/
@@ -59,7 +59,7 @@ except ImportError:
     ncem_dm = None
     ncem_emd = None
 
-# Optional h5py — needed for Velox/Thermo Fisher .emd files (HDF5 with a Data/Image group),
+# Optional h5py: needed for Velox/Thermo Fisher .emd files (HDF5 with a Data/Image group),
 # which ncempy's Berkeley-EMD reader cannot open.
 try:
     import h5py
@@ -78,7 +78,7 @@ class TEMImage:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# File reading (.dm3 via ncempy; .emd via h5py — handles Velox & Berkeley layouts)
+# File reading (.dm3 via ncempy; .emd via h5py, handling Velox and Berkeley layouts)
 # ═══════════════════════════════════════════════════════════════════════════
 def _extract_pixel_size_nm(meta_str: str) -> float:
     """Pull the pixel size (→ nm) from a Velox JSON metadata string. Velox stores
@@ -387,8 +387,6 @@ def annotated_fft_figure(fft_rgb: np.ndarray, spots: pd.DataFrame,
 # MAIN APP
 # ═══════════════════════════════════════════════════════════════════════════
 def run():
-    st.title("TEM FFT Lattice Analysis — Phase ID & Indexing")
-
     if "last_file_id" not in st.session_state:
         st.session_state.last_file_id = None
 
@@ -426,7 +424,7 @@ def run():
         with manual_scale_container:
             val_to_show = float(tem_img_raw.nm_per_px)
             if val_to_show == 1.0:
-                st.warning("⚠️ Pixel size not found — enter it:")
+                st.warning("Pixel size not found. Enter it below:")
             actual_scale = st.number_input("Pixel size (nm/px)", value=val_to_show,
                                            format="%.5f", min_value=0.0)
             tem_img = TEMImage(tem_img_raw.data, actual_scale, tem_img_raw.filename)
@@ -539,7 +537,7 @@ def run():
             st.metric("Coverage", f"{top.n_matched}/{top.n_spots} spots")
             st.metric("Mean d error", f"{top.mean_rel_err * 100:.1f}%")
             cal = top.scale
-            cal_msg = "scale ≈ 1 ✓" if abs(cal - 1) < 0.03 else "check calibration"
+            cal_msg = "scale ≈ 1, calibration consistent" if abs(cal - 1) < 0.03 else "check calibration"
             st.caption(f"Fit scale {cal:.3f} ({cal_msg}) · SG {top.phase.space_group}")
             st.caption(f"Implied pixel size: {tem_img.nm_per_px * cal:.5f} nm/px")
             st.caption(f"Ref: {top.phase.reference}")

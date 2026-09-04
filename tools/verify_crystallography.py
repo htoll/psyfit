@@ -1,4 +1,4 @@
-"""Headless checks for tools/crystallography.py — run: python tools/verify_crystallography.py"""
+"""Headless checks for tools/crystallography.py. Run: python tools/verify_crystallography.py"""
 from __future__ import annotations
 
 import numpy as np

@@ -141,13 +141,13 @@ def _single_ucnp_brightness_ui(u_data, assume_monomers, default_manual=1e5):
     dfs = [d for d in dfs if isinstance(d, pd.DataFrame) and not d.empty
            and "brightness_integrated" in d.columns]
     if not dfs:
-        st.warning("No UCNP detections available to fit — enter the brightness manually.")
+        st.warning("No UCNP detections available to fit. Enter the brightness manually.")
         return st.number_input(
             "Single UCNP brightness (pps)", min_value=0.0, value=default_manual,
             format="%.2e", key="coloc_single_ucnp_manual_fallback",
         )
 
-    st.markdown("**Single-UCNP brightness (monomer assumption)** — Gaussian fit of isolated UCNP detections.")
+    st.markdown("**Single-UCNP brightness (monomer assumption)**: Gaussian fit of isolated UCNP detections.")
     ctrl_c1, ctrl_c2 = st.columns(2)
     with ctrl_c1:
         min_radius_px = st.number_input(
@@ -169,7 +169,7 @@ def _single_ucnp_brightness_ui(u_data, assume_monomers, default_manual=1e5):
     if not iso_dfs:
         st.warning(
             f"No isolated UCNPs remain after the {min_radius_px:.0f} px separation "
-            "filter — lower the minimum separation, or enter the brightness manually."
+            "filter. Lower the minimum separation, or enter the brightness manually."
         )
         return st.number_input(
             "Single UCNP brightness (pps)", min_value=0.0, value=default_manual,
@@ -202,7 +202,7 @@ def _single_ucnp_brightness_ui(u_data, assume_monomers, default_manual=1e5):
         st.caption(f"Using single-UCNP brightness = {float(mu_u):.3g} pps (monomer assumption).")
         return float(mu_u)
 
-    st.warning("Could not fit a single-UCNP brightness — enter it manually.")
+    st.warning("Could not fit a single-UCNP brightness. Enter it manually.")
     return st.number_input(
         "Single UCNP brightness (pps)", min_value=0.0, value=default_manual,
         format="%.2e", key="coloc_single_ucnp_manual_fallback",
@@ -224,7 +224,7 @@ def _single_dye_brightness_ui(dye_sif_files, default_manual=5e2):
             format="%.2e",
         )
 
-    st.markdown("**Single-dye brightness (WF analysis)** — tune region/threshold for good fits.")
+    st.markdown("**Single-dye brightness (WF analysis)**: tune region/threshold for good fits.")
     wf1, wf2, wf3, wf4 = st.columns(4)
     with wf1:
         wf_region = st.selectbox("Region", options=["1", "2", "3", "4", "all"],
@@ -247,7 +247,7 @@ def _single_dye_brightness_ui(dye_sif_files, default_manual=5e2):
     if (dye_combined is None or dye_combined.empty
             or "brightness_integrated" not in dye_combined.columns):
         st.warning(
-            "No dye PSFs detected in the uploaded images — adjust region / "
+            "No dye PSFs detected in the uploaded images. Adjust region / "
             "threshold / min distance, or enter the brightness manually below."
         )
         return st.number_input(
@@ -275,7 +275,7 @@ def _single_dye_brightness_ui(dye_sif_files, default_manual=5e2):
         st.caption(f"Using single-dye brightness = {float(mu_dye):.3g} pps (from WF analysis).")
         return float(mu_dye)
 
-    st.warning("Could not fit a single-dye brightness — enter it manually.")
+    st.warning("Could not fit a single-dye brightness. Enter it manually.")
     return st.number_input(
         "Single Dye brightness (pps)", min_value=0.0, value=default_manual,
         format="%.2e", key="coloc_single_dye_manual_fallback",
@@ -440,9 +440,9 @@ def _split_ucnp_dye(files: List[Any], ucnp_id="976", dye_id="638") -> Tuple[List
         elif has_dye and not has_ucnp:
             dye.append(f)
         elif has_ucnp and has_dye:
-            st.warning(f"Filename matches both tokens — skipping: {name}")
+            st.warning(f"Filename matches both tokens, skipping: {name}")
         else:
-            st.warning(f"Filename matches neither token — skipping: {name}")
+            st.warning(f"Filename matches neither token, skipping: {name}")
     return ucnp, dye
 
 def _split_ucnp_dye_alternating(files: List[Any], first: str = "UCNP") -> Tuple[List[Any], List[Any]]:
@@ -789,7 +789,7 @@ def run():
                 _overlay_circles(ax_d, d_df[d_mask], color="lime", alpha=0.9, label=False)
 
             # Display Stats text
-            st.markdown(f"**Colocalized:** UCNP {u_h}/{u_t} ({p_u:.1f}%) — Dye {d_h}/{d_t} ({p_d:.1f}%)")
+            st.markdown(f"**Colocalized:** UCNP {u_h}/{u_t} ({p_u:.1f}%) · Dye {d_h}/{d_t} ({p_d:.1f}%)")
 
             # Render the image plots (bbox_inches=None keeps the full canvas so
             # the colorbar doesn't shrink the image relative to the recon panel).
@@ -819,7 +819,7 @@ def run():
                 )
             with cal_c2:
                 dye_sif_files = utils.file_uploader_with_clear(
-                    "Single-dye images (.sif) — optional",
+                    "Single-dye images (.sif), optional",
                     key="coloc_single_dye_uploads", type=["sif"], accept_multiple_files=True,
                     help="Upload single-dye .sif images to measure the single-dye brightness "
                          "via widefield (WF) brightness analysis. Leave empty to enter it manually.",

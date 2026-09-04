@@ -1,9 +1,9 @@
-"""Spectra Saturation Series — how emission spectra evolve with excitation current.
+"""Spectra Saturation Series: how emission spectra evolve with excitation current.
 
 A staged workflow that ties together three existing pieces of the toolkit:
 
-  1. **Extract** — one uploader per *sample*; drag in all of that sample's raw
-     ``.sif`` acquisitions (every field of view at once — duplicate filenames
+  1. **Extract**: one uploader per *sample*; drag in all of that sample's raw
+     ``.sif`` acquisitions (every field of view at once; duplicate filenames
      across FOVs are auto-resolved into FOV replicates). With the spectrometer
      calibration ``.pkl`` pair, run the same localization + spectral-dispersion
      extraction as **Get Spectra** (``remove overlapping spectra`` on by default).
@@ -11,18 +11,18 @@ A staged workflow that ties together three existing pieces of the toolkit:
      (``brightness_integrated`` from the same fit), so brightness and spectrum
      come from one pass.
 
-  2. **Group & process** — pool every particle of the same *(condition, current)*
+  2. **Group and process**: pool every particle of the same *(condition, current)*
      across the three fields of view, then curate them like **Process Spectra**:
      click / box to exclude bad traces, baseline-correct, and read the pooled
      average plus the group's localization brightness.
 
-  3. **Plot** — for each condition, overlay the averaged spectrum at every current
+  3. **Plot**: for each condition, overlay the averaged spectrum at every current
      (colored along a current gradient) with normalization options, so you can
      see how increasing excitation reshapes the spectrum. Current is mapped to
      **power density** (W/cm²) via the lab's 60× calibration (coefficients
      editable), enabling brightness- and region-vs-power-density curves.
 
-The suffix of each ``.sif`` (``…_7.sif`` → 7) is mapped to a laser current through
+The suffix of each ``.sif`` (``..._7.sif`` -> 7) is mapped to a laser current through
 an editable table that can be seeded from / saved to a plain-text map file.
 
 Heavy extraction runs only on an explicit button press and its result is cached in
@@ -78,7 +78,7 @@ from tools.process_spectra import (
 )
 
 # Register Crameri colormaps (perceptually uniform, colour-blind safe, well
-# separated) with matplotlib as ``cmc.*``. Optional — fall back to matplotlib's
+# separated) with matplotlib as ``cmc.*``. Optional; falls back to matplotlib's
 # own sequential maps if the package isn't installed.
 try:
     import cmcrameri.cm as _cmc  # noqa: F401  (import registers the colormaps)
@@ -128,7 +128,7 @@ def current_to_power_density(current_ma, slope=PD_SLOPE_DEFAULT,
 
     ``slope``/``intercept`` are the linear power-vs-current fit (mW); ``sigma`` is
     the beam sigma (mm) before the objective. Returns W/cm². Vectorized over
-    ``current_ma``. Sub-threshold currents can yield a negative modeled power —
+    ``current_ma``. Sub-threshold currents can yield a negative modeled power,
     the caller decides whether to clip (we clip to 0 for display).
     """
     current_ma = np.asarray(current_ma, dtype=float)
@@ -159,7 +159,7 @@ class _MemFile:
 
 
 def _suffix_of(name):
-    """Trailing acquisition index of a ``.sif`` filename (``…_7.sif`` → 7), or None."""
+    """Trailing acquisition index of a ``.sif`` filename (``..._7.sif`` -> 7), or None."""
     m = SUFFIX_RE.search(name)
     return int(m.group(1)) if m else None
 
@@ -174,7 +174,7 @@ def _scan_folder(folder):
     """Recursively find ``.sif`` files under ``folder``.
 
     Returns a sorted list of ``(path, fov)`` where ``fov`` is derived from the
-    file's immediate parent-directory name (so ``…/li40_fov2/…_7.sif`` → FOV 2).
+    file's immediate parent-directory name (so ``.../li40_fov2/..._7.sif`` is FOV 2).
     Files sitting directly in ``folder`` get ``fov=None`` (resolved by occurrence
     order at extraction). The path itself is used to read bytes lazily."""
     out = []
@@ -210,7 +210,7 @@ def _categorical_color(i):
 # Plotly dash styles cycled per integration region (color stays per sample).
 DASH_CYCLE = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"]
 
-# Fixed plot size giving a ~1:2 (height:width) aspect — rendered with
+# Fixed plot size giving a ~1:2 (height:width) aspect, rendered with
 # use_container_width=False so charts don't stretch to the full (wide) column.
 PLOT_W = 780
 PLOT_H = 390
@@ -274,7 +274,7 @@ def _current_map_editor():
     is driven by a simple "number of currents" input, not by scanning uploads.
     Returns ``{suffix:int -> current:float}``.
     """
-    st.caption("Map each acquisition suffix (`…_<n>.sif`) to its laser current (mA).")
+    st.caption("Map each acquisition suffix (`..._<n>.sif`) to its laser current (mA).")
 
     n = st.number_input("Number of currents (suffixes)", min_value=1, max_value=99,
                         value=DEFAULT_N_SUFFIX, step=1, key="sss_map_n")
@@ -327,11 +327,11 @@ def _sample_manager(mode):
     """One entry per **sample** (condition). ``mode`` is ``"folder"`` or
     ``"upload"``.
 
-    * **folder** — point the sample at a parent folder; every ``.sif`` under it
+    * **folder**: point the sample at a parent folder; every ``.sif`` under it
       (walking ``fov1/fov2/fov3`` subfolders) is used, with FOV taken from the
       subfolder name. This is how the raw acquisitions are already organized on
       disk, so it handles "multiple folders" in one shot. Local runs only.
-    * **upload** — drag in the sample's SIFs (FOV resolved by repeated filename).
+    * **upload**: drag in the sample's SIFs (FOV resolved by repeated filename).
 
     Returns a list of ``{"sid", "name", "mode", "folder", "files"}``.
     """
@@ -339,10 +339,10 @@ def _sample_manager(mode):
     ids = st.session_state.sss_sample_ids
 
     c1, c2 = st.columns(2)
-    if c1.button("➕ Add sample", key="sss_add_sample"):
+    if c1.button("Add sample", key="sss_add_sample"):
         ids.append((max(ids) + 1) if ids else 0)
         st.rerun()
-    if c2.button("➖ Remove last sample", key="sss_rm_sample", disabled=len(ids) <= 1):
+    if c2.button("Remove last sample", key="sss_rm_sample", disabled=len(ids) <= 1):
         ids.pop()
         st.rerun()
 
@@ -355,7 +355,7 @@ def _sample_manager(mode):
                 folder = st.text_input(
                     "Sample folder (contains the fov1/fov2/fov3 subfolders)",
                     key=f"sss_sfolder_{sid}",
-                    placeholder=r"G:\Shared drives\…\ITA01_097L_Er02Yb05_Li0satseries",
+                    placeholder=r"G:\folder\path",
                     help="Every .sif under this folder is used; FOV comes from the "
                          "subfolder name.",
                 ).strip().strip('"')
@@ -364,7 +364,7 @@ def _sample_manager(mode):
                 if folder and os.path.isdir(folder):
                     found = _scan_folder(folder)
                     fovs = sorted({f for _p, f in found if f is not None})
-                    st.caption(f"✓ {len(found)} SIF(s) found · "
+                    st.caption(f"{len(found)} SIF(s) found · "
                                f"FOV subfolders: {fovs or 'none (flat)'}")
                 elif folder:
                     st.error("Folder not found on this machine.")
@@ -372,7 +372,7 @@ def _sample_manager(mode):
             else:
                 default_name = ""
                 files = st.file_uploader(
-                    "All SIFs for this sample (every FOV — drag them all in; "
+                    "All SIFs for this sample (every FOV; drag them all in, "
                     "identical names across FOVs are fine)",
                     type=["sif"], accept_multiple_files=True,
                     key=f"sss_sfiles_{sid}",
@@ -383,7 +383,7 @@ def _sample_manager(mode):
                 st.session_state[skey] = default_name  # seed before widget creation
             name = st.text_input(
                 "Sample / condition name", key=skey,
-                placeholder="e.g. Li0 / Li20 / Li40",
+                placeholder="Condition",
                 help="Pooled across all its fields of view.",
             )
             samples.append({"sid": sid, "name": (name or "").strip(),
@@ -396,7 +396,7 @@ def _extract_sample(sample, calibration, calib_fits, illum, params):
     """Localize + extract every particle's spectrum for one **sample**.
 
     All of the sample's FOVs are uploaded into one bucket; duplicate filenames
-    (the same ``…_7.sif`` in fov1/fov2/fov3) are the FOV replicates. We uniquify
+    (the same ``..._7.sif`` in fov1/fov2/fov3) are the FOV replicates. We uniquify
     each file's name for the temp-file/dict plumbing and derive the FOV number
     from the k-th occurrence of a given original name. Each surviving particle
     carries its localization-channel brightness from the same fit.
@@ -495,14 +495,14 @@ def _run_extraction(samples, cal_file, fit_file, params):
     illum = _illumination_field(calibration)
 
     particles, diag = [], []
-    prog = st.progress(0.0, text="Extracting spectra…")
+    prog = st.progress(0.0, text="Extracting spectra...")
     n = max(len(samples), 1)
     for k, sample in enumerate(samples):
         has_input = bool(sample["files"]) or (
             sample["mode"] == "folder" and os.path.isdir(sample.get("folder", "")))
         if not has_input:
             continue
-        prog.progress(k / n, text=f"Extracting {sample['name'] or 'unnamed'}…")
+        prog.progress(k / n, text=f"Extracting {sample['name'] or 'unnamed'}...")
         out, sdiag = _extract_sample(sample, calibration, calib_fits, illum, params)
         particles.extend(out)
         diag.extend(sdiag)
@@ -674,7 +674,7 @@ def _render_group(group_key, particles, method, rng, baseline, base_color, volum
     c_cap, c_btn = st.columns([4, 1])
     with c_cap:
         st.caption(f"{len(specs)} particles · {len(included)} included · "
-                   f"{n_excl} excluded — click a trace or drag a box to **exclude**.")
+                   f"{n_excl} excluded. Click a trace or drag a box to **exclude**.")
     with c_btn:
         if st.button("Clear", key=f"sss_clear_{group_key}", disabled=not excluded):
             excluded.clear()
@@ -717,7 +717,7 @@ def _render_group(group_key, particles, method, rng, baseline, base_color, volum
             f"mean {arr.mean():.3g} · median {np.median(arr):.3g} pps"
         )
 
-    with st.expander(f"Excluded ({len(excluded)}) — click to re-include"):
+    with st.expander(f"Excluded ({len(excluded)}), click to re-include"):
         if excluded:
             for k in sorted(excluded):
                 if st.button(f"↩ {k}", key=f"sss_reinc_{group_key}_{k}"):
@@ -749,7 +749,7 @@ def _reff_sidebar():
         rk = f"sss_reff_{c}"
         if rk not in st.session_state:      # seed before widget creation
             st.session_state[rk] = st.session_state.sss_reff_store.get(c, 10.0)
-        r = st.number_input(f"r_eff — {c} (nm)", min_value=0.0, step=0.5, key=rk,
+        r = st.number_input(f"r_eff · {c} (nm)", min_value=0.0, step=0.5, key=rk,
                             help="Effective spherical radius for this sample.")
         st.session_state.sss_reff_store[c] = r
         volumes[c] = (4.0 / 3.0) * np.pi * r ** 3 if r > 0 else None
@@ -783,10 +783,10 @@ def _sidebar_settings():
             if cal_err:
                 st.error(cal_err)
             elif cal_file and fit_file:
-                st.caption(f"✓ {cal_file.name} · {fit_file.name}")
+                st.caption(f"{cal_file.name} · {fit_file.name}")
 
         st.divider()
-        st.header("Suffix → current")
+        st.header("Suffix to current")
         current_map = _current_map_editor()
 
         st.divider()
@@ -833,14 +833,14 @@ def _stage_extract(mode, cal_file, fit_file, params):
     st.subheader("1 · Add samples & extract")
     if mode == "folder":
         st.caption(
-            "One box per **sample** — point it at the sample's folder (the one "
+            "One box per **sample**: point it at the sample's folder (the one "
             "holding its `fov1/fov2/fov3` subfolders). Every SIF underneath is "
             "used and FOVs are pooled automatically. Upload the calibration and "
             "set the suffix→current map in the sidebar."
         )
     else:
         st.caption(
-            "One box per **sample** — drag in *all* of that sample's SIFs (every "
+            "One box per **sample**: drag in *all* of that sample's SIFs (every "
             "field of view together). Set the calibration and suffix→current map "
             "in the sidebar. FOVs are pooled automatically."
         )
@@ -853,7 +853,7 @@ def _stage_extract(mode, cal_file, fit_file, params):
     unmapped = sorted(present - set(params["current_map"]))
     if unmapped:
         st.warning(f"Suffixes present in the SIFs but not mapped to a current "
-                   f"(skipped later): {unmapped} — add them in the sidebar map.")
+                   f"(skipped later): {unmapped}. Add them in the sidebar map.")
 
     n_files = sum(len(v) for v in sample_names.values())
     ready = n_files > 0 and cal_file is not None and fit_file is not None
@@ -863,7 +863,7 @@ def _stage_extract(mode, cal_file, fit_file, params):
         st.info(f"To enable extraction: {need} **and** upload both calibration "
                 f"`.pkl` files (sidebar).")
 
-    if st.button("🔬 Extract spectra", type="primary", disabled=not ready):
+    if st.button("Extract spectra", type="primary", disabled=not ready):
         _run_extraction(samples, cal_file, fit_file, params)
 
     parts = st.session_state.get("sss_particles")
@@ -897,20 +897,20 @@ def _stage_extract(mode, cal_file, fit_file, params):
         dd = pd.DataFrame(diag)
         tot = dd[["localized", "after_filter", "extracted", "spec_failed"]].sum()
         st.caption(
-            f"Totals — localized {int(tot['localized'])} · after filters "
+            f"Totals: localized {int(tot['localized'])} · after filters "
             f"{int(tot['after_filter'])} · extracted {int(tot['extracted'])} · "
             f"spectrum-fit failures {int(tot['spec_failed'])}."
         )
         if tot["localized"] == 0:
-            st.warning("No particles were **localized** in any file — try lowering "
+            st.warning("No particles were **localized** in any file. Try lowering "
                        "the detection Threshold (sidebar) or check the Signal type.")
         elif tot["after_filter"] == 0:
-            st.warning("Particles were localized but **all removed by filters** — "
+            st.warning("Particles were localized but **all removed by filters**. "
                        "try turning off *Remove overlapping spectra* or lowering "
                        "*Left-edge cutoff* / *Min brightness* (sidebar → Detection).")
         elif tot["extracted"] == 0:
             st.warning("Particles survived filtering but **every spectrum extraction "
-                       "failed** — usually a calibration mismatch (wrong "
+                       "failed**, usually a calibration mismatch (wrong "
                        "saving_info/fits pair).")
         with st.expander("Per-file extraction diagnostics", expanded=not parts):
             st.dataframe(dd, use_container_width=True, hide_index=True)
@@ -936,7 +936,7 @@ def _stage_process():
 
     groups = _grouped_particles(particles)
     if not groups:
-        st.warning("No particles have a mapped current — set the suffix→current "
+        st.warning("No particles have a mapped current. Set the suffix-to-current "
                    "map and re-extract.")
         return
 
@@ -950,10 +950,10 @@ def _stage_process():
         tiers = _tier_filter_control("proc")
     volume_norm = method == NORM_VOLUME
     volumes = st.session_state.get("sss_volumes", {})
-    st.caption("**Processing** — " + _processing_summary(method, baseline, volume_norm, rng)
+    st.caption("**Processing:** " + _processing_summary(method, baseline, volume_norm, rng)
                + f" · tiers: {', '.join(t for t in ILLUM_TIER_LABELS if t in tiers)}")
     if volume_norm and not any(volumes.values()):
-        st.warning("Volume normalization selected but no r_eff set — enter r_eff "
+        st.warning("Volume normalization selected but no r_eff set. Enter r_eff "
                    "per sample in the sidebar (**Volume normalization**).")
 
     conditions = sorted(groups)
@@ -969,7 +969,7 @@ def _stage_process():
         n_hidden = len(cond_groups[current]) - len(parts)
         note = f" · {n_hidden} hidden by tier filter" if n_hidden else ""
         st.markdown(f"#### {condition} · {current:g} mA "
-                    f"(≈ {max(pd_val, 0.0):.1f} W/cm²){reff_txt} — "
+                    f"(≈ {max(pd_val, 0.0):.1f} W/cm²){reff_txt} · "
                     f"{len(parts)} particles{note}")
         if not parts:
             st.caption("No particles in the selected illumination tiers.")
@@ -1013,10 +1013,10 @@ def _stage_plot():
                                     "evolution plot so they're directly comparable.")
     volume_norm = method == NORM_VOLUME
     volumes = st.session_state.get("sss_volumes", {})
-    st.caption("**Processing** — " + _processing_summary(method, baseline, volume_norm, rng)
+    st.caption("**Processing:** " + _processing_summary(method, baseline, volume_norm, rng)
                + f" · tiers: {', '.join(t for t in ILLUM_TIER_LABELS if t in tiers)}")
     if volume_norm and not any(volumes.values()):
-        st.warning("Volume normalization selected but no r_eff set — enter r_eff "
+        st.warning("Volume normalization selected but no r_eff set. Enter r_eff "
                    "per sample in the sidebar (**Volume normalization**).")
 
     excluded = st.session_state.get("sss_excluded", {})
@@ -1043,7 +1043,7 @@ def _stage_plot():
             evolution[condition] = rows
 
     if not evolution:
-        st.warning("Every spectrum is excluded — nothing to plot.")
+        st.warning("Every spectrum is excluded, nothing to plot.")
         return
 
     # Equal-distance colors: space by the *index* of each current in the global
@@ -1086,7 +1086,7 @@ def _stage_plot():
                 hovertemplate=f"{label}<br>%{{x:.1f}} nm, %{{y:.3g}}<extra></extra>",
             ))
         fig.update_layout(
-            title=f"{condition} — spectrum vs excitation current{reff_txt}",
+            title=f"{condition}: spectrum vs excitation current{reff_txt}",
             xaxis_title="Wavelength (nm)", yaxis_title=_y_axis_label(method, volume_norm),
             width=PLOT_W, height=PLOT_H, margin=dict(l=70, r=10, t=40, b=50),
             legend=dict(title="Current"),
@@ -1097,7 +1097,7 @@ def _stage_plot():
                         key=f"sss_evo_{condition}")
 
         # Per-sample wide CSV: shared wavelength grid + one averaged column per
-        # current — exactly the figure above, ready to re-plot elsewhere. The
+        # current, exactly the figure above, ready to re-plot elsewhere. The
         # r_eff used is recorded (column + filename) when volume-normalized.
         lo = min(float(g.min()) for (_c, g, _m, _n, _b) in rows)
         hi = max(float(g.max()) for (_c, g, _m, _n, _b) in rows)

@@ -103,7 +103,7 @@ def run():
     image_data_cps = None
 
     with st.sidebar:
-        st.header("Analyze SIF Files")
+        st.header("Inputs")
         uploaded_files = file_uploader_with_clear("Upload .sif file", key="wf_uploads", type=["sif"], accept_multiple_files=True)
         threshold = st.number_input("Threshold", min_value=0, value=10, help='''
         Stringency of fit, higher value is more selective:
@@ -138,8 +138,11 @@ def run():
         )
         mcl_toggle = st.toggle("All channel MCL brightness", help="Overrides region to 'all' and splits analysis by quadrant.")
 
-    if st.button("Analyze"):
+    if st.button("Analyze", disabled=not uploaded_files):
         st.session_state.analyze_clicked = True
+
+    if not uploaded_files:
+        st.info("Upload one or more .sif files in the sidebar, then press Analyze.")
 
     if mcl_toggle:
         region = "all"

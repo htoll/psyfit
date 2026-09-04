@@ -176,8 +176,6 @@ def get_norm(img_array, min_pct, max_pct, log_scale):
         return Normalize(vmin=vmin, vmax=vmax)
 
 def run():
-    st.header("Confocal Visualization & Merge Tool")
-    
     with st.sidebar:
         st.subheader("Data Import")
         uploaded_files = file_uploader_with_clear("Upload .tif or .dat files", key="confviz_uploads", type=["tif", "tiff", "dat"], accept_multiple_files=True)

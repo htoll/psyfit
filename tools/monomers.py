@@ -66,14 +66,14 @@ import numpy as np
 # so a field of footprint A_fov (the illuminated field-stop area) counts every
 # particle in the volume A_fov · h, where h is the solution column height
 # (loaded volume ÷ well cross-sectional area). The well diameter cancels out of
-# the final conversion — only the FOV footprint and column height matter:
+# the final conversion; only the FOV footprint and column height matter:
 #
 #     C_imaged = ppv / (N_A · A_fov · h)          (imaged droplet)
 #     C_stock  = C_imaged · dilution
 #
 # i.e. the per-particle conversion is 1 / (N_A · A_fov · h): the reciprocal of
 # the volume of solution sitting directly above one FOV footprint (in moles).
-# No calibration slope and no baked-in dilution — all dilution is supplied by
+# No calibration slope and no baked-in dilution; all dilution is supplied by
 # the caller.
 N_AVOGADRO = 6.022e23                     # mol⁻¹
 WELL_DIAMETER_UM = 3000.0                 # PDMS well diameter (3 mm)
@@ -93,7 +93,7 @@ def column_height_um(loaded_volume_ul=LOADED_VOLUME_UL,
 
 
 def _format_molarity(molar: float) -> str:
-    """Format a molar concentration with a common SI prefix (M, mM, µM, nM…)."""
+    """Format a molar concentration with a common SI prefix (M, mM, µM, nM)."""
     if not np.isfinite(molar) or molar <= 0:
         return "0 M"
     prefixes = [
@@ -201,7 +201,7 @@ def estimate_concentration(ppv, dilution, area_um2,
         C_stock  = C_imaged · dilution
 
     `area_um2` is A_fov, the illuminated field-stop (aperture) area of the
-    imaged field — the true counting footprint, which differs between
+    imaged field, the true counting footprint, which differs between
     microscopes (MCL 60× vs Nikon 100×). The well diameter cancels from the
     conversion and enters only through the column height h; all dilution is
     supplied by the caller (nothing is baked into a calibration slope).
@@ -247,7 +247,7 @@ def fit_aperture_circle(image, pix_size_um=None, min_diameter_um=20.0):
     The aperture may be partially occluded (e.g. clipped on the left), so a
     plain area-equivalent radius (√(area/π)) and centroid are biased. Instead we
     fit a circle by least squares to the *arc* of the illuminated boundary, with
-    iterative outlier rejection to shed the straight occlusion edge — giving an
+    iterative outlier rejection to shed the straight occlusion edge, giving an
     accurate center/radius for the overlay. `area_px` remains the actual
     illuminated pixel count (the true counting area for concentration).
 
@@ -343,7 +343,7 @@ def aperture_or_inscribed(image, region, pix_size_um, min_diameter_um=20.0):
     """
     Aperture dict for `image`: the fitted circular field stop, or a circle
     inscribed in the region if the fit fails. Returns None for the 'custom' and
-    'all' regions (no single circular aperture — 'all' is a 4-channel frame) or
+    'all' regions (no single circular aperture, since 'all' is a 4-channel frame) or
     when no image is available.
     """
     if (image is None or getattr(image, "ndim", 0) < 2
@@ -370,7 +370,7 @@ def aperture_area_um2(image, region, pix_size_um):
     ap = aperture_or_inscribed(image, region, pix_size_um)
     if ap is not None:
         return float(ap["area_px"]) * float(pix_size_um) ** 2
-    # 'custom' / 'all' region: no circular aperture — count over the full crop.
+    # 'custom' / 'all' region: no circular aperture, so count over the full crop.
     h, w = image.shape[:2]
     return float(h) * float(w) * float(pix_size_um) ** 2
 
@@ -434,7 +434,7 @@ def build_summary_image(image, df, *, pix_size_um, cmap, normalization,
             ax.legend(handles=legend_elements, loc='upper right', fontsize=6,
                       frameon=False, labelcolor='white')
 
-    # Annotation block (top-left) — concentration first.
+    # Annotation block (top-left), concentration first.
     if annotation_lines:
         ax.text(0.03, 0.97, "\n".join(annotation_lines), transform=ax.transAxes,
                 color='white', fontsize=10.5, va='top', ha='left', linespacing=1.3,
@@ -777,14 +777,14 @@ def run():
                     bits.append(f"{detected['objective_mag']}×")
                 if detected.get("dilution"):
                     bits.append(f"dilution {_sci_compact(detected['dilution'])}")
-                st.caption("🔍 Detected: " + " · ".join(bits) if bits
-                           else "🔍 No dilution/magnification found in filename.")
+                st.caption("Detected: " + " · ".join(bits) if bits
+                           else "No dilution/magnification found in filename.")
 
             microscope = st.selectbox(
                 "Microscope",
                 options=["MCL", "Nikon "],
                 help="Microscope used to acquire the images. MCL is a 60× "
-                     "scope, Nikon a 100× scope — the choice sets the objective "
+                     "scope, Nikon a 100× scope; the choice sets the objective "
                      "magnification and pixel size below, and therefore the "
                      "field of view used for the concentration estimate.",
                 key="mono_microscope",
@@ -914,14 +914,14 @@ def run():
                      "closest to the average, annotated with Avg PPV ± SD and dilution.",
             )
             if gen_summary:
-                st.checkbox("• include % monomers", key="mono_summ_monomer")
-                st.checkbox("• include PSF fits", key="mono_summ_psf")
-                st.checkbox("• include brightness fits", key="mono_summ_bright")
+                st.checkbox("- include % monomers", key="mono_summ_monomer")
+                st.checkbox("- include PSF fits", key="mono_summ_psf")
+                st.checkbox("- include brightness fits", key="mono_summ_bright")
 
             # Process automatically. _process_files_cached is @st.cache_data keyed on
             # (saved_records, region, threshold, signal, pix_size_um), so tuning any of
             # these re-runs analysis, while display-only params (cmap, bins, brightness
-            # range…) hit the cache and re-render instantly — no "Process" button needed.
+            # range) hit the cache and re-render instantly, so no "Process" button is needed.
             saved_records = tuple(normalized_records)
             # Custom ROI (drawn in the main panel on a prior rerun) overrides the
             # region. If enabled but not yet drawn, hold off until it exists.
@@ -930,7 +930,7 @@ def run():
             if use_custom_roi and custom_roi is None:
                 st.session_state.processed = None
             else:
-                with st.spinner("Processing…"):
+                with st.spinner("Processing..."):
                     processed_data, combined_df = _process_files_cached(
                         saved_records,
                         region=region,
@@ -966,6 +966,9 @@ def run():
                 st.info("Draw a rectangle above to run the analysis inside it.")
 
     # DISPLAY
+    if not st.session_state.get("processed"):
+        st.info("Upload one or more .sif files in the sidebar to begin.")
+
     if st.session_state.get("processed"):
         processed_data, combined_df = st.session_state.processed
         roi_tool.stamp_roi(combined_df, active_roi)
@@ -1228,7 +1231,7 @@ def run():
                                 f"(SEM, n={n_fields} fields, CV={cv:.0%})"
                             )
                         else:
-                            st.caption("Single field — no error estimate (need ≥2 files).")
+                            st.caption("Single field, no error estimate (need at least 2 files).")
                         reported_ppv = est["ppv"] * dilution
                         st.metric("Avg particles / view (× dilution)",
                                   f"{reported_ppv:.3g} ppv")
@@ -1289,7 +1292,7 @@ def run():
                 dilution = st.session_state.get("dilution")
                 microscope = st.session_state.get("microscope", "MCL")
 
-                # Build annotation lines — estimated concentration first (always).
+                # Build annotation lines, estimated concentration first (always).
                 ann = []
                 dil_for_ppv = dilution if dilution is not None else 1.0
                 if dilution is not None and mean_count:
@@ -1345,7 +1348,7 @@ def run():
                         buf = io.BytesIO()
                         fig_summ.savefig(buf, format="png", dpi=800, bbox_inches="tight")
                         mime, ext = "image/png", "png"
-                        st.caption("TIFF unavailable (Pillow missing?) — exported PNG instead.")
+                        st.caption("TIFF unavailable (Pillow missing?), exported PNG instead.")
                     plt.close(fig_summ)
                     buf.seek(0)
                     st.download_button(
