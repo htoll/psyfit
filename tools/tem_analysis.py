@@ -481,17 +481,20 @@ def _watershed_labels(binary_mask: np.ndarray, min_peak_px: int) -> np.ndarray:
     markers, _ = label(mask)
     return watershed(-distance, markers, mask=binary_mask)
 
+# Every per-particle measurement the segmentation can produce. Single source of truth for the
+# measurement dict below and for the combined CSV export, which uses it to tell measurement
+# arrays apart from the other arrays carried in a result dict (image data, labels, overlays).
+_MEASUREMENT_KEYS = ("diameters", "hex_widths", "hex_heights", "hex_rect_widths",
+                     "side_lengths", "oct_major", "oct_minor",
+                     "tic_tac_major", "tic_tac_width", "tic_tac_body_length", "tic_tac_cap_depth")
+
 def _measure_labels(
     labels_ws: np.ndarray, shape_type: str, min_size_value: float, sf: float,
     img_h: int, img_w: int,
 ) -> Tuple[Dict[str, list], list, List[Dict[str, Any]]]:
     """Classify and measure every watershed region, returning
     ``(measurements, draw_shapes, objects)``. ``sf`` scales pixels into the reported unit."""
-    measurements = {
-        "diameters": [], "hex_widths": [], "hex_heights": [], "hex_rect_widths": [],
-        "side_lengths": [], "oct_major": [], "oct_minor": [],
-        "tic_tac_major": [], "tic_tac_width": [], "tic_tac_body_length": [], "tic_tac_cap_depth": []
-    }
+    measurements = {k: [] for k in _MEASUREMENT_KEYS}
     draw_shapes = []
     objects: List[Dict[str, Any]] = []   # per-shape centroid + measured dims (for FOV-crop scoring)
 
@@ -819,14 +822,15 @@ def _common_prefix(names: List[str]) -> str:
         if any(name[i] != ch for name in names): return shortest[:i].rstrip(" _-.") or "analysis"
     return shortest.rstrip(" _-.") or "analysis"
 
-def _download_row(fig: plt.Figure, df: pd.DataFrame, stem: str) -> None:
-    c1, c2 = st.columns(2)
-    with c1:
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", dpi=300)
-        st.download_button("Download PNG", buf.getvalue(), f"{stem}.png", "image/png")
-    with c2:
-        st.download_button("Download CSV", df.to_csv(index=False), f"{stem}.csv", "text/csv")
+def _download_row(fig: plt.Figure, stem: str) -> None:
+    """PNG download for a single histogram. There is deliberately no per-dimension CSV here —
+    every measurement and every fit parameter in the run goes into the one combined export
+    offered by ``analysis_csv_download_ui``, so the numbers can't get separated from the
+    parameters that produced them."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=300)
+    st.download_button("Download PNG", buf.getvalue(), f"{stem}.png", "image/png",
+                       key=f"png_{stem}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2135,13 +2139,157 @@ def _select_tem_for_summary(results: Optional[list], key: str) -> Optional[dict]
     return {"data": r["data"], "nm_per_px": float(r.get("nm_per_px", float("nan"))),
             "name": sel, "objects": r.get("objects", [])}
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Combined data export
+# ═══════════════════════════════════════════════════════════════════════════
+# Most GMM fits here use 2 components; 3 columns' worth leaves headroom without bloating the file.
+EXPORT_MAX_COMPONENTS = 3
+
+def _export_fit_columns(spec: dict) -> Dict[str, Any]:
+    """Fit description for one histogram spec: range, sample sizes, method, and each Gaussian
+    component's μ/σ/weight plus any range constraint applied to it.
+
+    The fit is recomputed with the same ``_fit_gaussians`` call the plotted histogram made, on
+    the same cropped values. That call is deterministic (the GaussianMixture uses a fixed seed),
+    so the exported μ/σ are exactly the ones drawn on the figure rather than a second estimate.
+    """
+    vals = np.asarray(spec.get("values", []), dtype=float)
+    fit_min, fit_max = spec.get("fit_min"), spec.get("fit_max")
+    cropped = (vals[(vals >= fit_min) & (vals <= fit_max)]
+               if fit_min is not None and fit_max is not None and fit_max > fit_min else vals)
+    n_comp = int(spec.get("n_components", 1) or 1)
+    mu_ranges = spec.get("mu_ranges")
+    mus, stds, weights, method = _fit_gaussians(cropped, n_comp, mu_ranges)
+    cols: Dict[str, Any] = {
+        "dimension": spec.get("title", ""),
+        "fit_min": fit_min, "fit_max": fit_max,
+        "dim_n_measured": int(vals.size), "dim_n_in_fit_range": int(cropped.size),
+        "dim_mean": float(np.mean(cropped)) if cropped.size else float("nan"),
+        "dim_sd": float(np.std(cropped)) if cropped.size else float("nan"),
+        # "" from _fit_gaussians means the sample was too small to fit at all.
+        "fit_method": method or "not fitted (sample too small)",
+        "fit_n_components": n_comp,
+        "fit_mu_range_constrained": bool(mu_ranges),
+    }
+    for i in range(EXPORT_MAX_COMPONENTS):
+        cols[f"fit_mu_{i+1}"] = float(mus[i]) if i < len(mus) else float("nan")
+        cols[f"fit_sigma_{i+1}"] = float(stds[i]) if i < len(stds) else float("nan")
+        cols[f"fit_weight_{i+1}"] = float(weights[i]) if i < len(weights) else float("nan")
+        lo, hi = mu_ranges[i] if (mu_ranges and i < len(mu_ranges)) else (float("nan"), float("nan"))
+        cols[f"fit_mu_range_{i+1}_min"] = lo
+        cols[f"fit_mu_range_{i+1}_max"] = hi
+    return cols
+
+def build_analysis_dataframe(
+    shape_type: str, hist_specs: List[dict], geom: Dict[str, float], unit: str, notes: str,
+    results: Optional[list], params: Optional[dict], derived: Dict[str, float],
+) -> pd.DataFrame:
+    """Every measurement in the run as one tidy table: one row per measured particle-dimension.
+
+    Values that describe the whole run — segmentation parameters, the fitted geometry, derived
+    r_eff/area/volume, the caveat notes — are repeated on every row rather than split into a
+    separate header block, so the file stays a plain rectangular CSV that opens in Excel and
+    pivots directly in pandas with no header parsing. Each row therefore carries the parameters
+    and the fit that produced it, which is the point: a size can't be read out of this file
+    without the thresholding settings that generated it.
+
+    Measurement keys present in ``results`` but not covered by any histogram are still exported,
+    flagged as not fitted — so the file is the complete record of the run, not just the plotted
+    subset.
+    """
+    base: Dict[str, Any] = {"shape_type": shape_type, "unit": unit,
+                            "exported": pd.Timestamp.now().isoformat(timespec="seconds")}
+    if params:
+        for name in ("smoothing_sigma", "contrast_clip", "thresh_offset",
+                     "min_peak_distance", "min_feature"):
+            base[f"seg_{name}"] = params.get(name)
+    for k, v in (geom or {}).items():
+        base[f"geom_{k}"] = v
+    base.update(derived or {})
+    base["notes"] = notes or ""
+
+    res = results or []
+    nmpp = {r["name"]: r.get("nm_per_px", float("nan")) for r in res}
+    rows: List[Dict[str, Any]] = []
+    covered: set = set()
+
+    def _emit(key: str, fit_cols: Dict[str, Any]) -> None:
+        fit_min, fit_max = fit_cols.get("fit_min"), fit_cols.get("fit_max")
+        ranged = fit_min is not None and fit_max is not None and fit_max > fit_min
+        for r in res:
+            for v in np.asarray(r.get(key, []), dtype=float):
+                rows.append({**base, **fit_cols, "file": r["name"], "measurement_key": key,
+                             "value": float(v), "nm_per_px": nmpp.get(r["name"], float("nan")),
+                             "in_fit_range": bool(not ranged or fit_min <= v <= fit_max)})
+
+    for spec in hist_specs or []:
+        fit_cols = _export_fit_columns(spec)
+        for key in spec.get("keys") or []:
+            covered.add(key)
+            _emit(key, fit_cols)
+
+    # Anything measured but never plotted (e.g. rectangle short axes when the width came from
+    # face-on hexagons) still belongs in a complete export.
+    leftover = {k for r in res for k, v in r.items()
+                if isinstance(v, np.ndarray) and v.ndim == 1 and v.size and k not in covered
+                and k in _MEASUREMENT_KEYS}
+    for key in sorted(leftover):
+        _emit(key, {"dimension": f"{key} (not plotted)", "fit_min": None, "fit_max": None,
+                    "dim_n_measured": int(sum(len(r.get(key, [])) for r in res)),
+                    "dim_n_in_fit_range": 0, "dim_mean": float("nan"), "dim_sd": float("nan"),
+                    "fit_method": "not fitted (not plotted)", "fit_n_components": 0,
+                    "fit_mu_range_constrained": False})
+
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    lead = ["file", "shape_type", "dimension", "measurement_key", "value", "unit", "in_fit_range"]
+    return df[[c for c in lead if c in df.columns]
+              + [c for c in df.columns if c not in lead]]
+
+def analysis_csv_download_ui(
+    shape_type: str, hist_specs: List[dict], geom: Dict[str, float], reff: float, reff_sd: float,
+    area: float, area_sd: float, unit: str, prefix: str, notes: str, results: Optional[list],
+) -> None:
+    """One download with all measurements, fit parameters and run metadata."""
+    volume = (4.0 / 3.0) * np.pi * reff ** 3 if np.isfinite(reff) else float("nan")
+    derived = {"r_eff": reff, "r_eff_sd": reff_sd, "surface_area": area,
+               "surface_area_sd": area_sd, "volume_from_r_eff": volume}
+    df = build_analysis_dataframe(shape_type, hist_specs, geom, unit, notes, results,
+                                  st.session_state.get("run_params"), derived)
+    if df.empty:
+        st.caption("No measurements to export yet.")
+        return
+    n_files = df["file"].nunique()
+    st.download_button(
+        f"⬇️ Download all data + fit parameters (CSV — {len(df)} measurements, "
+        f"{df['measurement_key'].nunique()} dimension(s), {n_files} image(s))",
+        df.to_csv(index=False),
+        f"{prefix}_{shape_type.replace(' ', '_').lower()}_all_data.csv",
+        "text/csv", key=f"allcsv_{shape_type}",
+    )
+    with st.expander("What's in the export", expanded=False):
+        st.caption(
+            "One row per measured particle-dimension. Every row also carries the segmentation "
+            "parameters (`seg_*`), the fit that dimension received (`fit_*`, including each GMM "
+            "component's μ/σ/weight and whether its mean was range-constrained), the resolved "
+            "geometry (`geom_*`), the derived r_eff / surface area / volume, and any caveat "
+            "notes — so a value can never be separated from how it was produced. "
+            "`in_fit_range` marks whether each measurement fell inside the histogram fit window."
+        )
+        st.dataframe(df.head(15), use_container_width=True)
+        st.caption(f"Preview of the first 15 of {len(df)} rows, {len(df.columns)} columns.")
+
 def summary_export_ui(
     shape_type: str, hist_specs: List[dict], geom: Dict[str, float],
     reff: float, reff_sd: float, unit: str, prefix: str, notes: str = "",
     results: Optional[list] = None, area: float = float("nan"), area_sd: float = float("nan"),
 ) -> None:
-    """A checkbox that builds the comprehensive summary figure on demand, previews it,
-    and offers a high-resolution PNG download."""
+    """The combined CSV export, plus a checkbox that builds the comprehensive summary figure on
+    demand, previews it, and offers a high-resolution PNG download."""
+    # Outside the checkbox: the data export shouldn't depend on wanting the summary figure.
+    analysis_csv_download_ui(shape_type, hist_specs, geom, reff, reff_sd, area, area_sd,
+                             unit, prefix, notes, results)
     if not st.checkbox("Build comprehensive summary figure", value=True, key=f"summary_{shape_type}"):
         st.caption("Tick to assemble one figure with all histograms, r_eff ± SD, and a TEM image "
                    "with the reported geometry (2-D projections + 3-D wireframe) overlaid to scale.")
@@ -2348,7 +2496,7 @@ def run() -> None:
                     d_crop = all_d[(all_d >= fmin) & (all_d <= fmax)]
                     fig, mu, std, n = histogram_with_fit(all_d, "Diameter", unit_full, fit_min=fmin, fit_max=fmax)
                     st.pyplot(fig, use_container_width=True)
-                    _download_row(fig, pd.DataFrame({"diameter": d_crop}), f"{prefix}_diameter")
+                    _download_row(fig, f"{prefix}_diameter")
 
                     # Calculate r_eff from the cropped window
                     if d_crop.size > 0:
@@ -2424,7 +2572,7 @@ def run() -> None:
                             n_components=2, fit_min=amin, fit_max=amax, mu_ranges=mu_ranges,
                         )
                         st.pyplot(fig_g, use_container_width=True)
-                        _download_row(fig_g, pd.DataFrame({"rectangle_axes": axes_crop}), f"{prefix}_hex_rect_gmm")
+                        _download_row(fig_g, f"{prefix}_hex_rect_gmm")
 
                         notes = []
                         if n_hex < MIN_SHAPE_COUNT:
@@ -2467,7 +2615,7 @@ def run() -> None:
                         w_crop = all_w[(all_w >= wmin) & (all_w <= wmax)]
                         fig_w, *_ = histogram_with_fit(all_w, "Hex width (face-on)", unit_full, fit_min=wmin, fit_max=wmax)
                         st.pyplot(fig_w, use_container_width=True)
-                        _download_row(fig_w, pd.DataFrame({"hex_width": w_crop}), f"{prefix}_hex_width")
+                        _download_row(fig_w, f"{prefix}_hex_width")
                         hist_specs.append({"values": all_w, "title": "Hex width (face-on)", "fit_min": wmin, "fit_max": wmax,
                                            "keys": ["hex_widths"]})
                     if all_h.size > 0:
@@ -2475,7 +2623,7 @@ def run() -> None:
                         h_crop = all_h[(all_h >= hmin) & (all_h <= hmax)]
                         fig_h, *_ = histogram_with_fit(all_h, "Height (side-on)", unit_full, fit_min=hmin, fit_max=hmax)
                         st.pyplot(fig_h, use_container_width=True)
-                        _download_row(fig_h, pd.DataFrame({"hex_height": h_crop}), f"{prefix}_hex_height")
+                        _download_row(fig_h, f"{prefix}_hex_height")
                         hist_specs.append({"values": all_h, "title": "Height (side-on)", "fit_min": hmin, "fit_max": hmax,
                                            "keys": ["hex_heights"]})
 
@@ -2527,7 +2675,7 @@ def run() -> None:
                     s_crop = all_s[(all_s >= smin) & (all_s <= smax)]
                     fig, mu, std, n = histogram_with_fit(all_s, "Cube side length", unit_full, fit_min=smin, fit_max=smax)
                     st.pyplot(fig, use_container_width=True)
-                    _download_row(fig, pd.DataFrame({"side_length": s_crop}), f"{prefix}_side_length")
+                    _download_row(fig, f"{prefix}_side_length")
 
                     # Calculate r_eff from the cropped window
                     if s_crop.size > 0:
@@ -2569,7 +2717,7 @@ def run() -> None:
                     fig, mus, stds, n = histogram_with_fit(all_axes, "Octahedron combined axes", unit_full,
                                                            n_components=n_comp, fit_min=omin, fit_max=omax, mu_ranges=mu_ranges)
                     st.pyplot(fig, use_container_width=True)
-                    _download_row(fig, pd.DataFrame({"combined_axes": axes_crop}), f"{prefix}_octahedron")
+                    _download_row(fig, f"{prefix}_octahedron")
 
                     # Axes are vertex-to-vertex (tip-to-tip) projected distances, not edge
                     # lengths, so a regular octahedron of diameter D has V = D³/6. The general
@@ -2668,7 +2816,7 @@ def run() -> None:
                         n_components=w_ncomp, fit_min=wmin, fit_max=wmax, mu_ranges=mu_ranges,
                     )
                     st.pyplot(fig_w, use_container_width=True)
-                    _download_row(fig_w, pd.DataFrame({"tic_tac_width": w_crop}), f"{prefix}_tictac_width")
+                    _download_row(fig_w, f"{prefix}_tictac_width")
 
                     notes = []
                     mean_w_crop, sd_w_crop = _mean_sd(w_crop)
@@ -2695,7 +2843,7 @@ def run() -> None:
                             all_body, "Tic Tac body length", unit_full, fit_min=blmin, fit_max=blmax,
                         )
                         st.pyplot(fig_b, use_container_width=True)
-                        _download_row(fig_b, pd.DataFrame({"tic_tac_body_length": body_crop}), f"{prefix}_tictac_body")
+                        _download_row(fig_b, f"{prefix}_tictac_body")
                         if body_crop.size > 0:
                             mean_body, sd_body = _mean_sd(body_crop)
                             hist_specs.append({"values": all_body, "title": "Tic Tac body length",
@@ -2710,7 +2858,7 @@ def run() -> None:
                             all_maj, "Tic Tac total length", unit_full, fit_min=mjmin, fit_max=mjmax,
                         )
                         st.pyplot(fig_maj, use_container_width=True)
-                        _download_row(fig_maj, pd.DataFrame({"tic_tac_total_length": maj_crop}), f"{prefix}_tictac_total")
+                        _download_row(fig_maj, f"{prefix}_tictac_total")
                         hist_specs.append({"values": all_maj, "title": "Tic Tac total length",
                                            "fit_min": mjmin, "fit_max": mjmax,
                                            "keys": ["tic_tac_major"]})
