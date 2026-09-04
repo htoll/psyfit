@@ -103,7 +103,7 @@ def run():
     image_data_cps = None
 
     with st.sidebar:
-        st.header("Analyze SIF Files")
+        st.header("Inputs")
         uploaded_files = file_uploader_with_clear("Upload .sif file", key="wf_uploads", type=["sif"], accept_multiple_files=True)
         threshold = st.number_input("Threshold", min_value=0, value=10, help='''
         Stringency of fit, higher value is more selective:
@@ -138,8 +138,11 @@ def run():
         )
         mcl_toggle = st.toggle("All channel MCL brightness", help="Overrides region to 'all' and splits analysis by quadrant.")
 
-    if st.button("Analyze"):
+    if st.button("Analyze", disabled=not uploaded_files):
         st.session_state.analyze_clicked = True
+
+    if not uploaded_files:
+        st.info("Upload one or more .sif files in the sidebar, then press Analyze.")
 
     if mcl_toggle:
         region = "all"
@@ -279,16 +282,25 @@ def run():
                         default_min_val = float(np.min(brightness_vals))
                         default_max_val = float(np.max(brightness_vals))
 
-
+                        # Bounds inputs are rendered *before* the plot so edits actually
+                        # crop the histogram x-range (previously they were ignored).
+                        user_min_val_str = st.text_input(
+                            "Min Brightness (pps)", value=f"{default_min_val:.2e}",
+                            key="wf_hist_min",
+                        )
+                        user_max_val_str = st.text_input(
+                            "Max Brightness (pps)", value=f"{default_max_val:.2e}",
+                            key="wf_hist_max",
+                        )
 
                         try:
-                            user_min = float(default_min_val)
-                            user_max = float(default_max_val)
+                            user_min = float(user_min_val_str)
+                            user_max = float(user_max_val_str)
                         except ValueError:
                             st.warning("Please enter valid numbers (you can use scientific notation like 1e6).")
                             return
 
-                        
+
 
                         if user_min < user_max:
                             if mcl_toggle:
@@ -379,10 +391,6 @@ def run():
                                 plt.close(fig_hist)
                         else:
                             st.warning("Min greater than max.")
-                        
-                        user_min_val_str = st.text_input("Min Brightness (pps)", value=f"{default_min_val:.2e}")
-                        user_max_val_str = st.text_input("Max Brightness (pps)", value=f"{default_max_val:.2e}")
-                       # num_bins = st.number_input("# Bins:", value=20)
             else:
                 st.error(f"Data for file '{selected_file_name}' not found.")
 

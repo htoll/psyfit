@@ -35,6 +35,61 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 
+def install_canvas_image_compat():
+    """Make ``streamlit_drawable_canvas`` work on current Streamlit.
+
+    The canvas package does ``import streamlit.elements.image as st_image`` and then calls
+    ``st_image.image_to_url(image, width:int, clamp, channels, output_format, image_id)`` when
+    rendering a background image. Streamlit has since moved that function to
+    ``streamlit.elements.lib.image_utils`` (so the attribute lookup raises ``AttributeError:
+    module 'streamlit.elements.image' has no attribute 'image_to_url'``) and retyped the 2nd
+    argument from an int width to a ``layout_config`` object accessed as ``layout_config.width``.
+
+    This resolves the real implementation and reinstates it under the old name, wrapping the int
+    width in a minimal duck-typed object when the new signature expects one. The lookup happens
+    at call time, so this only has to run before the first ``st_canvas()`` call.
+
+    Every tool that uses the canvas must call this; the patch is process-wide, so a tool that
+    skips it works only by luck when another tool imported first. Idempotent.
+    """
+    import streamlit.elements.image as st_image
+
+    if getattr(st_image, "_canvas_compat_shim", False):
+        return
+
+    try:
+        from streamlit.elements.lib.image_utils import image_to_url as _real_itu
+    except ImportError:
+        _real_itu = getattr(st_image, "image_to_url", None)
+
+    uses_layout_config = False
+    if _real_itu is not None:
+        try:
+            import inspect
+            params = list(inspect.signature(_real_itu).parameters)
+            uses_layout_config = len(params) >= 2 and params[1] == "layout_config"
+        except (TypeError, ValueError):
+            pass
+
+    class _LayoutShim:
+        __slots__ = ("width", "height")
+
+        def __init__(self, width):
+            self.width = width if isinstance(width, int) else None
+            self.height = None
+
+    def _canvas_image_to_url(image, width, clamp, channels, output_format, image_id,
+                             allow_emoji=False):
+        if _real_itu is None:
+            return ""
+        if uses_layout_config:
+            return _real_itu(image, _LayoutShim(width), clamp, channels, output_format, image_id)
+        return _real_itu(image, width, clamp, channels, output_format, image_id)
+
+    st_image.image_to_url = _canvas_image_to_url
+    st_image._canvas_compat_shim = True
+
+
 def HWT_aesthetic():
     sns.set_style("ticks")
     sns.set_context("notebook", font_scale=1.5,
@@ -46,7 +101,7 @@ def HWT_aesthetic():
     sns.despine()
     return palette 
 
-def file_uploader_with_clear(label, *, key, clear_label="🗑️ Clear all",
+def file_uploader_with_clear(label, *, key, clear_label="Clear all",
                              on_clear=None, **uploader_kwargs):
     """``st.file_uploader`` paired with a button that clears all selected files.
 
@@ -665,6 +720,273 @@ def gaussian2d(xy, amp, x0, sigma_x, y0, sigma_y, offset):
                  np.exp(-((y - y0)**2)/(2*sigma_y**2)) + offset).ravel()
 
 
+def detect_peaks(image_cps, threshold=10, signal='UCNP', min_distance=5):
+    """Detect candidate emitter centres in a (cropped) cps image.
+
+    This mirrors the peak-detection step of :func:`integrate_sif` so tools that
+    do their own per-frame fitting (e.g. the movie brightness tool) can reuse the
+    exact same detection behaviour. Returns an ``(N, 2)`` array of ``(row, col)``
+    = ``(y, x)`` integer coordinates.
+    """
+    smoothed_image = gaussian_filter(image_cps, sigma=1)
+    threshold_abs = np.mean(smoothed_image) + threshold * np.std(smoothed_image)
+    if signal == 'UCNP':
+        coords = peak_local_max(
+            smoothed_image, min_distance=min_distance, threshold_abs=threshold_abs
+        )
+    else:
+        blobs = blob_log(
+            smoothed_image, min_sigma=1, max_sigma=3, num_sigma=5, threshold=5 * threshold
+        )
+        coords = blobs[:, :2]
+    return np.asarray(coords, dtype=float)
+
+
+def fit_psf_brightness(image_cps, center_x, center_y, *, pix_size_um=0.1,
+                       radius_um_fine=0.5, sig_threshold=0.5, sigma_ub=0.5,
+                       refine=False, strict=False):
+    """Fit a single 2-D Gaussian PSF at a (roughly) known location.
+
+    This is the per-emitter fit extracted from :func:`integrate_sif`, exposed so
+    a movie can be fit frame-by-frame at *fixed* positions (kept stable across
+    frames so each emitter keeps its identity). The centre is only allowed to
+    drift +/- 1 px during the fit.
+
+    Parameters
+    ----------
+    image_cps : 2-D ndarray
+        Single frame in counts-per-second.
+    center_x, center_y : float
+        Approximate emitter centre in pixels (col, row).
+    refine : bool
+        If True, re-localise the peak inside the subregion before fitting (as
+        ``integrate_sif`` does). Leave False for movies so a blinking-off frame
+        does not snap the fit onto a neighbouring noise peak.
+    strict : bool
+        If True, apply ``integrate_sif``'s rejection filters (brightness range
+        and sigma threshold) and return ``None`` on failure. If False (default,
+        used for time traces) always return the fitted values plus a ``fit_ok``
+        flag, so dark/blinking frames are recorded rather than dropped.
+
+    Returns
+    -------
+    dict or None
+        Fit results, or ``None`` if the fit could not be performed (or was
+        rejected in ``strict`` mode).
+    """
+    radius_pix_fine = max(1, int(radius_um_fine / pix_size_um))
+
+    center_x_refined = float(center_x)
+    center_y_refined = float(center_y)
+    if refine:
+        sub_img, x0_idx, y0_idx = extract_subregion(
+            image_cps, center_x, center_y, radius_pix_fine
+        )
+        if sub_img.size == 0:
+            return None
+        blurred = gaussian_filter(sub_img, sigma=1)
+        local_peak = peak_local_max(blurred, num_peaks=1)
+        if local_peak.shape[0] == 0:
+            return None
+        local_y, local_x = local_peak[0]
+        center_x_refined = x0_idx + local_x
+        center_y_refined = y0_idx + local_y
+
+    sub_img_fine, x0_idx_fine, y0_idx_fine = extract_subregion(
+        image_cps, center_x_refined, center_y_refined, radius_pix_fine
+    )
+    if sub_img_fine.size == 0 or min(sub_img_fine.shape) < 2:
+        return None
+
+    interp_size = 20
+    sub_img_interp = zoom(sub_img_fine, interp_size / sub_img_fine.shape[0], order=1)
+    H, W = sub_img_interp.shape
+    x_indices, y_indices = np.meshgrid(np.arange(W), np.arange(H))
+    x_coords = ((x_indices / (W - 1)) * (sub_img_fine.shape[1] - 1) + x0_idx_fine) * pix_size_um
+    y_coords = ((y_indices / (H - 1)) * (sub_img_fine.shape[0] - 1) + y0_idx_fine) * pix_size_um
+    x_flat = x_coords.ravel()
+    y_flat = y_coords.ravel()
+    z_flat = sub_img_interp.ravel()
+
+    amp_guess = float(np.max(sub_img_fine))
+    offset_guess = float(np.min(sub_img_fine))
+    x0_guess = center_x_refined * pix_size_um
+    y0_guess = center_y_refined * pix_size_um
+    sigma_guess = 0.3
+    p0 = [amp_guess, x0_guess, sigma_guess, y0_guess, sigma_guess, offset_guess]
+
+    def residuals(params, x, y, z):
+        A, x0, sx, y0, sy, offset = params
+        model = A * np.exp(-((x - x0)**2 / (2 * sx**2) + (y - y0)**2 / (2 * sy**2))) + offset
+        return model - z
+
+    # Amplitude lower bound must stay < upper bound even for near-dark frames.
+    amp_ub = max(2 * amp_guess, amp_guess + 1.0, 2.0)
+    lb = [0.0, x0_guess - 1, 0.0, y0_guess - 1, 0.0, 0.0]
+    ub = [amp_ub, x0_guess + 1, sigma_ub, y0_guess + 1, sigma_ub, max(offset_guess * 1.2, 1e-6)]
+
+    try:
+        res = least_squares(residuals, p0, args=(x_flat, y_flat, z_flat), bounds=(lb, ub))
+    except (RuntimeError, ValueError):
+        return None
+
+    amp_fit, x0_fit, sigx_fit, y0_fit, sigy_fit, offset_fit = res.x
+    brightness_fit = 2 * np.pi * amp_fit * sigx_fit * sigy_fit / pix_size_um**2
+    brightness_integrated = float(np.sum(sub_img_fine) - sub_img_fine.size * offset_fit)
+
+    EPS = 1e-3
+    sigma_ok = (sigx_fit <= sig_threshold + EPS) and (sigy_fit <= sig_threshold + EPS)
+    brightness_ok = 1 <= brightness_integrated <= 1e9
+    fit_ok = bool(res.success and sigma_ok and brightness_ok)
+
+    if strict and not fit_ok:
+        return None
+
+    return {
+        'x_pix': center_x_refined,
+        'y_pix': center_y_refined,
+        'x_um': x0_fit,
+        'y_um': y0_fit,
+        'amp_fit': amp_fit,
+        'sigx_fit': sigx_fit,
+        'sigy_fit': sigy_fit,
+        'offset_fit': offset_fit,
+        'brightness_fit': brightness_fit,
+        'brightness_integrated': brightness_integrated,
+        'fit_ok': fit_ok,
+    }
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Step detection for photobleaching traces (Kalafut–Visscher).
+#
+# A photobleaching trace is a noisy descending staircase: each dye that bleaches
+# drops the intensity by roughly one unitary (single-dye) brightness. Kalafut &
+# Visscher (Comput. Phys. Commun. 179 (2008) 716) fit a piecewise-constant model
+# and add step edges one at a time, keeping a new edge only when it lowers a
+# Schwarz/Bayesian Information Criterion (BIC). This is parameter-free: the noise
+# level is inferred from the residuals via the BIC, so nothing needs tuning. The
+# optional ``penalty`` multiplier scales the BIC complexity term (>1 = fewer,
+# more conservative steps; <1 = more steps).
+# ───────────────────────────────────────────────────────────────────────────
+def _best_two_level_split(y, start, end):
+    """Best index to split ``y[start:end]`` into two constant levels.
+
+    Returns ``(split_index, sse_after_split)`` where ``split_index`` is a global
+    index into ``y`` (the first sample of the right segment), or ``(None, inf)``
+    if the segment is too short to split.
+    """
+    seg = np.asarray(y[start:end], dtype=float)
+    n = seg.size
+    if n < 2:
+        return None, np.inf
+    cs = np.cumsum(seg)
+    cs2 = np.cumsum(seg ** 2)
+    total, total2 = cs[-1], cs2[-1]
+    best_sse = np.inf
+    best_i = None
+    # i = size of left segment, 1..n-1
+    for i in range(1, n):
+        left_sum, left2, nl = cs[i - 1], cs2[i - 1], i
+        right_sum, right2, nr = total - left_sum, total2 - left2, n - i
+        sse_l = left2 - left_sum ** 2 / nl
+        sse_r = right2 - right_sum ** 2 / nr
+        sse = sse_l + sse_r
+        if sse < best_sse:
+            best_sse = sse
+            best_i = start + i
+    return best_i, best_sse
+
+
+def _piecewise_sse(y, bounds):
+    """Total within-segment SSE for segment boundaries ``bounds`` (incl. 0, N)."""
+    sse = 0.0
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        seg = y[a:b]
+        if seg.size:
+            sse += float(np.sum((seg - seg.mean()) ** 2))
+    return sse
+
+
+def detect_steps_kv(y, penalty=1.0):
+    """Kalafut–Visscher step detection on a 1-D signal.
+
+    Parameters
+    ----------
+    y : array-like
+        The signal (e.g. a per-frame brightness trace).
+    penalty : float
+        Multiplier on the BIC complexity term. 1.0 is the standard KV criterion;
+        raise it to demand larger/clearer steps, lower it to be more permissive.
+
+    Returns
+    -------
+    list[int]
+        Segment boundaries including the endpoints, e.g. ``[0, k1, k2, N]``. With
+        no detected steps this is ``[0, N]`` (a single plateau).
+    """
+    y = np.asarray(y, dtype=float)
+    y = y[np.isfinite(y)]
+    N = y.size
+    if N < 4:
+        return [0, N]
+
+    def bic(bounds):
+        m = len(bounds) - 1                      # number of plateaus
+        sse = max(_piecewise_sse(y, bounds), 1e-12)
+        n_params = m + 1                         # m plateau means + 1 variance
+        return N * np.log(sse / N) + penalty * n_params * np.log(N)
+
+    bounds = [0, N]
+    cur_bic = bic(bounds)
+
+    while True:
+        best = None  # (candidate_bic, candidate_bounds)
+        for a, b in zip(bounds[:-1], bounds[1:]):
+            idx, _ = _best_two_level_split(y, a, b)
+            if idx is None or idx in bounds:
+                continue
+            cand = sorted(bounds + [idx])
+            cand_bic = bic(cand)
+            if best is None or cand_bic < best[0]:
+                best = (cand_bic, cand)
+        if best is not None and best[0] < cur_bic - 1e-9:
+            cur_bic, bounds = best
+        else:
+            break
+    return bounds
+
+
+def staircase_from_bounds(y, bounds):
+    """Build the fitted staircase and per-edge step table from KV ``bounds``.
+
+    Returns ``(levels_per_sample, steps)`` where ``levels_per_sample`` is a
+    same-length array giving each sample's plateau mean, and ``steps`` is a list
+    of dicts (one per interior boundary) with the boundary sample index, the
+    plateau means on each side, and the signed ``drop`` (before − after; positive
+    = a downward/bleaching step).
+    """
+    y = np.asarray(y, dtype=float)
+    levels = np.full(y.shape, np.nan, dtype=float)
+    means = []
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        seg = y[a:b]
+        m = float(np.nanmean(seg)) if seg.size else np.nan
+        levels[a:b] = m
+        means.append(m)
+
+    steps = []
+    for j in range(1, len(means)):
+        before, after = means[j - 1], means[j]
+        steps.append({
+            "index": int(bounds[j]),
+            "level_before": before,
+            "level_after": after,
+            "drop": before - after,
+        })
+    return levels, steps
+
+
 def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, normalization=None, save_format = 'SVG', univ_minmax=False, cmap = 'grey'):
     required_cols = ['x_pix', 'y_pix', 'sigx_fit', 'sigy_fit', 'brightness_integrated']
     all_matched_pairs = []
@@ -678,7 +1000,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     else:
         axes = [axes]    
     # `normalization` arrives as a LogNorm() instance for log scaling, else None.
-    # Detect log intent, then build a FRESH norm per subplot below — reusing one
+    # Detect log intent, then build a FRESH norm per subplot below; reusing one
     # Normalize/LogNorm instance across imshow() calls makes matplotlib share its
     # autoscaled vmin/vmax, which silently forces universal scaling. Universal
     # mode instead uses one global vmin/vmax (matching the img+1 used in imshow).

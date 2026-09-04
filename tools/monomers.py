@@ -61,12 +61,39 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # --- Concentration-estimation constants -----------------------------------
-AVOGADRO = 6.02214076e23                 # particles / mol
-PLANE_THICKNESS_UM = 0.200               # 200 nm optical section of a PSF
+# Settled ("2D collection") model. Every particle in the column of solution
+# directly above a field of view is assumed to sediment onto the imaging plane,
+# so a field of footprint A_fov (the illuminated field-stop area) counts every
+# particle in the volume A_fov · h, where h is the solution column height
+# (loaded volume ÷ well cross-sectional area). The well diameter cancels out of
+# the final conversion; only the FOV footprint and column height matter:
+#
+#     C_imaged = ppv / (N_A · A_fov · h)          (imaged droplet)
+#     C_stock  = C_imaged · dilution
+#
+# i.e. the per-particle conversion is 1 / (N_A · A_fov · h): the reciprocal of
+# the volume of solution sitting directly above one FOV footprint (in moles).
+# No calibration slope and no baked-in dilution; all dilution is supplied by
+# the caller.
+N_AVOGADRO = 6.022e23                     # mol⁻¹
+WELL_DIAMETER_UM = 3000.0                 # PDMS well diameter (3 mm)
+LOADED_VOLUME_UL = 5.0                    # solution volume loaded into the well
+
+
+def column_height_um(loaded_volume_ul=LOADED_VOLUME_UL,
+                     well_diameter_um=WELL_DIAMETER_UM):
+    """
+    Solution column height h (µm) = loaded volume ÷ well cross-sectional area.
+    e.g. 5 µL in a 3 mm well → A_well = π·(1500 µm)² = 7.07e6 µm² → h ≈ 707 µm.
+    """
+    a_well_um2 = np.pi * (float(well_diameter_um) / 2.0) ** 2
+    if a_well_um2 <= 0:
+        return float("nan")
+    return (float(loaded_volume_ul) * 1e9) / a_well_um2   # 1 µL = 1e9 µm³
 
 
 def _format_molarity(molar: float) -> str:
-    """Format a molar concentration with a common SI prefix (M, mM, µM, nM…)."""
+    """Format a molar concentration with a common SI prefix (M, mM, µM, nM)."""
     if not np.isfinite(molar) or molar <= 0:
         return "0 M"
     prefixes = [
@@ -114,8 +141,9 @@ def parse_filename_params(name):
     'HWT08_001F_1to1e5_100xOil_976nm1500mA_1.sif'
     -> {'dilution': 1e5, 'objective_mag': 100}.
 
-    Dilution: an 'AtoB' token is read as the ratio B/A (e.g. '1to1e5' -> 1e5);
-    otherwise a standalone scientific token like '1e5' is used. Magnification:
+    Dilution: an 'AtoB' token is read as the ratio B/A (e.g. '1to1e5' -> 1e5,
+    '1to10k' -> 1e4); otherwise a standalone token like '1e5' or '10k' is used.
+    Numbers may use a 'k' (thousand) or 'M' (million) suffix. Magnification:
     a '<num>x' token not followed by another digit (so '512x512' is ignored).
     Returns keys with None when a field can't be found.
     """
@@ -124,19 +152,31 @@ def parse_filename_params(name):
         return out
     stem = os.path.basename(str(name))
 
-    m = re.search(r'(\d+(?:\.\d+)?)\s*to\s*(\d+(?:\.\d+)?(?:[eE]\d+)?)', stem)
+    # A number token: plain, scientific (1e5), or with a k/M suffix (10k, 2M).
+    # Lowercase 'm' is deliberately excluded so 'milliamp' tokens like
+    # '1500mA' are not misread as a million-fold value.
+    num = r'\d+(?:\.\d+)?(?:[eE]\d+)?[kKM]?'
+
+    def _to_float(tok):
+        mult = 1.0
+        if tok[-1] in "kKM":
+            mult = 1e3 if tok[-1] in "kK" else 1e6
+            tok = tok[:-1]
+        return float(tok) * mult
+
+    m = re.search(rf'({num})\s*to\s*({num})', stem)
     if m:
         try:
-            a, b = float(m.group(1)), float(m.group(2))
+            a, b = _to_float(m.group(1)), _to_float(m.group(2))
             if a > 0:
                 out["dilution"] = b / a
         except ValueError:
             pass
     if out["dilution"] is None:
-        m2 = re.search(r'(\d+(?:\.\d+)?[eE]\d+)', stem)
+        m2 = re.search(rf'(\d+(?:\.\d+)?(?:[eE]\d+|[kKM]))', stem)
         if m2:
             try:
-                out["dilution"] = float(m2.group(1))
+                out["dilution"] = _to_float(m2.group(1))
             except ValueError:
                 pass
 
@@ -149,32 +189,37 @@ def parse_filename_params(name):
     return out
 
 
-def estimate_concentration(ppv, fov_area_um2, dilution,
-                           plane_thickness_um=PLANE_THICKNESS_UM):
+def estimate_concentration(ppv, dilution, area_um2,
+                           loaded_volume_ul=LOADED_VOLUME_UL,
+                           well_diameter_um=WELL_DIAMETER_UM):
     """
-    Estimate stock molarity from the average particles-per-view (ppv).
+    Estimate molarity from the average particles-per-view (ppv) using the
+    settled (2D collection) model:
 
-    Concentration is fundamentally (particles observed) / (volume observed),
-    where the observed volume is the imaged FOV area times the 200 nm optical
-    section thickness. All the well-geometry / droplet / plane-count terms
-    cancel algebraically, so they are deliberately omitted here:
+        h        = loaded_volume / well_area         (solution column height)
+        C_imaged = ppv / (N_A · A_fov · h)           (imaged droplet)
+        C_stock  = C_imaged · dilution
 
-        M_stock = ppv * dilution / (A_fov * t * N_A)
-
-    Molarity is intensive, so no bulk (stock/prep) volume enters the formula.
+    `area_um2` is A_fov, the illuminated field-stop (aperture) area of the
+    imaged field, the true counting footprint, which differs between
+    microscopes (MCL 60× vs Nikon 100×). The well diameter cancels from the
+    conversion and enters only through the column height h; all dilution is
+    supplied by the caller (nothing is baked into a calibration slope).
     """
-    obs_volume_um3 = fov_area_um2 * plane_thickness_um
-    obs_volume_l = obs_volume_um3 * 1e-15                   # 1 µm³ = 1e-15 L
-
-    conc_diluted = ppv / obs_volume_l                      # particles / L (imaged sample)
-    conc_stock = conc_diluted * dilution                   # particles / L (stock)
-    molarity = conc_stock / AVOGADRO
+    h_um = column_height_um(loaded_volume_ul, well_diameter_um)
+    # Volume of solution directly above one FOV footprint (µm³ → L).
+    v_fov_L = float(area_um2) * h_um * 1e-15 if area_um2 else float("nan")
+    if np.isfinite(v_fov_L) and v_fov_L > 0:
+        conc_diluted = ppv / (N_AVOGADRO * v_fov_L)        # M (imaged sample)
+    else:
+        conc_diluted = float("nan")
+    molarity = conc_diluted * dilution                     # M (stock)
 
     return {
         "ppv": ppv,
-        "fov_area_um2": fov_area_um2,
-        "obs_volume_um3": obs_volume_um3,
-        "conc_diluted_M": conc_diluted / AVOGADRO,
+        "area_um2": float(area_um2) if area_um2 else float("nan"),
+        "column_height_um": h_um,
+        "conc_diluted_M": conc_diluted,
         "molarity": molarity,
     }
 
@@ -202,7 +247,7 @@ def fit_aperture_circle(image, pix_size_um=None, min_diameter_um=20.0):
     The aperture may be partially occluded (e.g. clipped on the left), so a
     plain area-equivalent radius (√(area/π)) and centroid are biased. Instead we
     fit a circle by least squares to the *arc* of the illuminated boundary, with
-    iterative outlier rejection to shed the straight occlusion edge — giving an
+    iterative outlier rejection to shed the straight occlusion edge, giving an
     accurate center/radius for the overlay. `area_px` remains the actual
     illuminated pixel count (the true counting area for concentration).
 
@@ -298,7 +343,7 @@ def aperture_or_inscribed(image, region, pix_size_um, min_diameter_um=20.0):
     """
     Aperture dict for `image`: the fitted circular field stop, or a circle
     inscribed in the region if the fit fails. Returns None for the 'custom' and
-    'all' regions (no single circular aperture — 'all' is a 4-channel frame) or
+    'all' regions (no single circular aperture, since 'all' is a 4-channel frame) or
     when no image is available.
     """
     if (image is None or getattr(image, "ndim", 0) < 2
@@ -311,6 +356,23 @@ def aperture_or_inscribed(image, region, pix_size_um, min_diameter_um=20.0):
         ap = {"cx": w_px / 2.0, "cy": h_px / 2.0, "r": r_px,
               "area_px": float(np.pi * r_px ** 2), "fit": "inscribed"}
     return ap
+
+
+def aperture_area_um2(image, region, pix_size_um):
+    """
+    Illuminated field-stop area (µm²) for `image`, used as the counting area in
+    the concentration estimate: the fitted aperture's pixel area × pixel_size²,
+    or the full crop area when no single circular aperture applies (the 'custom'
+    and 'all' regions). Returns None when no image is available.
+    """
+    if image is None or getattr(image, "ndim", 0) < 2:
+        return None
+    ap = aperture_or_inscribed(image, region, pix_size_um)
+    if ap is not None:
+        return float(ap["area_px"]) * float(pix_size_um) ** 2
+    # 'custom' / 'all' region: no circular aperture, so count over the full crop.
+    h, w = image.shape[:2]
+    return float(h) * float(w) * float(pix_size_um) ** 2
 
 
 def build_summary_image(image, df, *, pix_size_um, cmap, normalization,
@@ -372,7 +434,7 @@ def build_summary_image(image, df, *, pix_size_um, cmap, normalization,
             ax.legend(handles=legend_elements, loc='upper right', fontsize=6,
                       frameon=False, labelcolor='white')
 
-    # Annotation block (top-left) — concentration first.
+    # Annotation block (top-left), concentration first.
     if annotation_lines:
         ax.text(0.03, 0.97, "\n".join(annotation_lines), transform=ax.transAxes,
                 color='white', fontsize=10.5, va='top', ha='left', linespacing=1.3,
@@ -554,7 +616,7 @@ def plot_monomer_brightness(
 
 
 @st.cache_data(show_spinner=False)
-def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3, roi=None):
+def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=0.1, sig_threshold=0.3, min_distance=5, roi=None):
     class _FakeUpload:
         def __init__(self, name, path):
             self.name = name
@@ -576,6 +638,7 @@ def _process_files_cached(saved_records, region, threshold, signal, pix_size_um=
         signal=signal,
         pix_size_um=pix_size_um,
         sig_threshold=sig_threshold,
+        min_distance=min_distance,
         roi=roi,
     )
 
@@ -592,12 +655,12 @@ def run():
         "mono_microscope": "MCL",
         "mono_threshold": 1,
         "mono_signal": "UCNP",
+        "mono_min_distance": 5,
         "mono_region_label": "Blue",
         "mono_use_roi": False,
         "mono_objective_mag": 60,
         "mono_dilution": "1E3",
         "mono_estimate_conc": False,
-        "mono_axial_depth": 0.5,
         "mono_show_fits": True,
         "mono_normalization": True,
         "mono_save_format": "svg",
@@ -666,6 +729,11 @@ def run():
         # 3) If the set of saved files changed (added/removed), invalidate results
         if changed or (set(st.session_state.saved_files.keys()) != prev_keys):
             st.session_state.processed = None
+            # Drop the fitted single-particle brightness so it is re-fit from
+            # the new data (the widget falls back to mean(brightness) when this
+            # is None). Otherwise a value fit on the previous session's files
+            # would carry over and skew the category thresholds.
+            st.session_state["single_ucnp_brightness"] = None
             # If selected file no longer exists, clear selection
             current_names = [v[0] if isinstance(v, (tuple, list)) else os.path.basename(v)
                              for v in st.session_state.saved_files.values()]
@@ -709,15 +777,26 @@ def run():
                     bits.append(f"{detected['objective_mag']}×")
                 if detected.get("dilution"):
                     bits.append(f"dilution {_sci_compact(detected['dilution'])}")
-                st.caption("🔍 Detected: " + " · ".join(bits) if bits
-                           else "🔍 No dilution/magnification found in filename.")
+                st.caption("Detected: " + " · ".join(bits) if bits
+                           else "No dilution/magnification found in filename.")
 
             microscope = st.selectbox(
                 "Microscope",
                 options=["MCL", "Nikon "],
-                help="Microscope used to acquire the images.",
+                help="Microscope used to acquire the images. MCL is a 60× "
+                     "scope, Nikon a 100× scope; the choice sets the objective "
+                     "magnification and pixel size below, and therefore the "
+                     "field of view used for the concentration estimate.",
                 key="mono_microscope",
             )
+            # Bind the objective magnification to the microscope (MCL 60×,
+            # Nikon 100×). Update only when the microscope selection changes, so
+            # a manual edit isn't clobbered on every rerun.
+            if st.session_state.get("_mono_scope") != microscope:
+                st.session_state["_mono_scope"] = microscope
+                st.session_state["mono_objective_mag"] = (
+                    60 if microscope == "MCL" else 100
+                )
 
             # Parameters (kept to preserve existing UI)
             threshold = st.number_input(
@@ -735,6 +814,15 @@ def run():
                                           "- dye for low SNR (sklearn blob detection)"),
                                     key="mono_signal",
                                     )
+
+            min_distance = st.number_input(
+                "Min distance between PSFs (px)",
+                min_value=1, step=1,
+                help=("Minimum separation between two detected PSF centres. "
+                      "Peaks closer than this are merged into one, so raising it "
+                      "suppresses double-counting of overlapping/adjacent spots."),
+                key="mono_min_distance",
+            )
             if microscope == "MCL":
                 diagram = """ Splits sif into quadrants (256x256 px):
                                 ┌─┬─┐
@@ -800,25 +888,11 @@ def run():
 
             estimate_conc = True
 
-            if estimate_conc:
-                axial_depth_um = st.number_input(
-                    "Axial detection depth (µm)",
-                    min_value=0.001, step=0.05, format="%.3f",
-                    help=("Thickness of the imaged slab used as the counting volume "
-                          "(A_fov × depth) the "
-                          "depth over which a particle is still detected/fit, including "
-                          "out-of-focus ones. Concentration scales as 1/depth."),
-                    key="mono_axial_depth",
-                )
-            else:
-                axial_depth_um = 0.5
-
             st.session_state["objective_mag"] = objective_mag
             st.session_state["microscope"] = microscope
             st.session_state["dilution"] = dilution
             st.session_state["pix_size_um"] = pix_size_um
             st.session_state["estimate_conc"] = estimate_conc
-            st.session_state["axial_depth_um"] = axial_depth_um
 
             cmap_options = ["gray", "viridis", "magma", "hot",  "hsv"]
             current_cmap = st.session_state.get("monomers_cmap", "gray")
@@ -840,14 +914,14 @@ def run():
                      "closest to the average, annotated with Avg PPV ± SD and dilution.",
             )
             if gen_summary:
-                st.checkbox("• include % monomers", key="mono_summ_monomer")
-                st.checkbox("• include PSF fits", key="mono_summ_psf")
-                st.checkbox("• include brightness fits", key="mono_summ_bright")
+                st.checkbox("- include % monomers", key="mono_summ_monomer")
+                st.checkbox("- include PSF fits", key="mono_summ_psf")
+                st.checkbox("- include brightness fits", key="mono_summ_bright")
 
             # Process automatically. _process_files_cached is @st.cache_data keyed on
             # (saved_records, region, threshold, signal, pix_size_um), so tuning any of
             # these re-runs analysis, while display-only params (cmap, bins, brightness
-            # range…) hit the cache and re-render instantly — no "Process" button needed.
+            # range) hit the cache and re-render instantly, so no "Process" button is needed.
             saved_records = tuple(normalized_records)
             # Custom ROI (drawn in the main panel on a prior rerun) overrides the
             # region. If enabled but not yet drawn, hold off until it exists.
@@ -856,13 +930,14 @@ def run():
             if use_custom_roi and custom_roi is None:
                 st.session_state.processed = None
             else:
-                with st.spinner("Processing…"):
+                with st.spinner("Processing..."):
                     processed_data, combined_df = _process_files_cached(
                         saved_records,
                         region=region,
                         threshold=threshold,
                         signal=signal,
                         pix_size_um=pix_size_um,
+                        min_distance=min_distance,
                         roi=custom_roi,
                     )
                 st.session_state.processed = (processed_data, combined_df)
@@ -891,6 +966,9 @@ def run():
                 st.info("Draw a rectangle above to run the analysis inside it.")
 
     # DISPLAY
+    if not st.session_state.get("processed"):
+        st.info("Upload one or more .sif files in the sidebar to begin.")
+
     if st.session_state.get("processed"):
         processed_data, combined_df = st.session_state.processed
         roi_tool.stamp_roi(combined_df, active_roi)
@@ -1072,6 +1150,19 @@ def run():
             counts = list(psf_counts.values())
             mean_count = np.mean(counts) if counts else 0
 
+            # Illuminated FOV area (µm²) per file, averaged: the counting area
+            # that turns particle counts into a concentration. Fit per image so
+            # MCL (60×) and Nikon (100×) automatically get their true, different
+            # fields of view (differing in both pixel size and pixel count).
+            _areas = [
+                a for a in (
+                    aperture_area_um2(processed[nm].get("image"), region, pix)
+                    for nm in processed.keys()
+                )
+                if a and np.isfinite(a) and a > 0
+            ]
+            mean_area_um2 = float(np.mean(_areas)) if _areas else None
+
             # ---------------- Row 2: pie · PSF counts · concentration ------
             r2_pie, r2_counts, r2_conc = st.columns(3)
 
@@ -1107,49 +1198,24 @@ def run():
                     st.caption("Enable *Estimate concentration* in the sidebar.")
                 else:
                     dilution = st.session_state.get("dilution")
-                    axial_depth_um = float(st.session_state.get("axial_depth_um", 0.5))
-
-                    # FOV area: fitted aperture, else an inscribed-circle fallback
-                    # (set above), else the full crop for the 'custom' region.
-                    if aperture is not None:
-                        fov_area = aperture["area_px"] * (pix ** 2)
-                        d_um = 2 * aperture["r"] * pix
-                        if aperture.get("fit") == "inscribed":
-                            fov_desc = (f"inscribed circle Ø{2 * aperture['r']:.0f} px "
-                                        f"({d_um:.1f} µm) — aperture fit failed")
-                        else:
-                            # Counting area = actual illuminated pixels (excludes any
-                            # occluded part). Fitted r/Ø describe the full circle.
-                            fov_desc = (f"illuminated aperture: {aperture['area_px']:.0f} px "
-                                        f"(fit r={aperture['r']:.0f} px, Ø{d_um:.1f} µm)")
-                    elif image_data_cps is not None and getattr(image_data_cps, "ndim", 0) >= 2:
-                        fh, fw = image_data_cps.shape[:2]
-                        fov_area = fh * fw * (pix ** 2)
-                        fov_desc = f"{fw}×{fh} px full crop (custom region)"
-                    else:
-                        fov_area = 0.0
-                        fov_desc = "unknown"
 
                     if dilution is None:
                         st.warning("Enter a valid dilution.")
                     elif not counts:
                         st.info("No particles detected.")
-                    elif fov_area <= 0:
-                        st.warning("Could not determine FOV area.")
                     else:
                         est = estimate_concentration(
-                            ppv=mean_count, fov_area_um2=fov_area,
-                            dilution=dilution,
-                            plane_thickness_um=axial_depth_um,
+                            ppv=mean_count, dilution=dilution, area_um2=mean_area_um2
                         )
 
                         # --- Error analysis -------------------------------
-                        # Concentration is linear in ppv (all other terms treated
-                        # as exact), so the fractional error carries straight
-                        # through: σ_M/M = σ_ppv/ppv. We use the field-to-field
-                        # SD of the PSF counts and report the standard error of
-                        # the mean (SD/√N) as the uncertainty on the mean-derived
-                        # concentration.
+                        # Concentration is linear in ppv (the geometric factors
+                        # A_fov and h are treated as exact), so the fractional
+                        # error carries straight through: σ_M/M = σ_ppv/ppv.
+                        # We use the
+                        # field-to-field SD of the PSF counts and report the
+                        # standard error of the mean (SD/√N) as the uncertainty
+                        # on the mean-derived concentration.
                         n_fields = len(counts)
                         counts_sd = float(np.std(counts, ddof=1)) if n_fields > 1 else 0.0
                         counts_sem = counts_sd / np.sqrt(n_fields) if n_fields > 1 else 0.0
@@ -1165,25 +1231,34 @@ def run():
                                 f"(SEM, n={n_fields} fields, CV={cv:.0%})"
                             )
                         else:
-                            st.caption("Single field — no error estimate (need ≥2 files).")
-                        st.metric("Avg particles / view", f"{est['ppv']:.1f} ppv")
+                            st.caption("Single field, no error estimate (need at least 2 files).")
+                        reported_ppv = est["ppv"] * dilution
+                        st.metric("Avg particles / view (× dilution)",
+                                  f"{reported_ppv:.3g} ppv")
 
                         with st.expander("Show calculation", expanded=False):
-                            obs_l = est["obs_volume_um3"] * 1e-15
-                            density_l = est["ppv"] / obs_l if obs_l else 0.0
+                            area_now = est.get("area_um2")
+                            h_um = est.get("column_height_um")
+                            v_fov_L = (area_now * h_um * 1e-15
+                                       if area_now and h_um
+                                       and np.isfinite(area_now) and np.isfinite(h_um)
+                                       else float("nan"))
                             calc = "\n".join([
-                                f"ppv (avg particles/view) = {est['ppv']:.4g}",
-                                f"FOV area  A_fov          = {fov_area:,.1f} µm²",
-                                f"   ({fov_desc}, pixel {pix:g} µm)",
-                                f"axial depth  t           = {axial_depth_um * 1000:.0f} nm  (detection range)",
-                                f"obs volume V = A_fov·t    = {est['obs_volume_um3']:.4g} µm³",
-                                f"                         = {obs_l:.3e} L",
+                                f"measured ppv (avg/view)  = {est['ppv']:.4g}",
+                                f"reported ppv = measured·dilution = {reported_ppv:.4g}",
                                 "",
-                                f"density  = ppv / V        = {density_l:.3e} /L",
-                                f"diluted molarity          = {_format_molarity(est['conc_diluted_M'])}"
+                                "-- settled (2D collection) model --",
+                                f"well diameter            = {WELL_DIAMETER_UM:.0f} µm",
+                                f"loaded volume            = {LOADED_VOLUME_UL:g} µL",
+                                f"column height h = V/A_well = {h_um:.4g} µm",
+                                (f"FOV footprint A_fov      = {area_now:.4g} µm²  (aperture, avg of {len(_areas)})"
+                                 if area_now and np.isfinite(area_now)
+                                 else "FOV footprint A_fov      = (unavailable)"),
+                                f"volume above 1 FOV = A_fov·h = {v_fov_L:.4g} L",
+                                f"diluted molarity = ppv/(N_A·A_fov·h) = {_format_molarity(est['conc_diluted_M'])}"
                                 + (f" ± {_format_molarity(diluted_err)}" if n_fields > 1 else ""),
                                 f"× dilution {dilution:g}",
-                                f"stock molarity            = {_format_molarity(est['molarity'])}"
+                                f"stock molarity           = {_format_molarity(est['molarity'])}"
                                 + (f" ± {_format_molarity(molarity_err)}" if n_fields > 1 else ""),
                                 "",
                                 "-- error analysis (from PSF-count spread) --",
@@ -1194,7 +1269,7 @@ def run():
                                 f"CV = SD/mean             = {cv:.1%}",
                                 "σ_M/M = σ_ppv/ppv  (M is linear in ppv)",
                                 "",
-                                "M_stock = ppv · dilution / (A_fov · t · N_A)",
+                                "C_stock = ppv/(N_A·A_fov·h) · dilution",
                             ])
                             st.code(calc, language="text")
 
@@ -1216,23 +1291,13 @@ def run():
                 spb = st.session_state.get("single_ucnp_brightness")
                 dilution = st.session_state.get("dilution")
                 microscope = st.session_state.get("microscope", "MCL")
-                axial_depth_um = float(st.session_state.get("axial_depth_um", 0.5))
 
-                # FOV area for the summary field (aperture, else full crop for custom).
-                if summ_ap is not None:
-                    fov_area_summ = summ_ap["area_px"] * (pix ** 2)
-                elif summ_img is not None and getattr(summ_img, "ndim", 0) >= 2:
-                    fh_s, fw_s = summ_img.shape[:2]
-                    fov_area_summ = fh_s * fw_s * (pix ** 2)
-                else:
-                    fov_area_summ = 0.0
-
-                # Build annotation lines — estimated concentration first (always).
+                # Build annotation lines, estimated concentration first (always).
                 ann = []
-                if dilution is not None and fov_area_summ > 0 and mean_count:
+                dil_for_ppv = dilution if dilution is not None else 1.0
+                if dilution is not None and mean_count:
                     est_s = estimate_concentration(
-                        ppv=mean_count, fov_area_um2=fov_area_summ,
-                        dilution=dilution, plane_thickness_um=axial_depth_um,
+                        ppv=mean_count, dilution=dilution, area_um2=mean_area_um2
                     )
                     rel = (ppv_sd / np.sqrt(len(counts)) / mean_count
                            if len(counts) > 1 else 0.0)
@@ -1240,7 +1305,8 @@ def run():
                                                    est_s['molarity'] * rel if rel else None))
                 else:
                     ann.append("set dilution for conc.")
-                ann.append(f"{mean_count:.1f} ± {ppv_sd:.0f} ppv")
+                # Reported ppv is dilution-adjusted (measured × dilution).
+                ann.append(f"{mean_count * dil_for_ppv:.3g} ± {ppv_sd * dil_for_ppv:.2g} ppv")
                 if dilution is not None:
                     ann.append(f"{_sci_compact(dilution)} dilution")
                 ann.append(f"{microscope}")
@@ -1282,7 +1348,7 @@ def run():
                         buf = io.BytesIO()
                         fig_summ.savefig(buf, format="png", dpi=800, bbox_inches="tight")
                         mime, ext = "image/png", "png"
-                        st.caption("TIFF unavailable (Pillow missing?) — exported PNG instead.")
+                        st.caption("TIFF unavailable (Pillow missing?), exported PNG instead.")
                     plt.close(fig_summ)
                     buf.seek(0)
                     st.download_button(

@@ -11,7 +11,7 @@ def run():
     col1, col2 = st.columns([1, 2])
 
     with col1:
-        st.header("Convert SIF Files")
+        st.header("Inputs")
         uploaded_files = file_uploader_with_clear("Upload .sif file", key="batch_convert_uploads", type=["sif"], accept_multiple_files=True)
         if uploaded_files and not isinstance(uploaded_files, list):
             uploaded_files = [uploaded_files]

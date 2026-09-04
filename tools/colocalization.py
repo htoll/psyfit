@@ -9,7 +9,7 @@ import pandas as pd
 import hashlib
 import streamlit as st
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LogNorm, LinearSegmentedColormap
 from matplotlib.ticker import MaxNLocator
 
 # Ensure utils is accessible if needed
@@ -31,9 +31,9 @@ def _hash_file(uf) -> str:
         uf.seek(pos)
     return hashlib.md5(b).hexdigest()
 
-def _build_proc_key(sif_files, region_ucnp, region_dye, threshold, ucnp_id, dye_id, min_distance):
+def _build_proc_key(sif_files, region_ucnp, region_dye, threshold, ucnp_id, dye_id, min_distance, split_mode, first_acquired):
     names_hashes = tuple(sorted((f.name, _hash_file(f)) for f in (sif_files or [])))
-    return (names_hashes, str(region_ucnp), str(region_dye), int(threshold), str(ucnp_id), str(dye_id), int(min_distance))
+    return (names_hashes, str(region_ucnp), str(region_dye), int(threshold), str(ucnp_id), str(dye_id), int(min_distance), str(split_mode), str(first_acquired))
 
 def _extract_common_stem(uploaded_files):
     if not uploaded_files:
@@ -98,13 +98,259 @@ def _process_files(uploaded_files, region, threshold, signal, min_distance=5):
             return _process_files_external(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM)
     return _process_files_fallback(uploaded_files, region, threshold=threshold, signal=signal, pix_size_um=PIX_SIZE_UM, min_distance=min_distance)
 
+# --- Single-emitter brightness helpers ---
+
+def _isolated_psfs(df, min_radius_px):
+    """Keep only PSFs whose nearest neighbor (same image) is >= min_radius_px away.
+
+    Used for the monomer assumption: PSFs sitting closer than ``min_radius_px``
+    to another PSF are likely aggregates/overlapping and are dropped so the
+    brightness histogram reflects isolated single UCNPs.
+    """
+    if min_radius_px <= 0 or not isinstance(df, pd.DataFrame) or len(df) < 2:
+        return df
+    if not {"x_pix", "y_pix"}.issubset(df.columns):
+        return df
+    xs = df["x_pix"].to_numpy(dtype=float)
+    ys = df["y_pix"].to_numpy(dtype=float)
+    keep = np.ones(len(df), dtype=bool)
+    for i in range(len(df)):
+        dist = np.hypot(xs - xs[i], ys - ys[i])
+        dist[i] = np.inf
+        if np.nanmin(dist) < min_radius_px:
+            keep[i] = False
+    return df[keep]
+
+
+def _single_ucnp_brightness_ui(u_data, assume_monomers, default_manual=1e5):
+    """Return the single-UCNP brightness (pps) for the num_ucnps calculation.
+
+    If ``assume_monomers`` is True, pool every UCNP detection across all
+    processed UCNP images/regions and use the primary GMM component mean (mu) of
+    the brightness histogram as the single-UCNP brightness. Otherwise fall back
+    to a manual number input.
+    """
+    if not assume_monomers:
+        return st.number_input(
+            "Single UCNP brightness (pps)", min_value=0.0, value=default_manual,
+            format="%.2e",
+        )
+
+    # Pool all UCNP detections across every processed UCNP image / region.
+    dfs = [b.get("df") for b in (u_data or {}).values()]
+    dfs = [d for d in dfs if isinstance(d, pd.DataFrame) and not d.empty
+           and "brightness_integrated" in d.columns]
+    if not dfs:
+        st.warning("No UCNP detections available to fit. Enter the brightness manually.")
+        return st.number_input(
+            "Single UCNP brightness (pps)", min_value=0.0, value=default_manual,
+            format="%.2e", key="coloc_single_ucnp_manual_fallback",
+        )
+
+    st.markdown("**Single-UCNP brightness (monomer assumption)**: Gaussian fit of isolated UCNP detections.")
+    ctrl_c1, ctrl_c2 = st.columns(2)
+    with ctrl_c1:
+        min_radius_px = st.number_input(
+            "Minimum PSF separation (px)", min_value=0.0, value=10.0, step=1.0,
+            key="coloc_ucnp_min_radius",
+            help="Drop UCNPs with another UCNP closer than this (likely aggregates), "
+                 "so only isolated monomers contribute to the brightness fit.",
+        )
+    with ctrl_c2:
+        wf_components = st.number_input(
+            "GMM components (UCNP)", min_value=1, max_value=4, value=2,
+            key="coloc_ucnp_components",
+        )
+
+    # Filter to isolated PSFs per image before pooling.
+    iso_dfs = [_isolated_psfs(d, min_radius_px) for d in dfs]
+    iso_dfs = [d for d in iso_dfs if isinstance(d, pd.DataFrame) and not d.empty]
+    n_total = int(sum(len(d) for d in dfs))
+    if not iso_dfs:
+        st.warning(
+            f"No isolated UCNPs remain after the {min_radius_px:.0f} px separation "
+            "filter. Lower the minimum separation, or enter the brightness manually."
+        )
+        return st.number_input(
+            "Single UCNP brightness (pps)", min_value=0.0, value=default_manual,
+            format="%.2e", key="coloc_single_ucnp_manual_fallback",
+        )
+
+    combined_ucnp = pd.concat(iso_dfs, ignore_index=True)
+    st.caption(
+        f"Isolated UCNPs used: {len(combined_ucnp)} / {n_total} "
+        f"(≥ {min_radius_px:.0f} px from any neighbor)."
+    )
+
+    hist_out = utils.plot_histogram(combined_ucnp, n_components=int(wf_components))
+    # plot_histogram returns (fig, mu, sigma) with data, or just fig if empty.
+    if isinstance(hist_out, tuple):
+        fig_u, mu_u, sigma_u = hist_out
+    else:
+        fig_u, mu_u, sigma_u = hist_out, None, None
+
+    hcol, mcol = st.columns([2, 1])
+    with hcol:
+        st.pyplot(fig_u, use_container_width=True)
+        plt.close(fig_u)
+    with mcol:
+        st.metric("UCNP PSFs fit", f"{len(combined_ucnp)}")
+        if mu_u is not None:
+            st.success(f"Single-UCNP brightness ≈ {mu_u:.3g} ± {sigma_u:.2g} pps")
+
+    if mu_u is not None and mu_u > 0:
+        st.caption(f"Using single-UCNP brightness = {float(mu_u):.3g} pps (monomer assumption).")
+        return float(mu_u)
+
+    st.warning("Could not fit a single-UCNP brightness. Enter it manually.")
+    return st.number_input(
+        "Single UCNP brightness (pps)", min_value=0.0, value=default_manual,
+        format="%.2e", key="coloc_single_ucnp_manual_fallback",
+    )
+
+
+def _single_dye_brightness_ui(dye_sif_files, default_manual=5e2):
+    """Return the single-dye brightness (pps) for the num_dyes calculation.
+
+    If ``dye_sif_files`` are provided, run widefield (WF) brightness analysis on
+    them (signal='dye') and use the primary GMM component mean (mu) of the
+    brightness histogram. Region / threshold / min-distance are user-tunable so
+    the fit can be dialed in. If no files are uploaded, fall back to a manual
+    number input (same behavior as before).
+    """
+    if not dye_sif_files:
+        return st.number_input(
+            "Single Dye brightness (pps)", min_value=0.0, value=default_manual,
+            format="%.2e",
+        )
+
+    st.markdown("**Single-dye brightness (WF analysis)**: tune region/threshold for good fits.")
+    wf1, wf2, wf3, wf4 = st.columns(4)
+    with wf1:
+        wf_region = st.selectbox("Region", options=["1", "2", "3", "4", "all"],
+                                 index=4, key="coloc_wf_region")
+    with wf2:
+        wf_threshold = st.number_input("Threshold", min_value=0.0, value=10.0,
+                                       step=0.5, key="coloc_wf_threshold")
+    with wf3:
+        wf_min_distance = st.number_input("Min distance (px)", min_value=1,
+                                          value=5, key="coloc_wf_min_distance")
+    with wf4:
+        wf_components = st.number_input("GMM components", min_value=1, max_value=4,
+                                        value=2, key="coloc_wf_components")
+
+    _, dye_combined = _process_files(
+        dye_sif_files, region=wf_region, threshold=wf_threshold,
+        signal="dye", min_distance=wf_min_distance,
+    )
+
+    if (dye_combined is None or dye_combined.empty
+            or "brightness_integrated" not in dye_combined.columns):
+        st.warning(
+            "No dye PSFs detected in the uploaded images. Adjust region / "
+            "threshold / min distance, or enter the brightness manually below."
+        )
+        return st.number_input(
+            "Single Dye brightness (pps)", min_value=0.0, value=default_manual,
+            format="%.2e", key="coloc_single_dye_manual_fallback",
+        )
+
+    hist_out = utils.plot_histogram(dye_combined, n_components=int(wf_components))
+    # plot_histogram returns (fig, mu, sigma) with data, or just fig if empty.
+    if isinstance(hist_out, tuple):
+        fig_dye, mu_dye, sigma_dye = hist_out
+    else:
+        fig_dye, mu_dye, sigma_dye = hist_out, None, None
+
+    hcol, mcol = st.columns([2, 1])
+    with hcol:
+        st.pyplot(fig_dye, use_container_width=True)
+        plt.close(fig_dye)
+    with mcol:
+        st.metric("Dye PSFs fit", f"{len(dye_combined)}")
+        if mu_dye is not None:
+            st.success(f"Single-dye brightness ≈ {mu_dye:.3g} ± {sigma_dye:.2g} pps")
+
+    if mu_dye is not None and mu_dye > 0:
+        st.caption(f"Using single-dye brightness = {float(mu_dye):.3g} pps (from WF analysis).")
+        return float(mu_dye)
+
+    st.warning("Could not fit a single-dye brightness. Enter it manually.")
+    return st.number_input(
+        "Single Dye brightness (pps)", min_value=0.0, value=default_manual,
+        format="%.2e", key="coloc_single_dye_manual_fallback",
+    )
+
+
 # --- Plotting Helpers ---
+
+# Per-region colormaps: each fades from black up to a region-specific color.
+_REGION_COLORS = {
+    "1": (0.0, 1.0, 1.0),                    # cyan
+    "2": (0.0, 1.0, 0.0),                    # green
+    "3": (1.0, 0.2, 0.28),                   # neon red (bright, high contrast on black)
+    "4": (204 / 255, 121 / 255, 167 / 255),  # reddish purple
+}
+
+def _region_cmap(region):
+    """Return a black->region-color colormap, or None if the region has no mapping."""
+    color = _REGION_COLORS.get(str(region))
+    if color is None:
+        return None
+    return LinearSegmentedColormap.from_list(f"region_{region}", [(0.0, 0.0, 0.0), color])
+
+def _resolve_cmap(cmap_choice, region):
+    """Resolve the selected colormap for a given region.
+
+    When 'by region' is selected, use the region-specific black->color map,
+    falling back to 'magma' for regions without a mapping (e.g. 'all').
+    """
+    if cmap_choice == "by region":
+        return _region_cmap(region) or "magma"
+    return cmap_choice
 
 def HWT_aesthetic():
     """Applies basic aesthetic settings to the current matplotlib axes."""
     plt.minorticks_on()
     plt.grid(True, which='major', linestyle='-', linewidth=0.5, alpha=0.7)
     plt.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.4)
+
+def _despine(ax, keep=("left", "bottom")):
+    """Remove top/right spines (or any not in ``keep``) and turn off the grid."""
+    for side, spine in ax.spines.items():
+        spine.set_visible(side in keep)
+    ax.grid(False)
+
+def _style_axes(ax, scale=1.25):
+    """Make labels/ticks/title Arial bold and ``scale``x larger (default +25%)."""
+    base = plt.rcParams.get("font.size", 10.0)
+    size = base * scale
+    for txt in (ax.title, ax.xaxis.label, ax.yaxis.label):
+        txt.set_fontfamily("Arial")
+        txt.set_fontweight("bold")
+        txt.set_fontsize(size)
+    for lbl in (*ax.get_xticklabels(), *ax.get_yticklabels()):
+        lbl.set_fontfamily("Arial")
+        lbl.set_fontweight("bold")
+        lbl.set_fontsize(size)
+
+def _fit_gaussian(values):
+    """Fit a Gaussian to 1D data and return (mu, sigma, cv_percent).
+
+    Uses scipy's MLE fit when available, otherwise falls back to the sample
+    mean/std. ``cv_percent`` is 100 * sigma / mu (the coefficient of variation).
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size < 2:
+        return None, None, None
+    try:
+        from scipy.stats import norm
+        mu, sigma = norm.fit(values)
+    except Exception:
+        mu, sigma = float(np.mean(values)), float(np.std(values))
+    cv = 100.0 * sigma / mu if mu else float("nan")
+    return float(mu), float(sigma), float(cv)
 
 def _autoscale_xy(ax, x, y, pad=0.05):
     import numpy as _np
@@ -122,6 +368,44 @@ def _autoscale_xy(ax, x, y, pad=0.05):
     if not _np.isfinite(dy) or dy <= 0:
         dy = max(1.0, abs(ymax) if _np.isfinite(ymax) else 1.0)
     ax.set_ylim(ymin - dy * pad, ymax + dy * pad)
+
+# Shared colorbar geometry so images and the reconstruction shrink equally.
+_CBAR_FRACTION = 0.046
+_CBAR_PAD = 0.04
+
+# Extra right margin so the vertical colorbar label isn't clipped when the
+# figure renders without a tight bounding box (bbox_inches=None).
+_CBAR_RIGHT_MARGIN = 0.82
+
+def _add_colorbar(fig, ax, mappable):
+    """Add a colorbar outside the axes with a vertical 'pps' label."""
+    fig.subplots_adjust(right=_CBAR_RIGHT_MARGIN)
+    cb = fig.colorbar(mappable, ax=ax, fraction=_CBAR_FRACTION, pad=_CBAR_PAD)
+    cb.set_label("pps")
+    return cb
+
+def _reserve_colorbar_space(fig, ax):
+    """Shrink ``ax`` by a colorbar's worth of space without drawing a bar.
+
+    Keeps the reconstruction panel the same size as the image panels when they
+    have a colorbar: the same right margin and a hidden colorbar steal the same
+    axes space, then the bar itself is hidden.
+    """
+    from matplotlib.cm import ScalarMappable
+    fig.subplots_adjust(right=_CBAR_RIGHT_MARGIN)
+    sm = ScalarMappable()
+    sm.set_array([])
+    cb = fig.colorbar(sm, ax=ax, fraction=_CBAR_FRACTION, pad=_CBAR_PAD)
+    cb.ax.set_visible(False)
+
+def _corner_label(ax, text):
+    """Top-left channel label: white bold text on a grey (alpha 0.8) background."""
+    ax.text(
+        0.03, 0.97, text, transform=ax.transAxes, ha="left", va="top",
+        color="white", fontsize=11, fontweight="bold", fontfamily="Arial",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="grey",
+                  edgecolor="none", alpha=0.8),
+    )
 
 def _overlay_circles(ax, df: pd.DataFrame, color: str, alpha: float, label: bool = False):
     from matplotlib.patches import Circle
@@ -156,9 +440,30 @@ def _split_ucnp_dye(files: List[Any], ucnp_id="976", dye_id="638") -> Tuple[List
         elif has_dye and not has_ucnp:
             dye.append(f)
         elif has_ucnp and has_dye:
-            st.warning(f"Filename matches both tokens — skipping: {name}")
+            st.warning(f"Filename matches both tokens, skipping: {name}")
         else:
-            st.warning(f"Filename matches neither token — skipping: {name}")
+            st.warning(f"Filename matches neither token, skipping: {name}")
+    return ucnp, dye
+
+def _split_ucnp_dye_alternating(files: List[Any], first: str = "UCNP") -> Tuple[List[Any], List[Any]]:
+    """Split files assuming UCNP/Dye images were acquired in alternating order.
+
+    Files are ordered by their filename numbering (natural sort), then assigned
+    alternately: the ``first``-acquired type gets the 0th, 2nd, 4th ... file and
+    the other type gets the 1st, 3rd, 5th ... file.
+    """
+    def _name(f):
+        return f.name if hasattr(f, "name") else str(f)
+
+    ordered = sorted(files, key=lambda f: natural_sort_key(_name(f)))
+    first_is_ucnp = str(first).lower().startswith("u")
+    ucnp, dye = [], []
+    for pos, f in enumerate(ordered):
+        is_first_slot = (pos % 2 == 0)
+        if is_first_slot == first_is_ucnp:
+            ucnp.append(f)
+        else:
+            dye.append(f)
     return ucnp, dye
 
 def _match_ucnp_dye_files(ucnps: List[Any], dyes: List[Any]) -> List[Tuple[Any, Any]]:
@@ -226,8 +531,25 @@ def run():
         stem = _extract_common_stem(sif_files)
 
         st.header("IDs")
-        ucnp_id = st.text_input("UCNP ID token", value="976", help="Substring used to identify UCNP files (matched in filename).")
-        dye_id  = st.text_input("Dye ID token",  value="638", help="Substring used to identify Dye files (matched in filename).")
+        split_mode = st.radio(
+            "File identification",
+            options=["By filename token", "Alternating acquisition"],
+            help="Choose how UCNP vs Dye files are identified. 'By filename token' "
+                 "matches substrings in the filename. 'Alternating acquisition' "
+                 "assumes UCNP and Dye images were taken one after another and "
+                 "sorts by file numbering.",
+        )
+        if split_mode == "By filename token":
+            ucnp_id = st.text_input("UCNP ID token", value="976", help="Substring used to identify UCNP files (matched in filename).")
+            dye_id  = st.text_input("Dye ID token",  value="638", help="Substring used to identify Dye files (matched in filename).")
+            first_acquired = "UCNP"
+        else:
+            first_acquired = st.selectbox(
+                "First acquired", options=["UCNP", "Dye"], index=0,
+                help="Which type was imaged first. Files are sorted by their "
+                     "filename numbering and assigned alternately.",
+            )
+            ucnp_id = dye_id = ""
 
         st.divider()
         st.header("Fitting")
@@ -245,18 +567,21 @@ def run():
         show_coloc_fits = st.checkbox("Show colocalized fits", value=True)
 
         st.header("Display")
-        cmap = st.selectbox("Colormap", options=["magma","viridis","plasma","hot","gray","hsv"], index=0)
-        use_lognorm = st.checkbox("Log image scaling", value=True)
-        show_colorbars = st.checkbox("Show colorbars on images", value=False)
+        cmap = st.selectbox("Colormap", options=["by region","magma","viridis","plasma","hot","gray","hsv"], index=5)
+        use_lognorm = st.checkbox("Log image scaling", value=False)
+        show_colorbars = st.checkbox("Show colorbars on images", value=True)
 
     if not sif_files:
         st.info("Upload SIF files to begin.")
         return
 
     # --- Processing ---
-    proc_key = _build_proc_key(sif_files, region_ucnp, region_dye, threshold, ucnp_id, dye_id, min_distance)
+    proc_key = _build_proc_key(sif_files, region_ucnp, region_dye, threshold, ucnp_id, dye_id, min_distance, split_mode, first_acquired)
     if "proc_key" not in st.session_state or st.session_state["proc_key"] != proc_key:
-        ucnp_files, dye_files = _split_ucnp_dye(sif_files, ucnp_id=ucnp_id, dye_id=dye_id)
+        if split_mode == "Alternating acquisition":
+            ucnp_files, dye_files = _split_ucnp_dye_alternating(sif_files, first=first_acquired)
+        else:
+            ucnp_files, dye_files = _split_ucnp_dye(sif_files, ucnp_id=ucnp_id, dye_id=dye_id)
         u_data, _ = _process_files(ucnp_files, region=region_ucnp, threshold=threshold, signal="UCNP", min_distance=min_distance) if ucnp_files else ({}, pd.DataFrame())
         d_data, _ = _process_files(dye_files,  region=region_dye,  threshold=threshold, signal="dye",  min_distance=min_distance)  if dye_files  else ({}, pd.DataFrame())
 
@@ -384,9 +709,10 @@ def run():
                     fig_u, ax_u = plt.subplots(figsize=(5,5))
                     ax_u.set_xticks([]); ax_u.set_yticks([])
                     norm = LogNorm() if use_lognorm else None
-                    im_u = ax_u.imshow(u_img + 1, cmap=cmap, norm=norm, origin="lower")
+                    im_u = ax_u.imshow(u_img + 1, cmap=_resolve_cmap(cmap, region_ucnp), norm=norm, origin="lower")
+                    _corner_label(ax_u, "UCNP")
                     if show_colorbars:
-                        fig_u.colorbar(im_u, ax=ax_u, fraction=0.046, pad=0.04)
+                        _add_colorbar(fig_u, ax_u, im_u)
                 else:
                     fig_u, ax_u = plt.subplots(figsize=(5,5))
                     ax_u.text(0.5,0.5,"No image", ha="center", va="center"); ax_u.axis("off")
@@ -401,9 +727,10 @@ def run():
                     fig_d, ax_d = plt.subplots(figsize=(5,5))
                     ax_d.set_xticks([]); ax_d.set_yticks([])
                     norm = LogNorm() if use_lognorm else None
-                    im_d = ax_d.imshow(d_img + 1, cmap=cmap, norm=norm, origin="lower")
+                    im_d = ax_d.imshow(d_img + 1, cmap=_resolve_cmap(cmap, region_dye), norm=norm, origin="lower")
+                    _corner_label(ax_d, "Dye")
                     if show_colorbars:
-                        fig_d.colorbar(im_d, ax=ax_d, fraction=0.046, pad=0.04)
+                        _add_colorbar(fig_d, ax_d, im_d)
                 else:
                     fig_d, ax_d = plt.subplots(figsize=(5,5))
                     ax_d.text(0.5,0.5,"No image", ha="center", va="center"); ax_d.axis("off")
@@ -443,7 +770,14 @@ def run():
                 ax_r.set_aspect('equal')
                 ax_r.set_xticks([]); ax_r.set_yticks([])
                 ax_r.legend(loc='upper right', fontsize='x-small', framealpha=0.8)
-                st.pyplot(fig_r)
+                # Reserve matching colorbar space so the reconstruction shrinks
+                # by the same amount as the image panels.
+                if show_colorbars:
+                    _reserve_colorbar_space(fig_r, ax_r)
+                # bbox_inches=None disables Streamlit's tight crop so the full
+                # fixed-size canvas renders; with the reserved colorbar space
+                # all three panels keep the same image size.
+                st.pyplot(fig_r, bbox_inches=None)
                 plt.close(fig_r)
 
             # Apply Overlays to Images
@@ -455,11 +789,12 @@ def run():
                 _overlay_circles(ax_d, d_df[d_mask], color="lime", alpha=0.9, label=False)
 
             # Display Stats text
-            st.markdown(f"**Colocalized:** UCNP {u_h}/{u_t} ({p_u:.1f}%) — Dye {d_h}/{d_t} ({p_d:.1f}%)")
+            st.markdown(f"**Colocalized:** UCNP {u_h}/{u_t} ({p_u:.1f}%) · Dye {d_h}/{d_t} ({p_d:.1f}%)")
 
-            # Render the image plots
-            with colL: st.pyplot(fig_u)
-            with colM: st.pyplot(fig_d)
+            # Render the image plots (bbox_inches=None keeps the full canvas so
+            # the colorbar doesn't shrink the image relative to the recon panel).
+            with colL: st.pyplot(fig_u, bbox_inches=None)
+            with colM: st.pyplot(fig_d, bbox_inches=None)
             plt.close(fig_u); plt.close(fig_d)
             
             st.divider()
@@ -474,11 +809,24 @@ def run():
         if matched_df is None or matched_df.empty:
             st.info("No matched peaks yet.")
         else:
-            c1, c2 = st.columns(2)
-            with c1:
-                single_ucnp_brightness = st.number_input("Single UCNP brightness (pps)", min_value=0.0, value=1e5, format="%.2e")
-            with c2:
-                single_dye_brightness  = st.number_input("Single Dye brightness (pps)", min_value=0.0, value=5e2, format="%.2e")
+            st.markdown("#### Single-emitter calibration")
+            cal_c1, cal_c2 = st.columns(2)
+            with cal_c1:
+                assume_ucnp_monomers = st.checkbox(
+                    "Assume imaged UCNPs are monomers", value=True,
+                    help="Use the Gaussian (GMM) fit of the pooled UCNP brightness across all "
+                         "UCNP images/regions as the single-UCNP brightness. Uncheck to enter it manually.",
+                )
+            with cal_c2:
+                dye_sif_files = utils.file_uploader_with_clear(
+                    "Single-dye images (.sif), optional",
+                    key="coloc_single_dye_uploads", type=["sif"], accept_multiple_files=True,
+                    help="Upload single-dye .sif images to measure the single-dye brightness "
+                         "via widefield (WF) brightness analysis. Leave empty to enter it manually.",
+                )
+
+            single_ucnp_brightness = _single_ucnp_brightness_ui(u_data, assume_ucnp_monomers)
+            single_dye_brightness = _single_dye_brightness_ui(dye_sif_files)
 
             md = matched_df.copy()
             md["num_ucnps"] = md["ucnp_brightness"].astype(float) / max(single_ucnp_brightness, 1e-12)
@@ -527,18 +875,41 @@ def run():
 
             msk = (thresholded_df["num_ucnps"] >= 0) & (thresholded_df["num_ucnps"] <= 2)
             y_subset = thresholded_df.loc[msk, "num_dyes"].dropna().to_numpy()
+            y_subset = y_subset[np.isfinite(y_subset)]
             fig_h2, ax_h2 = plt.subplots(figsize=(6,5))
-            if y_subset.size:
-                mean_val = float(np.mean(y_subset))
-                ax_h2.hist(y_subset, bins=15, edgecolor="black")
-                ax_h2.set_title(f"Single UCNPs: Mean = {mean_val:.1f}")
+            if y_subset.size >= 2:
+                # Conventional binning: numpy's 'auto' rule (max of Sturges &
+                # Freedman–Diaconis) picks a logical bin count for the data.
+                bin_edges = np.histogram_bin_edges(y_subset, bins="auto")
+                _, edges, _ = ax_h2.hist(
+                    y_subset, bins=bin_edges, color="0.7", edgecolor="black",
+                )
+                # Fit a Gaussian and overlay it (scaled to counts).
+                mu, sigma, cv = _fit_gaussian(y_subset)
+                if mu is not None:
+                    bin_width = float(np.mean(np.diff(edges)))
+                    xs = np.linspace(edges[0], edges[-1], 200)
+                    try:
+                        from scipy.stats import norm
+                        pdf = norm.pdf(xs, mu, sigma)
+                    except Exception:
+                        pdf = (np.exp(-0.5 * ((xs - mu) / sigma) ** 2)
+                               / (sigma * np.sqrt(2 * np.pi))) if sigma else np.zeros_like(xs)
+                    ax_h2.plot(xs, pdf * y_subset.size * bin_width,
+                               color="crimson", lw=2)
+                    ax_h2.set_title(
+                        f"Single UCNPs: μ = {mu:.2f}, σ = {sigma:.2f}, "
+                        f"σ/μ = {cv:.1f}%"
+                    )
+                else:
+                    ax_h2.set_title("Single UCNPs")
             else:
-                ax_h2.hist([], bins=15, edgecolor="black")
-                ax_h2.set_title("Single UCNPs: no data in [0, 2] after threshold")
-            ax_h2.set_xlabel("Number of Dyes per Single UCNP")
+                ax_h2.hist([], bins=10, edgecolor="black")
+                ax_h2.set_title("Single UCNPs: not enough data in [0, 2] after threshold")
+            ax_h2.set_xlabel("Number of Dyes")
             ax_h2.set_ylabel("Count")
-            ax_h2.xaxis.set_major_locator(MaxNLocator(integer=True))
-            HWT_aesthetic()
+            _despine(ax_h2)
+            _style_axes(ax_h2)
             if y_subset.size <= 2:
                 ax_h2.set_ylim(0, 5)
 

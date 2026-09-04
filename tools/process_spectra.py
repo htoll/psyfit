@@ -14,7 +14,7 @@ Consumes the CSVs produced by ``tools/get_spectra.py`` (columns:
 
 All spectra are cropped at ``CROP_NM`` (artifacts dominate past it). The heavy
 per-spectrum processing (baseline + normalization) is cached so toggling
-exclusions only re-renders — it doesn't recompute.
+exclusions only re-renders; it does not recompute.
 """
 
 import io
@@ -33,7 +33,7 @@ from utils import file_uploader_with_clear
 # Columns expected from a Get Spectra export.
 REQUIRED_COLS = ["File", "Particle_ID", "Wavelength_nm", "Intensity"]
 
-# Spectra are cropped here — past this there tend to be detector artifacts.
+# Spectra are cropped here; past this there tend to be detector artifacts.
 CROP_NM = 875.0
 
 # Normalization choices (single-select).
@@ -86,7 +86,8 @@ RATIO_LABELS = ["A", "B"]
 TOOL_NONE = "None"
 TOOL_RATIO = "Peak ratio"
 TOOL_POP = "Population estimation"
-COMBINED_TOOLS = [TOOL_NONE, TOOL_RATIO, TOOL_POP]
+TOOL_REGION = "Region intensity"
+COMBINED_TOOLS = [TOOL_NONE, TOOL_RATIO, TOOL_POP, TOOL_REGION]
 
 # Fill opacity for the population Gaussian shadings.
 POP_FILL_ALPHA = 0.18
@@ -147,7 +148,7 @@ def _apply_baseline(wvl, y, baseline):
     ``method`` key) and return the corrected array.
 
     * ``"mean"``: subtract the mean value found in [lo, hi] (default
-      500–750 nm) from every point — a simple, fast offset correction.
+      500–750 nm) from every point: a simple, fast offset correction.
     * ``"spline"``: subtract a penalized-spline asymmetric baseline.
     """
     if not baseline:
@@ -155,7 +156,7 @@ def _apply_baseline(wvl, y, baseline):
     if baseline["method"] == "mean":
         lo, hi = baseline["lo"], baseline["hi"]
         m = (wvl >= lo) & (wvl <= hi) & np.isfinite(y)
-        if not m.any():                       # window empty — fall back to global mean
+        if not m.any():                       # window empty, fall back to global mean
             m = np.isfinite(y)
         if m.any():
             return y - float(np.nanmean(y[m]))
@@ -178,7 +179,7 @@ def _width_for_illum(rel):
 
 def _illum_tier(rel):
     """Classify a relative illumination (0–1) into Low / Medium / High tiers, or
-    ``None`` when there's no illumination data (NaN) — those are never filtered."""
+    ``None`` when there's no illumination data (NaN); those are never filtered."""
     if rel is None or not np.isfinite(rel):
         return None
     if rel < ILLUM_LOW_MAX:
@@ -192,7 +193,7 @@ def _normalize_spectrum(wvl, inten, method, rng, volume, baseline=None):
     """Baseline-correct then normalize a single spectrum by the chosen method.
 
     Order: (1) optional baseline subtraction, (2) clip negatives, (3) the chosen
-    normalization. The methods are mutually exclusive — ``NORM_VOLUME`` divides by
+    normalization. The methods are mutually exclusive: ``NORM_VOLUME`` divides by
     the particle volume; the others do max/area scaling. ``baseline`` is ``None``
     or a dict with a ``method`` key (see :func:`_apply_baseline`).
     """
@@ -201,7 +202,7 @@ def _normalize_spectrum(wvl, inten, method, rng, volume, baseline=None):
 
     y = _apply_baseline(wvl, y, baseline)
 
-    # Clip negatives to 0 — baseline subtraction can push noise below zero;
+    # Clip negatives to 0, since baseline subtraction can push noise below zero;
     # those values are non-physical and would skew area/peak normalization.
     y = np.where(np.isfinite(y) & (y < 0), 0.0, y)
 
@@ -238,9 +239,13 @@ def _normalize_spectrum(wvl, inten, method, rng, volume, baseline=None):
 
 
 def _average_spectra(specs, npts=400):
-    """Average ``(wvl, y)`` spectra on a shared grid (union range, NaN-padded)."""
+    """Average ``(wvl, y)`` spectra on a shared grid, returning ``(grid, mean, sd)``.
+
+    ``sd`` is the per-wavelength standard deviation across the individual traces
+    (0 where only one trace covers that wavelength), aligned to ``grid``, the
+    basis for the Region-intensity ±SD band."""
     if not specs:
-        return np.array([]), np.array([])
+        return np.array([]), np.array([]), np.array([])
     lo = min(np.min(w) for w, _ in specs)
     hi = max(np.max(w) for w, _ in specs)
     grid = np.linspace(lo, hi, npts)
@@ -248,7 +253,8 @@ def _average_spectra(specs, npts=400):
     for w, y in specs:
         order = np.argsort(w)
         stack.append(np.interp(grid, w[order], y[order], left=np.nan, right=np.nan))
-    return grid, np.nanmean(np.vstack(stack), axis=0)
+    stack = np.vstack(stack)
+    return grid, np.nanmean(stack, axis=0), np.nanstd(stack, axis=0)
 
 
 def _area_in_range(wvl, y, lo, hi):
@@ -280,7 +286,7 @@ def _fit_population_gaussians(wvl, y, centers, max_shift=POP_MAX_SHIFT):
     to ``centers`` (sorted ascending), or ``None`` if the fit can't be done. Each
     peak's center is bounded to ``center ± max_shift`` so components stay tied to
     the clicks the user placed. Area is the analytic Gaussian integral
-    ``amp·sigma·√(2π)`` — the basis for the relative-population percentages.
+    ``amp·sigma·√(2π)``, the basis for the relative-population percentages.
     """
     from scipy.optimize import curve_fit
 
@@ -450,7 +456,7 @@ def _curated_palette():
 @st.cache_data(show_spinner=False)
 def _default_color_indices():
     """Palette indices in the order newly-uploaded files should default to:
-    plasma 7, 6, 5 … 1 first (a clean descending gradient), then the rest of the
+    plasma 7, 6, 5 ... 1 first (a clean descending gradient), then the rest of the
     palette in its natural order."""
     pal = _curated_palette()
     plasma = [k for k, (lbl, _h) in enumerate(pal) if lbl.startswith("plasma")]
@@ -470,7 +476,7 @@ def _color_select_ui(file_name, default_idx):
     idx = idx if isinstance(idx, int) and 0 <= idx < n else int(default_idx) % n
 
     strip = "<div style='line-height:0'>" + "".join(
-        f'<span title="{lbl} — {h}" style="display:inline-block;width:24px;height:24px;'
+        f'<span title="{lbl} · {h}" style="display:inline-block;width:24px;height:24px;'
         f'background:{h};margin:2px;border-radius:4px;vertical-align:top;'
         f'box-shadow:{"0 0 0 3px #000 inset" if i == idx else "0 0 0 1px #bbb inset"};'
         f'"></span>'
@@ -550,7 +556,7 @@ def _traces_in_box(specs, xr, yr):
     """Indices of spectra whose curve passes through the box [xr] × [yr].
 
     Interpolates each trace inside the x-range so traces are caught even when no
-    raw sample falls in the box — fixes 'box misses the trace' flakiness."""
+    raw sample falls in the box, which fixes 'box misses the trace' flakiness."""
     lo, hi = sorted(float(v) for v in xr[:2])
     ylo, yhi = sorted(float(v) for v in yr[:2])
     xs = np.linspace(lo, hi, 80)
@@ -614,7 +620,7 @@ def _render_file(file_key, specs, opts, base_color, volume):
     Re-inclusion is done with plain buttons (Clear, or per-trace). Every state
     change bumps this figure's own nonce, which remounts *only this* chart so its
     selection is consumed exactly once (no lingering box to re-fire, and no shared
-    state — one figure's edit can never disturb another's exclusions).
+    state, so one figure's edit can never disturb another's exclusions).
     """
     fig_nonce = st.session_state.plot_nonce.setdefault(file_key, 0)
 
@@ -655,7 +661,7 @@ def _render_file(file_key, specs, opts, base_color, volume):
         if not is_excluded:
             included.append((wvl, y))
 
-    grid, mean = _average_spectra(included)
+    grid, mean, sd = _average_spectra(included)
     if opts["show_average"] and grid.size:
         fig.add_trace(go.Scatter(
             x=grid, y=mean, mode="lines",
@@ -697,8 +703,8 @@ def _render_file(file_key, specs, opts, base_color, volume):
     c_cap, c_btn = st.columns([4, 1])
     with c_cap:
         st.caption(
-            f"{n_vis} shown · {n_incl} included · {n_vis - n_incl} excluded "
-            f"— click a trace or drag a box to **exclude** it (re-include with the "
+            f"{n_vis} shown · {n_incl} included · {n_vis - n_incl} excluded. "
+            f"Click a trace or drag a box to **exclude** it (re-include with the "
             f"buttons below or *Clear*).{illum_note}"
         )
     with c_btn:
@@ -746,11 +752,11 @@ def _render_file(file_key, specs, opts, base_color, volume):
     if opts["barplot"] and grid.size:
         _render_region_bar(grid, mean, file_key)
 
-    # Re-include control. Plain buttons only — stateless and one-directional, so
+    # Re-include control. Plain buttons only: stateless and one-directional, so
     # unlike a multiselect they can't lag behind `excluded` or fire a stale
     # callback on another figure's rerun. Clicking one re-includes that trace and
     # bumps the nonce so the lingering selection box can't immediately re-exclude.
-    with st.expander(f"Excluded spectra ({len(excluded)}) — click to re-include"):
+    with st.expander(f"Excluded spectra ({len(excluded)}), click to re-include"):
         if excluded:
             for k in sorted(excluded):
                 if st.button(f"↩ {k.split('::', 1)[-1]}", key=f"reinc_{file_key}_{k}"):
@@ -760,7 +766,7 @@ def _render_file(file_key, specs, opts, base_color, volume):
         else:
             st.caption("No spectra excluded.")
 
-    return grid, mean, n_incl
+    return grid, mean, sd, n_incl
 
 
 # --- App --------------------------------------------------------------------
@@ -773,6 +779,8 @@ def run():
     st.session_state.setdefault("ratio_last", {})    # key -> last box signature
     st.session_state.setdefault("pop_centers", {})   # key -> [peak x, ...]
     st.session_state.setdefault("pop_last", {})      # key -> last click signature
+    st.session_state.setdefault("region_range", {})  # key -> (lo, hi) intensity region
+    st.session_state.setdefault("region_last", {})   # key -> last box signature
     st.session_state.setdefault("combined_nonce", 0)  # remount combined chart to clear selection
     st.session_state.setdefault("reff_store", {})    # file -> r_eff (survives toggling)
 
@@ -923,9 +931,10 @@ def run():
         "illum_tiers": illum_tiers,
     }
 
-    st.caption(f"**Processing applied** — {_processing_summary(method, baseline, volume_norm, rng)}")
+    st.caption(f"**Processing applied:** {_processing_summary(method, baseline, volume_norm, rng)}")
 
     averages = []     # (label, grid, mean, color) for the combined plot
+    stds = {}         # label -> per-wavelength SD across that file's traces
     region_rows = []  # (label, areas) for the stacked region summary
 
     # Honor the user-set display order (stable tie-break on filename).
@@ -945,7 +954,7 @@ def run():
 
         # file_key stays uf.name so exclusion state is stable across renames/reorders.
         base_color = file_colors.get(uf.name, "#1f77b4")
-        grid, mean, n_incl = _render_file(uf.name, specs, opts, base_color, volume)
+        grid, mean, sd, n_incl = _render_file(uf.name, specs, opts, base_color, volume)
         if grid.size:
             # Combined legend shows the averaged-spectra count (and r_eff when
             # volume-normalizing).
@@ -956,6 +965,7 @@ def run():
             extra.append(f"n={n_incl}")
             legend_label = f"{display} ({', '.join(extra)})"
             averages.append((legend_label, grid, mean, base_color))
+            stds[legend_label] = sd
             if barplot:
                 region_rows.append((legend_label, _integrate_regions(grid, mean)))
 
@@ -974,22 +984,25 @@ def run():
         if not averages:
             st.info("No averages to combine (every spectrum is excluded).")
         else:
-            _render_combined(averages, method, volume_norm, illum_tiers)
+            _render_combined(averages, method, volume_norm, illum_tiers, stds)
 
     # --- Stacked region composition summary (very bottom) -------------------
     if barplot and region_rows:
         _render_region_stack(region_rows)
 
 
-def _render_combined(averages, method, volume_norm, illum_tiers=None):
+def _render_combined(averages, method, volume_norm, illum_tiers=None, stds=None):
     """Combined averages figure with an interactive tool selector *underneath* it.
 
     The active tool is read from session_state BEFORE the chart is built, so the
     selector can live below the plot yet still drive it. Tools:
-      * Peak ratio — drag two boxes → each file's Area A / Area B.
-      * Population estimation — click to drop peaks; each trace is fit with one
+      * Peak ratio: drag two boxes to get each file's Area A / Area B.
+      * Population estimation: click to drop peaks; each trace is fit with one
         Gaussian per peak and the component areas give the relative steady-state
         populations (shaded under the traces, tabulated below).
+      * Region intensity: drag one box to set a wavelength range; each file's
+        mean spectrum is redrawn over that range with a ±1 SD band computed
+        across its individual traces (``stds``).
 
     ``illum_tiers`` (the set of included tiers) drives the figure title so it's
     clear which illumination intensities were filtered out.
@@ -997,12 +1010,14 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None):
     key = "__combined__"
     tool = st.session_state.get("combined_tool", TOOL_NONE)
     # Nonce is baked into the interactive chart key so consuming a selection can
-    # remount the chart and wipe plotly's lingering selection box — without it
+    # remount the chart and wipe plotly's lingering selection box; without it
     # the same static-keyed widget holds a stale box and the next drag never
     # registers as a fresh event (the "toggle tools to make it draw" bug).
     nonce = st.session_state.combined_nonce
+    stds = stds or {}
     centers = sorted(st.session_state.pop_centers.setdefault(key, []))
     ranges = st.session_state.ratio_ranges.setdefault(key, [None, None])
+    region = st.session_state.region_range.setdefault(key, None)
 
     # Fit population Gaussians up front (needed for both the shadings and table).
     pop_results = {}
@@ -1047,6 +1062,11 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None):
                     x=x, y=max(ys), text="▼", showarrow=False, yshift=16,
                     font=dict(size=16, color="black"),
                 )
+    if tool == TOOL_REGION and region:
+        cfig.add_vrect(
+            x0=region[0], x1=region[1], fillcolor="rgba(120,120,120,0.18)",
+            line_width=0, annotation_text="Region", annotation_position="top left",
+        )
 
     # Title reporting which illumination tiers were filtered out.
     if illum_tiers is None:
@@ -1075,7 +1095,7 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None):
         ),
         margin=dict(l=70, r=10, t=40, b=50), height=480,
         legend=dict(title_text="", font=dict(size=16)),
-        dragmode="select" if tool in (TOOL_RATIO, TOOL_POP) else "zoom",
+        dragmode="select" if tool in (TOOL_RATIO, TOOL_POP, TOOL_REGION) else "zoom",
     )
 
     # --- Render chart (interactive when a tool is active) ---
@@ -1090,22 +1110,32 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None):
             on_select="rerun", selection_mode="box", key=f"combined_ratio_{nonce}",
         )
         _handle_ratio_selection(event, key, ranges, ptr)
-    else:  # TOOL_POP
+    elif tool == TOOL_POP:
         st.caption("Drag a small box over a peak to drop it (or type a wavelength "
-                   "below) — a ▼ marks the highest trace there. Each trace is fit "
+                   "below). A ▼ marks the highest trace there. Each trace is fit "
                    "with one Gaussian per peak.")
         event = st.plotly_chart(
             cfig, use_container_width=True,
             on_select="rerun", selection_mode=["points", "box"], key=f"combined_pop_{nonce}",
         )
         _handle_pop_click(event, key)
+    else:  # TOOL_REGION
+        st.caption("Drag a box to set the wavelength region (or type bounds below); "
+                   "each file's mean is redrawn over it with a ±1 SD band.")
+        event = st.plotly_chart(
+            cfig, use_container_width=True,
+            on_select="rerun", selection_mode="box", key=f"combined_region_{nonce}",
+        )
+        _handle_region_selection(event, key)
 
     # --- Tool selector UNDERNEATH the plot ---
     st.radio(
         "Combined-plot tool", COMBINED_TOOLS, key="combined_tool", horizontal=True,
         help="Peak ratio: drag two boxes to compare integrated areas. "
              "Population estimation: click peaks to fit Gaussians and tabulate "
-             "each trace's relative populations.",
+             "each trace's relative populations. "
+             "Region intensity: drag one box to plot each file's mean ± SD over "
+             "a wavelength range.",
     )
 
     # --- Tool results below the selector ---
@@ -1113,6 +1143,8 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None):
         _render_ratio_results(averages, key, ranges)
     elif tool == TOOL_POP:
         _render_population_results(averages, key, centers, pop_results)
+    elif tool == TOOL_REGION:
+        _render_region_results(averages, key, region, stds, method, volume_norm)
 
     # Wide-format CSV of the combined averages (always available).
     frames = []
@@ -1184,6 +1216,119 @@ def _render_ratio_results(averages, key, ranges):
         )
     else:
         st.info("Drag two boxes (Region A and Region B) to compute ratios.")
+
+
+def _handle_region_selection(event, key):
+    """Set the intensity region (x-range) from a single dragged box."""
+    try:
+        boxes = event["selection"]["box"]
+    except (TypeError, KeyError, IndexError):
+        boxes = []
+    if not boxes:
+        return
+    xr = boxes[0].get("x") or []
+    if len(xr) >= 2:
+        lo, hi = sorted([float(xr[0]), float(xr[-1])])
+        sig = (round(lo, 4), round(hi, 4))
+        if sig != st.session_state.region_last.get(key):
+            st.session_state.region_last[key] = sig
+            st.session_state.region_range[key] = (lo, hi)
+            # Remount so the drawn box is cleared and the next drag is fresh.
+            st.session_state.combined_nonce += 1
+            st.rerun()
+
+
+def _render_region_results(averages, key, region, stds, method, volume_norm):
+    """Range controls + a per-file line plot of the mean spectrum over the region
+    with a ±1 SD band across that file's individual traces."""
+    grids = [g for _l, g, _m, _c in averages if g.size]
+    if not grids:
+        st.info("No averaged spectra to plot.")
+        return
+    gmin = min(float(g.min()) for g in grids)
+    gmax = max(float(g.max()) for g in grids)
+    lo0, hi0 = region if region else (gmin, gmax)
+
+    c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+    with c1:
+        lo_in = st.number_input("From (nm)", min_value=float(gmin), max_value=float(gmax),
+                                value=float(min(max(lo0, gmin), gmax)), step=5.0,
+                                key="region_lo")
+    with c2:
+        hi_in = st.number_input("To (nm)", min_value=float(gmin), max_value=float(gmax),
+                                value=float(min(max(hi0, gmin), gmax)), step=5.0,
+                                key="region_hi")
+    with c3:
+        if st.button("Apply range", key="region_apply"):
+            if hi_in > lo_in:
+                st.session_state.region_range[key] = (float(lo_in), float(hi_in))
+                st.session_state.region_last.pop(key, None)
+                st.session_state.combined_nonce += 1
+                st.rerun()
+    with c4:
+        if st.button("Reset region", key="region_reset"):
+            st.session_state.region_range[key] = None
+            st.session_state.region_last.pop(key, None)
+            st.session_state.combined_nonce += 1
+            st.rerun()
+
+    if not region:
+        st.info("Drag a box on the plot (or set bounds above and Apply) to choose "
+                "a wavelength region.")
+        return
+
+    lo, hi = region
+    st.caption(f"Region: {lo:.0f}–{hi:.0f} nm · mean per file with a ±1 SD band "
+               "across that file's individual traces.")
+
+    rfig = go.Figure()
+    csv_cols = {}
+    plotted = False
+    for label, grid, mean, color in averages:
+        sd = stds.get(label)
+        m = (grid >= lo) & (grid <= hi) & np.isfinite(mean)
+        if m.sum() < 1:
+            continue
+        xg, ym = grid[m], mean[m]
+        ys = np.zeros_like(ym) if sd is None or len(sd) != len(grid) else np.nan_to_num(sd[m])
+        upper, lower = ym + ys, ym - ys
+        # ±SD ribbon (upper then lower with fill to the previous trace).
+        rfig.add_trace(go.Scatter(
+            x=xg, y=upper, mode="lines", line=dict(width=0),
+            showlegend=False, hoverinfo="skip",
+        ))
+        rfig.add_trace(go.Scatter(
+            x=xg, y=lower, mode="lines", line=dict(width=0),
+            fill="tonexty", fillcolor=_rgba(color, 0.18),
+            showlegend=False, hoverinfo="skip",
+        ))
+        rfig.add_trace(go.Scatter(
+            x=xg, y=ym, mode="lines", line=dict(color=color, width=4), name=label,
+            hovertemplate=f"{label}<br>%{{x:.1f}} nm, %{{y:.3g}} ± SD<extra></extra>",
+        ))
+        csv_cols[f"{label}::Wavelength_nm"] = pd.Series(xg)
+        csv_cols[f"{label}::Mean"] = pd.Series(ym)
+        csv_cols[f"{label}::SD"] = pd.Series(ys)
+        plotted = True
+
+    if not plotted:
+        st.warning("No spectra fall within the selected region.")
+        return
+
+    rfig.update_layout(
+        xaxis_title="Wavelength (nm)",
+        yaxis_title=_y_axis_label(method, volume_norm),
+        height=430, legend=dict(title_text=""),
+        margin=dict(l=60, r=10, t=10, b=40),
+    )
+    st.plotly_chart(rfig, use_container_width=True, key="combined_region_plot")
+
+    st.download_button(
+        "Download region intensities (CSV)",
+        data=pd.DataFrame(csv_cols).to_csv(index=False).encode("utf-8"),
+        file_name=f"region_{lo:.0f}-{hi:.0f}nm.csv", mime="text/csv",
+        key="combined_region_dl",
+    )
 
 
 def _handle_pop_click(event, key):
@@ -1279,7 +1424,7 @@ def _render_population_results(averages, key, centers, pop_results):
     # Peaks are colored by their clicked wavelength via romaO so the color
     # roughly matches the visible emission; the segment order/colors are shared
     # across every bar because comps are aligned to sorted(centers).
-    st.caption("Relative steady-state populations — each trace's Gaussian areas as "
+    st.caption("Relative steady-state populations: each trace's Gaussian areas as "
                "a percentage of that trace's total fitted area. Peaks colored by "
                "wavelength (romaO), roughly matching their emission color.")
     labels = [label for label, *_ in averages if label in pop_results]

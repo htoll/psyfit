@@ -20,7 +20,9 @@ tested by ``tools/verify_crystallography.py``).
 from __future__ import annotations
 
 import io
+import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -32,18 +34,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-import streamlit.elements.image as st_image
+from utils import install_canvas_image_compat
 
-if not hasattr(st_image, "image_to_url"):
-    try:
-        from streamlit.elements.lib.image_utils import image_to_url
-    except ImportError:
-        try:
-            from streamlit.elements.image import image_to_url
-        except ImportError:
-            def image_to_url(image, width, clamp, channels, output_format, image_id, allow_emoji):
-                return ""
-    st_image.image_to_url = image_to_url
+# Must run before the first st_canvas() call; see install_canvas_image_compat.
+install_canvas_image_compat()
 
 from scipy.ndimage import gaussian_filter
 from scipy.signal import find_peaks
@@ -51,7 +45,7 @@ from skimage.feature import peak_local_max
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image
 
-# Crystallography engine — works whether imported as tools.fft (app) or fft (standalone).
+# Crystallography engine: works whether imported as tools.fft (app) or fft (standalone).
 try:
     from tools import crystallography as xtal
 except ImportError:  # running from within tools/
@@ -65,6 +59,13 @@ except ImportError:
     ncem_dm = None
     ncem_emd = None
 
+# Optional h5py: needed for Velox/Thermo Fisher .emd files (HDF5 with a Data/Image group),
+# which ncempy's Berkeley-EMD reader cannot open.
+try:
+    import h5py
+except ImportError:
+    h5py = None
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Data structures
@@ -77,59 +78,138 @@ class TEMImage:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# File reading (ncempy)
+# File reading (.dm3 via ncempy; .emd via h5py, handling Velox and Berkeley layouts)
 # ═══════════════════════════════════════════════════════════════════════════
+def _extract_pixel_size_nm(meta_str: str) -> float:
+    """Pull the pixel size (→ nm) from a Velox JSON metadata string. Velox stores
+    PixelSize.width/height in metres (often as strings), so we average and ×1e9."""
+    def _find(obj):
+        if isinstance(obj, dict):
+            if "PixelSize" in obj and isinstance(obj["PixelSize"], dict):
+                ps = obj["PixelSize"]
+                vals = [float(v) for v in (ps.get("width"), ps.get("height")) if v is not None]
+                if vals:
+                    return (sum(vals) / len(vals)) * 1e9
+            for v in obj.values():
+                r = _find(v)
+                if r is not None:
+                    return r
+        elif isinstance(obj, list):
+            for v in obj:
+                r = _find(v)
+                if r is not None:
+                    return r
+        return None
+
+    try:
+        val = _find(json.loads(meta_str))
+        if val is not None:
+            return float(val)
+    except Exception:
+        pass
+    m = re.search(r'"PixelSize"\s*:\s*\{[^}]*"width"\s*:\s*"?([0-9.eE+-]+)"?\s*,\s*'
+                  r'"height"\s*:\s*"?([0-9.eE+-]+)"?', meta_str)
+    if m:
+        try:
+            return ((float(m.group(1)) + float(m.group(2))) / 2.0) * 1e9
+        except Exception:
+            pass
+    return float("nan")
+
+
+def _read_dm3(tmp_path: str) -> Tuple[np.ndarray, float]:
+    if ncem_dm is None:
+        raise RuntimeError("ncempy is not installed (needed for .dm3). pip install ncempy")
+    with ncem_dm.fileDM(tmp_path, verbose=False) as rdr:
+        im = rdr.getDataset(0)
+        data = np.array(im["data"], dtype=np.float32)
+        nm_per_px = np.nan
+        if "pixelSize" in im and len(im["pixelSize"]) > 0:
+            val = im["pixelSize"][0]
+            nm_per_px = val * 1e9 if val < 1e-6 else val
+        if np.isnan(nm_per_px):
+            md = rdr.allTags
+            for key, factor in [
+                ("ImageList.1.ImageData.Calibrations.Dimension.0.Scale", 1e9),
+                ("pixelSize.x", 1e9), ("xscale", 1e9),
+                ("root.ImageList.1.ImageData.Calibrations.Dimension.0.Scale", 1),
+            ]:
+                try:
+                    val = md
+                    for k in key.split("."):
+                        val = val[k]
+                    if isinstance(val, (int, float)) and val > 0:
+                        nm_per_px = float(val) * factor
+                        break
+                except Exception:
+                    continue
+    return data, nm_per_px
+
+
+def _read_emd(tmp_path: str) -> Tuple[np.ndarray, float]:
+    """Read a Velox/Thermo Fisher .emd (Data/Image group) or a generic HDF5 EMD via h5py,
+    falling back to ncempy's Berkeley-EMD reader if h5py is unavailable."""
+    if h5py is None:
+        if ncem_emd is None:
+            raise RuntimeError("Reading .emd needs h5py or ncempy. pip install h5py")
+        with ncem_emd.fileEMD(tmp_path, readonly=True) as f:
+            for group in f.list_groups():
+                try:
+                    ds = f.get_dataset(group)
+                    if isinstance(ds, tuple) and len(ds) >= 1:
+                        return np.array(ds[0], dtype=np.float32), np.nan
+                except Exception:
+                    continue
+        raise ValueError("No readable dataset in EMD file.")
+
+    data = None
+    nm_per_px = np.nan
+    with h5py.File(tmp_path, "r") as h5:
+        # Velox layout: /Data/Image/<uid>/{Data, Metadata}. Data is (H, W, n_frames).
+        if "Data" in h5 and "Image" in h5["Data"] and len(h5["Data"]["Image"].keys()):
+            dg = h5["Data"]["Image"][list(h5["Data"]["Image"].keys())[0]]
+            stack = dg["Data"][()]
+            if stack.ndim == 3:
+                data = stack[:, :, 0].astype(np.float32)
+            elif stack.ndim == 2:
+                data = stack.astype(np.float32)
+            if "Metadata" in dg:
+                try:
+                    meta = dg["Metadata"][()].tobytes().decode("utf-8", errors="ignore")
+                    nm_per_px = _extract_pixel_size_nm(meta)
+                except Exception:
+                    pass
+        if data is None:
+            # Generic fallback: use the largest 2-D(+) dataset in the file.
+            datasets: List["h5py.Dataset"] = []
+            h5.visititems(lambda name, obj: datasets.append(obj)
+                          if isinstance(obj, h5py.Dataset) and obj.ndim >= 2 else None)
+            if datasets:
+                best = max(datasets, key=lambda d: int(np.prod(d.shape[:2])))
+                arr = np.array(best, dtype=np.float32)
+                if arr.ndim == 3:
+                    arr = arr[..., 0] if arr.shape[2] in (1, 3, 4) else arr[0]
+                data = arr
+    if data is None:
+        raise ValueError("No image dataset found in EMD file.")
+    return data, nm_per_px
+
+
 @st.cache_data(show_spinner=False)
 def get_file_content(file_bytes: bytes, filename: str) -> TEMImage:
     """Read .dm3/.emd bytes and extract the pixel size where available."""
-    if ncem_dm is None:
-        raise RuntimeError("ncempy is not installed. Please install it (pip install ncempy).")
-
-    suffix = os.path.splitext(filename)[1]
+    suffix = os.path.splitext(filename)[1].lower()
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
 
     try:
-        data = None
-        nm_per_px = np.nan
-
-        if suffix.lower() == ".dm3":
-            with ncem_dm.fileDM(tmp_path, verbose=False) as rdr:
-                im = rdr.getDataset(0)
-                data = np.array(im["data"], dtype=np.float32)
-                if "pixelSize" in im and len(im["pixelSize"]) > 0:
-                    val = im["pixelSize"][0]
-                    nm_per_px = val * 1e9 if val < 1e-6 else val
-                if np.isnan(nm_per_px):
-                    md = rdr.allTags
-                    candidates = [
-                        ("ImageList.1.ImageData.Calibrations.Dimension.0.Scale", 1e9),
-                        ("pixelSize.x", 1e9),
-                        ("xscale", 1e9),
-                        ("root.ImageList.1.ImageData.Calibrations.Dimension.0.Scale", 1),
-                    ]
-                    for key, factor in candidates:
-                        try:
-                            val = md
-                            for k in key.split("."):
-                                val = val[k]
-                            if isinstance(val, (int, float)) and val > 0:
-                                nm_per_px = float(val) * factor
-                                break
-                        except Exception:
-                            continue
-
-        elif suffix.lower() == ".emd":
-            with ncem_emd.fileEMD(tmp_path, readonly=True) as f:
-                for group in f.list_groups():
-                    try:
-                        ds = f.get_dataset(group)
-                        if isinstance(ds, tuple) and len(ds) >= 1:
-                            data = np.array(ds[0], dtype=np.float32)
-                            break
-                    except Exception:
-                        continue
+        if suffix == ".dm3":
+            data, nm_per_px = _read_dm3(tmp_path)
+        elif suffix == ".emd":
+            data, nm_per_px = _read_emd(tmp_path)
+        else:
+            raise ValueError(f"Unsupported file type: {suffix}")
 
         if data is None:
             raise ValueError("Could not extract image data.")
@@ -139,8 +219,14 @@ def get_file_content(file_bytes: bytes, filename: str) -> TEMImage:
             nm_per_px = 1.0
         return TEMImage(data=data, nm_per_px=nm_per_px, filename=filename)
     finally:
+        # On Windows the HDF5 reader can still hold the file handle briefly, so os.remove
+        # raises WinError 32. Swallow it (as tem_analysis.py does) so a lock never masks a
+        # successful read; the OS reclaims the temp file later.
         if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+            try:
+                os.remove(tmp_path)
+            except PermissionError:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -301,8 +387,6 @@ def annotated_fft_figure(fft_rgb: np.ndarray, spots: pd.DataFrame,
 # MAIN APP
 # ═══════════════════════════════════════════════════════════════════════════
 def run():
-    st.title("TEM FFT Lattice Analysis — Phase ID & Indexing")
-
     if "last_file_id" not in st.session_state:
         st.session_state.last_file_id = None
 
@@ -340,7 +424,7 @@ def run():
         with manual_scale_container:
             val_to_show = float(tem_img_raw.nm_per_px)
             if val_to_show == 1.0:
-                st.warning("⚠️ Pixel size not found — enter it:")
+                st.warning("Pixel size not found. Enter it below:")
             actual_scale = st.number_input("Pixel size (nm/px)", value=val_to_show,
                                            format="%.5f", min_value=0.0)
             tem_img = TEMImage(tem_img_raw.data, actual_scale, tem_img_raw.filename)
@@ -453,7 +537,7 @@ def run():
             st.metric("Coverage", f"{top.n_matched}/{top.n_spots} spots")
             st.metric("Mean d error", f"{top.mean_rel_err * 100:.1f}%")
             cal = top.scale
-            cal_msg = "scale ≈ 1 ✓" if abs(cal - 1) < 0.03 else "check calibration"
+            cal_msg = "scale ≈ 1, calibration consistent" if abs(cal - 1) < 0.03 else "check calibration"
             st.caption(f"Fit scale {cal:.3f} ({cal_msg}) · SG {top.phase.space_group}")
             st.caption(f"Implied pixel size: {tem_img.nm_per_px * cal:.5f} nm/px")
             st.caption(f"Ref: {top.phase.reference}")

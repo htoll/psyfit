@@ -8,9 +8,43 @@ from scipy.ndimage import gaussian_filter
 from skimage.feature import peak_local_max
 import matplotlib.pyplot as plt
 import re
+import tifffile
 
 from utils import plot_brightness, plot_histogram, file_uploader_with_clear
 from tools import roi as roi_tool
+
+def read_tiff_image(file_buffer):
+    """
+    Reads a confocal .tif/.tiff file into a 2D float array.
+    Z-stacks (or any >2D array) are collapsed to 2D via a max-intensity
+    projection over the leading axes so spot detection can run on them.
+    """
+    try:
+        file_buffer.seek(0)
+        data = tifffile.imread(file_buffer)
+        data = np.squeeze(np.asarray(data))
+
+        # Collapse anything above 2D (e.g. a z-stack) to a single plane.
+        while data.ndim > 2:
+            data = data.max(axis=0)
+
+        if data.ndim == 2 and data.size > 0:
+            return data.astype(float)
+
+        return None
+    except Exception as e:
+        st.warning(f"Error parsing TIFF file: {e}")
+        return None
+
+def read_image(file_buffer):
+    """
+    Reads a confocal image from an uploaded file, dispatching on extension.
+    Supports text-based .dat/.txt/.csv files and .tif/.tiff images.
+    """
+    name = getattr(file_buffer, "name", "")
+    if os.path.splitext(name)[1].lower() in (".tif", ".tiff"):
+        return read_tiff_image(file_buffer)
+    return read_dat_image(file_buffer)
 
 def read_dat_image(file_buffer):
     """
@@ -199,15 +233,12 @@ def integrate_dat(
     return pd.DataFrame(results)
 
 def run():
-    st.header("Analyze Confocal .dat Files")
-    st.markdown(r"""
-    $Brightness = \frac{Amplitude}{Dwell \times Accumulation}$
-    """)
+    st.markdown(r"$Brightness = \frac{Amplitude}{Dwell \times Accumulation}$")
 
     # --- Sidebar Controls ---
     with st.sidebar:
         st.subheader("Files")
-        uploaded_files = file_uploader_with_clear("Upload .dat files", key="confocal_uploads", type=["dat", "txt", "csv"], accept_multiple_files=True)
+        uploaded_files = file_uploader_with_clear("Upload .dat/.tif files", key="confocal_uploads", type=["dat", "txt", "csv", "tif", "tiff"], accept_multiple_files=True)
         
         st.markdown("---")
         st.subheader("Acquisition Settings")
@@ -258,7 +289,7 @@ def run():
     custom_roi = None
     if uploaded_files and use_custom_roi:
         st.subheader("Custom region")
-        ref_img = read_dat_image(uploaded_files[0])
+        ref_img = read_image(uploaded_files[0])
         if ref_img is None:
             st.warning("Could not read the first file to draw an ROI.")
         else:
@@ -301,7 +332,7 @@ def run():
                         current_acc = int(m_acc.group(1))
 
                 # 2. Parse Image
-                image_data = read_dat_image(uploaded_file)
+                image_data = read_image(uploaded_file)
                 if image_data is None:
                     st.warning(f"Skipping {uploaded_file.name}: Empty or invalid format.")
                     continue

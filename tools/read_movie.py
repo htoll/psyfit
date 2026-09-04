@@ -1,5 +1,5 @@
 # read_movie.py
-# SIF Movie Exporter (MP4/MOV/TIFF) — Region, Labels, Bottom Colorbar, Flip-X, Compact Preview
+# SIF movie exporter (MP4/MOV/TIFF): region, labels, bottom colorbar, flip-X, compact preview
 
 from __future__ import annotations
 
@@ -393,9 +393,6 @@ def _get_font(size: int):
 
 
 def run():
-    st.title("SIF Movie Exporter")
-
-
     with st.sidebar:
         st.header("Controls")
         colormap = st.selectbox("Colormap", ["gray", "magma", "viridis", "plasma", "hot", "hsv", "cividis", "inferno"], index=0)
