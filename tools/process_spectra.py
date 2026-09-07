@@ -5,11 +5,14 @@ Consumes the CSVs produced by ``tools/get_spectra.py`` (columns:
 
   * plot every uploaded CSV as its own interactive figure,
   * exclude spectra by clicking a trace or dragging a box over a region,
+  * restrict every plot to a custom spatial ROI, drawn on a map of the particle
+    centroids (needs the ``Particle_X``/``Particle_Y`` columns),
   * optionally subtract a spline (pybaselines) baseline from each spectrum,
   * normalize by max pixel, max-in-range, or total area,
   * volume-normalize by a per-file effective radius (r_eff),
   * pick each file's color (true-color picker; individual traces are shades),
-  * combine every CSV's average into one legended figure, and
+  * combine every CSV's average into one legended figure, optionally shaded
+    with each file's ±1 SD band, and
   * drag two regions on the combined plot to read per-file area ratios.
 
 All spectra are cropped at ``CROP_NM`` (artifacts dominate past it). The heavy
@@ -32,6 +35,11 @@ from utils import file_uploader_with_clear
 
 # Columns expected from a Get Spectra export.
 REQUIRED_COLS = ["File", "Particle_ID", "Wavelength_nm", "Intensity"]
+
+# Optional per-particle centroid columns (image pixel coords: X = column, Y =
+# row) written by Get Spectra. When present, spectra can be restricted to a
+# user-drawn spatial ROI; when absent, the ROI filter is unavailable.
+CENTROID_COLS = ("Particle_X", "Particle_Y")
 
 # Spectra are cropped here — past this there tend to be detector artifacts.
 CROP_NM = 875.0
@@ -91,6 +99,9 @@ COMBINED_TOOLS = [TOOL_NONE, TOOL_RATIO, TOOL_POP, TOOL_REGION]
 
 # Fill opacity for the population Gaussian shadings.
 POP_FILL_ALPHA = 0.18
+
+# Fill opacity for the optional ±1 SD ribbons on the combined plot.
+SD_FILL_ALPHA = 0.18
 
 # Crameri "romaO" cyclic colormap, sampled at 33 evenly spaced anchors (RGB in
 # 0–1). Embedded so the population plot can color peaks without a runtime
@@ -370,7 +381,7 @@ def _y_axis_label(method, volume):
     return "Intensity (photons / s / px)"
 
 
-def _processing_summary(method, baseline, volume_norm, rng):
+def _processing_summary(method, baseline, volume_norm, rng, roi=None):
     """One-line description of the active processing chain."""
     norm = {
         NORM_NONE: "none (raw photons/s/px)",
@@ -389,6 +400,9 @@ def _processing_summary(method, baseline, volume_norm, rng):
         parts.append(f"baseline: mean in {baseline['lo']:.0f}–{baseline['hi']:.0f} nm subtracted")
     elif baseline["method"] == "spline":
         parts.append(f"baseline: spline (λ={baseline['lam']:.0e}, p={baseline['p']:.3f})")
+    if roi is not None:
+        parts.append(f"ROI: centroid in x {roi[0]:.0f}–{roi[1]:.0f}, "
+                     f"y {roi[2]:.0f}–{roi[3]:.0f} px")
     return " · ".join(parts)
 
 
@@ -503,8 +517,9 @@ def _process_csv(raw_bytes, method, rng, volume, baseline_tuple):
     """Parse a CSV, crop at CROP_NM, and baseline/normalize every spectrum.
 
     Returns ``(specs, error)`` where ``specs`` is a list of
-    ``(key, wvl, y, rel_illum)`` (key = "<source SIF>::<particle id>",
-    ``rel_illum`` = per-particle Relative_Illumination or NaN when absent).
+    ``(key, wvl, y, rel_illum, xy)`` (key = "<source SIF>::<particle id>",
+    ``rel_illum`` = per-particle Relative_Illumination or NaN when absent, ``xy``
+    = the particle's ``(Particle_X, Particle_Y)`` centroid or ``(nan, nan)``).
     Cached on the raw bytes + processing params, so exclusion toggles never
     recompute this.
     """
@@ -519,6 +534,7 @@ def _process_csv(raw_bytes, method, rng, volume, baseline_tuple):
 
     df = df[df["Wavelength_nm"] <= CROP_NM]
     has_illum = "Relative_Illumination" in df.columns
+    has_xy = all(c in df.columns for c in CENTROID_COLS)
 
     bl = _decode_baseline_tuple(baseline_tuple)
 
@@ -535,8 +551,57 @@ def _process_csv(raw_bytes, method, rng, volume, baseline_tuple):
             vals = vals[np.isfinite(vals)]
             if vals.size:
                 rel = float(np.nanmedian(vals))
-        specs.append((f"{src}::{pid}", wvl, y, rel))
+        xy = (np.nan, np.nan)
+        if has_xy:
+            # One centroid per particle, but take the median in case the export
+            # ever carries per-row jitter.
+            xy = tuple(
+                float(v) if np.isfinite(v) else np.nan
+                for v in (
+                    pd.to_numeric(g[c], errors="coerce").median()
+                    for c in CENTROID_COLS
+                )
+            )
+        specs.append((f"{src}::{pid}", wvl, y, rel, xy))
     return specs, None
+
+
+@st.cache_data(show_spinner=False)
+def _particle_centroids(raw_bytes):
+    """Per-particle centroids from a Get Spectra CSV, for the ROI map.
+
+    Returns a DataFrame with ``Key`` / ``X`` / ``Y`` (one row per particle), or
+    ``None`` when the CSV has no centroid columns. Kept separate from
+    :func:`_process_csv` so the map doesn't recompute on every processing tweak.
+    """
+    try:
+        df = pd.read_csv(io.BytesIO(raw_bytes))
+    except Exception:
+        return None
+    if not all(c in df.columns for c in CENTROID_COLS) or \
+            not {"File", "Particle_ID"}.issubset(df.columns):
+        return None
+    g = df.groupby(["File", "Particle_ID"], sort=True)[list(CENTROID_COLS)].median()
+    out = g.reset_index()
+    out["Key"] = out["File"].astype(str) + "::" + out["Particle_ID"].astype(str)
+    return out.rename(columns={CENTROID_COLS[0]: "X", CENTROID_COLS[1]: "Y"})[
+        ["Key", "X", "Y"]
+    ].dropna()
+
+
+def _in_roi(xy, roi):
+    """True when centroid ``xy`` falls inside ``roi`` = ``(x0, x1, y0, y1)``.
+
+    Particles with no centroid (NaN) are treated as inside so a CSV lacking
+    position columns is never silently emptied by the filter.
+    """
+    if roi is None:
+        return True
+    x, y = xy if xy is not None else (np.nan, np.nan)
+    if not (np.isfinite(x) and np.isfinite(y)):
+        return True
+    x0, x1, y0, y1 = roi
+    return x0 <= x <= x1 and y0 <= y <= y1
 
 
 def _decode_baseline_tuple(baseline_tuple):
@@ -561,7 +626,7 @@ def _traces_in_box(specs, xr, yr):
     ylo, yhi = sorted(float(v) for v in yr[:2])
     xs = np.linspace(lo, hi, 80)
     hits = []
-    for i, (_k, wvl, y, _rel) in enumerate(specs):
+    for i, (_k, wvl, y, _rel, _xy) in enumerate(specs):
         yi = np.interp(xs, wvl, y, left=np.nan, right=np.nan)
         if np.any((yi >= ylo) & (yi <= yhi)):
             hits.append(i)
@@ -627,7 +692,7 @@ def _render_file(file_key, specs, opts, base_color, volume):
     # Keep exclusion bookkeeping against the FULL key set so the illumination
     # filter below never silently drops a manual exclusion.
     excluded = st.session_state.spectra_excluded.setdefault(file_key, set())
-    excluded.intersection_update([k for k, _, _, _ in specs])
+    excluded.intersection_update([s[0] for s in specs])
 
     # Illumination-tier filter: hide spectra whose tier isn't selected. Spectra
     # with no illumination data (tier None) are always shown.
@@ -639,13 +704,21 @@ def _render_file(file_key, specs, opts, base_color, volume):
         vis_specs = list(specs)
     n_hidden_illum = len(specs) - len(vis_specs)
 
-    spec_keys = [k for k, _, _, _ in vis_specs]  # indices match plotted traces
+    # Spatial ROI filter: hide spectra whose particle centroid falls outside the
+    # user-defined box (see _in_roi — particles with no centroid stay visible).
+    roi = opts.get("roi")
+    n_before_roi = len(vis_specs)
+    if roi is not None:
+        vis_specs = [s for s in vis_specs if _in_roi(s[4], roi)]
+    n_hidden_roi = n_before_roi - len(vis_specs)
+
+    spec_keys = [s[0] for s in vis_specs]  # indices match plotted traces
     shades = _shades(base_color, len(vis_specs))
-    has_illum = any(np.isfinite(rel) for _, _, _, rel in vis_specs)
+    has_illum = any(np.isfinite(s[3]) for s in vis_specs)
     fig = go.Figure()
     included = []  # (wvl, y) for the average
 
-    for idx, (key, wvl, y, rel) in enumerate(vis_specs):
+    for idx, (key, wvl, y, rel, _xy) in enumerate(vis_specs):
         is_excluded = key in excluded
         width = _width_for_illum(rel) if has_illum else WIDTH_DEFAULT
         illum_txt = f" · illum {rel:.0%}" if np.isfinite(rel) else ""
@@ -700,6 +773,8 @@ def _render_file(file_key, specs, opts, base_color, volume):
                   if has_illum else " · no illumination column in CSV")
     if n_hidden_illum:
         illum_note += f" · {n_hidden_illum} hidden by illumination filter"
+    if n_hidden_roi:
+        illum_note += f" · {n_hidden_roi} outside ROI"
     c_cap, c_btn = st.columns([4, 1])
     with c_cap:
         st.caption(
@@ -769,6 +844,160 @@ def _render_file(file_key, specs, opts, base_color, volume):
     return grid, mean, sd, n_incl
 
 
+# --- Spatial ROI ------------------------------------------------------------
+def _render_roi_ui(csv_files, file_names, file_colors, file_show):
+    """Particle-centroid map with box-select + numeric bounds; returns the ROI.
+
+    The ROI is ``(x0, x1, y0, y1)`` in the CSV's ``Particle_X``/``Particle_Y``
+    image pixel coordinates, or ``None`` when unset. One ROI applies to every
+    file (matching Get Spectra, where a single drawn ROI filters all frames).
+    Dragging a box sets it; a signature guard + nonce remount consumes the
+    selection exactly once, the same pattern the combined-plot tools use.
+    """
+    st.subheader("Spatial ROI")
+
+    # Centroids of the currently shown files, one scatter series per file.
+    series = []
+    missing = []
+    for uf in csv_files:
+        if not file_show.get(uf.name, True):
+            continue
+        pts = _particle_centroids(uf.getvalue())
+        if pts is None or pts.empty:
+            missing.append(uf.name)
+            continue
+        series.append((file_names.get(uf.name) or uf.name,
+                       file_colors.get(uf.name, "#1f77b4"), pts))
+
+    if missing:
+        st.caption("No `Particle_X`/`Particle_Y` columns in: " + ", ".join(missing) +
+                   " — those spectra are never filtered by the ROI.")
+    if not series:
+        st.info("None of the uploaded CSVs carry particle centroids, so no ROI can "
+                "be drawn. Re-export from **Get Spectra** to include them.")
+        return None
+
+    roi = st.session_state.roi_box
+    nonce = st.session_state.roi_nonce
+
+    xs = np.concatenate([p["X"].to_numpy(dtype=float) for _l, _c, p in series])
+    ys = np.concatenate([p["Y"].to_numpy(dtype=float) for _l, _c, p in series])
+    xmin, xmax = float(xs.min()), float(xs.max())
+    ymin, ymax = float(ys.min()), float(ys.max())
+    pad_x = 0.05 * (xmax - xmin) if xmax > xmin else 1.0
+    pad_y = 0.05 * (ymax - ymin) if ymax > ymin else 1.0
+
+    mfig = go.Figure()
+    for label, color, pts in series:
+        inside = np.array([_in_roi((x, y), roi)
+                           for x, y in zip(pts["X"], pts["Y"])], dtype=bool)
+        mfig.add_trace(go.Scatter(
+            x=pts["X"], y=pts["Y"], mode="markers", name=label,
+            marker=dict(size=9, color=color,
+                        opacity=1.0,
+                        line=dict(width=1, color="black")),
+            customdata=pts["Key"],
+            hovertemplate="%{customdata}<br>x=%{x:.0f}, y=%{y:.0f}<extra></extra>",
+        ))
+        if roi is not None and (~inside).any():
+            # Excluded particles redrawn as hollow greys on top, so it's obvious
+            # which centroids the ROI is dropping.
+            mfig.add_trace(go.Scatter(
+                x=pts["X"][~inside], y=pts["Y"][~inside], mode="markers",
+                marker=dict(size=9, color="lightgrey",
+                            line=dict(width=1, color="grey")),
+                name=f"{label} (outside)", showlegend=False,
+                customdata=pts["Key"][~inside],
+                hovertemplate="%{customdata} — outside ROI<extra></extra>",
+            ))
+
+    if roi is not None:
+        mfig.add_shape(type="rect", x0=roi[0], x1=roi[1], y0=roi[2], y1=roi[3],
+                       line=dict(color="black", width=2, dash="dot"),
+                       fillcolor="rgba(0,0,0,0.06)", layer="below")
+
+    mfig.update_layout(
+        xaxis=dict(title="Particle X (px)", range=[xmin - pad_x, xmax + pad_x]),
+        yaxis=dict(title="Particle Y (px)", range=[ymin - pad_y, ymax + pad_y],
+                   scaleanchor="x", scaleratio=1),
+        height=430, margin=dict(l=60, r=10, t=10, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0),
+        dragmode="select",
+    )
+    st.caption("Drag a box to set the ROI (or type bounds below) — only spectra "
+               "whose particle centroid falls inside are plotted, averaged, and "
+               "summarized.")
+    event = st.plotly_chart(
+        mfig, use_container_width=True, on_select="rerun",
+        selection_mode="box", key=f"roi_map_{nonce}",
+    )
+    _handle_roi_selection(event)
+
+    # Numeric bounds (seeded from the current ROI or the full extent) + reset.
+    lo_x, hi_x, lo_y, hi_y = roi if roi is not None else (xmin, xmax, ymin, ymax)
+    c1, c2, c3, c4, c5, c6 = st.columns([2, 2, 2, 2, 1, 1])
+    x0_in = c1.number_input("X min (px)", value=float(lo_x), step=10.0, key="roi_x0")
+    x1_in = c2.number_input("X max (px)", value=float(hi_x), step=10.0, key="roi_x1")
+    y0_in = c3.number_input("Y min (px)", value=float(lo_y), step=10.0, key="roi_y0")
+    y1_in = c4.number_input("Y max (px)", value=float(hi_y), step=10.0, key="roi_y1")
+    with c5:
+        if st.button("Apply ROI", key="roi_apply"):
+            new_roi = (min(x0_in, x1_in), max(x0_in, x1_in),
+                       min(y0_in, y1_in), max(y0_in, y1_in))
+            if new_roi[1] > new_roi[0] and new_roi[3] > new_roi[2]:
+                st.session_state.roi_box = new_roi
+                st.session_state.roi_last = None
+                st.session_state.roi_nonce += 1
+                st.rerun()
+            else:
+                st.warning("ROI needs a non-zero width and height.")
+    with c6:
+        if st.button("Clear ROI", key="roi_clear", disabled=roi is None):
+            st.session_state.roi_box = None
+            st.session_state.roi_last = None
+            st.session_state.roi_nonce += 1
+            st.rerun()
+
+    if roi is None:
+        st.caption("ROI: not set — all centroids included.")
+    else:
+        n_in = sum(int(np.count_nonzero(
+            [_in_roi((x, y), roi) for x, y in zip(p["X"], p["Y"])]))
+            for _l, _c, p in series)
+        n_all = sum(len(p) for _l, _c, p in series)
+        st.caption(f"ROI: x {roi[0]:.0f}–{roi[1]:.0f} px · y {roi[2]:.0f}–{roi[3]:.0f} px "
+                   f"— {n_in} of {n_all} particles inside.")
+    st.divider()
+    return roi
+
+
+def _handle_roi_selection(event):
+    """Set the spatial ROI from a dragged box on the centroid map."""
+    try:
+        boxes = event["selection"]["box"]
+    except (TypeError, KeyError, IndexError):
+        boxes = []
+    if not boxes:
+        return
+    xr = boxes[0].get("x") or []
+    yr = boxes[0].get("y") or []
+    if len(xr) < 2 or len(yr) < 2:
+        return
+    x0, x1 = sorted([float(xr[0]), float(xr[-1])])
+    y0, y1 = sorted([float(yr[0]), float(yr[-1])])
+    sig = (round(x0, 3), round(x1, 3), round(y0, 3), round(y1, 3))
+    if sig == st.session_state.roi_last:
+        return
+    st.session_state.roi_last = sig
+    st.session_state.roi_box = (x0, x1, y0, y1)
+    # Clear the numeric inputs' widget state so they reseed from the new ROI.
+    for k in ("roi_x0", "roi_x1", "roi_y0", "roi_y1"):
+        st.session_state.pop(k, None)
+    # Remount so the drawn box is consumed and the next drag is a fresh event.
+    st.session_state.roi_nonce += 1
+    st.rerun()
+
+
 # --- App --------------------------------------------------------------------
 def run():
     st.session_state.setdefault("spectra_excluded", {})  # file_key -> set(keys)
@@ -783,6 +1012,9 @@ def run():
     st.session_state.setdefault("region_last", {})   # key -> last box signature
     st.session_state.setdefault("combined_nonce", 0)  # remount combined chart to clear selection
     st.session_state.setdefault("reff_store", {})    # file -> r_eff (survives toggling)
+    st.session_state.setdefault("roi_box", None)     # (x0, x1, y0, y1) centroid ROI
+    st.session_state.setdefault("roi_last", None)    # last ROI box signature
+    st.session_state.setdefault("roi_nonce", 0)      # remount ROI map to clear selection
 
     with st.sidebar:
         st.header("Inputs")
@@ -799,6 +1031,11 @@ def run():
             "Barplot integrated regions", value=False,
             help="Integrate each CSV's average over Blue/Green/Red/NIR bands.",
         )
+        show_sd = st.checkbox(
+            "Shade ±1 SD on combined plot", value=False,
+            help="Shade each average in the combined plot with ±1 standard "
+                 "deviation across that file's individual included spectra.",
+        )
 
         st.caption("Illumination tiers to include "
                    f"(Low <{ILLUM_LOW_MAX:.0%} · Medium <{ILLUM_MED_MAX:.0%} · "
@@ -811,6 +1048,13 @@ def run():
             illum_tiers.add("Medium")
         if ci3.checkbox("High", value=True, key="illum_high"):
             illum_tiers.add("High")
+
+        roi_enabled = st.checkbox(
+            "Custom spatial ROI (particle centroid)", value=False,
+            help="Draw a box on a map of particle centroids and plot only the "
+                 "spectra whose centroid falls inside it. Needs the "
+                 "Particle_X/Particle_Y columns written by Get Spectra.",
+        )
 
         baseline_method = st.radio(
             "Baseline correction", BASELINE_METHODS, index=0,
@@ -922,6 +1166,10 @@ def run():
         st.info("Upload one or more spectra CSVs exported by **Get Spectra** to begin.")
         return
 
+    # Spatial ROI (drawn on the centroid map above the per-file panels) — one
+    # ROI filters every file, so it's resolved before the render loop.
+    roi = _render_roi_ui(csv_files, file_names, file_colors, file_show) if roi_enabled else None
+
     opts = {
         "show_average": show_average,
         "barplot": barplot,
@@ -929,9 +1177,11 @@ def run():
         "range": rng,
         "baseline": baseline,
         "illum_tiers": illum_tiers,
+        "roi": roi,
     }
 
-    st.caption(f"**Processing applied** — {_processing_summary(method, baseline, volume_norm, rng)}")
+    st.caption(f"**Processing applied** — "
+               f"{_processing_summary(method, baseline, volume_norm, rng, roi)}")
 
     averages = []     # (label, grid, mean, color) for the combined plot
     stds = {}         # label -> per-wavelength SD across that file's traces
@@ -984,14 +1234,16 @@ def run():
         if not averages:
             st.info("No averages to combine (every spectrum is excluded).")
         else:
-            _render_combined(averages, method, volume_norm, illum_tiers, stds)
+            _render_combined(averages, method, volume_norm, illum_tiers, stds,
+                             roi=roi, show_sd=show_sd)
 
     # --- Stacked region composition summary (very bottom) -------------------
     if barplot and region_rows:
         _render_region_stack(region_rows)
 
 
-def _render_combined(averages, method, volume_norm, illum_tiers=None, stds=None):
+def _render_combined(averages, method, volume_norm, illum_tiers=None, stds=None,
+                     roi=None, show_sd=False):
     """Combined averages figure with an interactive tool selector *underneath* it.
 
     The active tool is read from session_state BEFORE the chart is built, so the
@@ -1004,8 +1256,10 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None, stds=None)
         mean spectrum is redrawn over that range with a ±1 SD band computed
         across its individual traces (``stds``).
 
-    ``illum_tiers`` (the set of included tiers) drives the figure title so it's
-    clear which illumination intensities were filtered out.
+    ``illum_tiers`` (the set of included tiers) and ``roi`` (the spatial
+    centroid ROI, if any) drive the figure title so it's clear which spectra were
+    filtered out. ``show_sd`` shades every average with a ±1 SD ribbon taken from
+    ``stds`` (the per-wavelength SD across that file's included spectra).
     """
     key = "__combined__"
     tool = st.session_state.get("combined_tool", TOOL_NONE)
@@ -1030,6 +1284,22 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None, stds=None)
     # --- Base figure ---
     cfig = go.Figure()
     for label, grid, mean, color in averages:
+        # ±1 SD ribbon first so the mean line draws on top of it. Upper then
+        # lower with fill="tonexty" fills the gap between the two.
+        sd = stds.get(label) if show_sd else None
+        if sd is not None and len(sd) == len(grid):
+            m = np.isfinite(mean)
+            if m.any():
+                xg, ym, ys = grid[m], mean[m], np.nan_to_num(np.asarray(sd)[m])
+                cfig.add_trace(go.Scatter(
+                    x=xg, y=ym + ys, mode="lines", line=dict(width=0),
+                    showlegend=False, hoverinfo="skip",
+                ))
+                cfig.add_trace(go.Scatter(
+                    x=xg, y=ym - ys, mode="lines", line=dict(width=0),
+                    fill="tonexty", fillcolor=_rgba(color, SD_FILL_ALPHA),
+                    name=f"{label} ±1 SD", showlegend=False, hoverinfo="skip",
+                ))
         cfig.add_trace(go.Scatter(
             x=grid, y=mean, mode="lines",
             line=dict(color=color, width=4),
@@ -1068,7 +1338,8 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None, stds=None)
             line_width=0, annotation_text="Region", annotation_position="top left",
         )
 
-    # Title reporting which illumination tiers were filtered out.
+    # Title reporting which illumination tiers were filtered out, plus the
+    # spatial ROI (second line) whenever one is active.
     if illum_tiers is None:
         title_text = ""
     else:
@@ -1080,6 +1351,10 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None, stds=None)
                           if t in illum_tiers) + f" (excluded: {', '.join(excluded)})")
         else:
             title_text = "All illumination tiers excluded"
+    if roi is not None:
+        roi_txt = (f"Custom ROI: centroid x {roi[0]:.0f}–{roi[1]:.0f} px, "
+                   f"y {roi[2]:.0f}–{roi[3]:.0f} px")
+        title_text = f"{title_text}<br>{roi_txt}" if title_text else roi_txt
 
     axis_title_font = dict(size=18, color="black", weight="bold")
     axis_tick_font = dict(size=14, color="black", weight="bold")
@@ -1093,12 +1368,15 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None, stds=None)
             title=dict(text=_y_axis_label(method, volume_norm), font=axis_title_font),
             tickfont=axis_tick_font,
         ),
-        margin=dict(l=70, r=10, t=40, b=50), height=480,
+        # Extra head-room when the ROI pushes the title onto a second line.
+        margin=dict(l=70, r=10, t=60 if roi is not None else 40, b=50), height=480,
         legend=dict(title_text="", font=dict(size=16)),
         dragmode="select" if tool in (TOOL_RATIO, TOOL_POP, TOOL_REGION) else "zoom",
     )
 
     # --- Render chart (interactive when a tool is active) ---
+    if show_sd:
+        st.caption("Shaded band: ±1 SD across each file's included spectra.")
     if tool == TOOL_NONE:
         st.plotly_chart(cfig, use_container_width=True, key="combined")
     elif tool == TOOL_RATIO:
@@ -1149,10 +1427,14 @@ def _render_combined(averages, method, volume_norm, illum_tiers=None, stds=None)
     # Wide-format CSV of the combined averages (always available).
     frames = []
     for label, grid, mean, _color in averages:
-        frames.append(pd.DataFrame({
+        cols = {
             f"{label}::Wavelength_nm": grid,
             f"{label}::Avg_Intensity": mean,
-        }))
+        }
+        sd = stds.get(label)
+        if show_sd and sd is not None and len(sd) == len(grid):
+            cols[f"{label}::SD"] = sd
+        frames.append(pd.DataFrame(cols))
     st.download_button(
         "Download combined averages (CSV)",
         data=pd.concat(frames, axis=1).to_csv(index=False).encode("utf-8"),
