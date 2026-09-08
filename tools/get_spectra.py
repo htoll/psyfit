@@ -123,11 +123,11 @@ def _classify_calibration_uploads(uploads):
 
     err = None
     if len(uploads) > 2:
-        err = ("Upload at most two calibration files — one 'saving_info…' and one "
-               "'…fits…' .pkl.")
+        err = ("Upload at most two calibration files: one 'saving_info...' and one "
+               "'...fits...' .pkl.")
     elif unknown:
         err = ("Couldn't classify " + ", ".join(unknown) +
-               " — filenames must contain 'saving_info' or 'fits'.")
+               ". Filenames must contain 'saving_info' or 'fits'.")
     return cal_file, fit_file, err
 
 
@@ -246,7 +246,7 @@ ILLUM_TIER_LABELS = ["Very low", "Low", "Medium", "High"]
 ILLUM_TIER_COLORS = {
     "Very low": "#3b4cc0", "Low": "#7b9ff9", "Medium": "#f2a385", "High": "#b40426",
 }
-# Matplotlib line widths for the spectra plot — thicker = brighter illumination.
+# Matplotlib line widths for the spectra plot: thicker = brighter illumination.
 ILLUM_TIER_LW = {"Very low": 0.8, "Low": 1.5, "Medium": 2.3, "High": 3.2}
 
 
@@ -481,7 +481,7 @@ def render_calibration_viewer(cal_file, fit_file):
 # --- App ---
 def run():
     with st.sidebar:
-        st.header("Inputs v0.1")
+        st.header("Inputs")
         sif_files = utils.file_uploader_with_clear("SIF files", key="spectra_sif_uploads", type=["sif"], accept_multiple_files=True)
 
         background = st.file_uploader("Blank (optional)", type=["sif"], help='''
@@ -494,10 +494,10 @@ def run():
             "Calibration files (saving_info + fits)", key="spectra_cal_uploads",
             accept_multiple_files=True,
             type=["pkl"], help=r'''
-                Upload the two calibration .pkl files together — they're sorted
+                Upload the two calibration .pkl files together; they are sorted
                 automatically by filename:
-                  • saving_info_YYMMDD.pkl (or ..._no_tracking.pkl) — the grid data
-                  • YYMMDD_fits.pkl (or ..._fits_456_474_548_667_803.pkl) — the fits
+                  - saving_info_YYMMDD.pkl (or ..._no_tracking.pkl) holds the grid data
+                  - YYMMDD_fits.pkl (or ..._fits_456_474_548_667_803.pkl) holds the fits
                 Both live in
                 G:\Shared drives\SamPengLab\Alev_Studenikina\Multicolor\Heterogeneity\Calibration data
             ''')
@@ -552,7 +552,7 @@ def run():
         if st.button("Analyze"):
             st.session_state.analyze_clicked = True
 
-    # Calibration viewer — available independent of the SIF analysis below.
+    # Calibration viewer: available independent of the SIF analysis below.
     if show_calibration and cal_file is not None and fit_file is not None:
         render_calibration_viewer(cal_file, fit_file)
     elif show_calibration:

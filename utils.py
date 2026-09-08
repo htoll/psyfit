@@ -49,7 +49,7 @@ def install_canvas_image_compat():
     width in a minimal duck-typed object when the new signature expects one. The lookup happens
     at call time, so this only has to run before the first ``st_canvas()`` call.
 
-    Every tool that uses the canvas must call this — the patch is process-wide, so a tool that
+    Every tool that uses the canvas must call this; the patch is process-wide, so a tool that
     skips it works only by luck when another tool imported first. Idempotent.
     """
     import streamlit.elements.image as st_image
@@ -101,7 +101,7 @@ def HWT_aesthetic():
     sns.despine()
     return palette 
 
-def file_uploader_with_clear(label, *, key, clear_label="🗑️ Clear all",
+def file_uploader_with_clear(label, *, key, clear_label="Clear all",
                              on_clear=None, **uploader_kwargs):
     """``st.file_uploader`` paired with a button that clears all selected files.
 
@@ -1000,7 +1000,7 @@ def plot_all_sifs(sif_files, df_dict, colocalization_radius=2, show_fits=True, n
     else:
         axes = [axes]    
     # `normalization` arrives as a LogNorm() instance for log scaling, else None.
-    # Detect log intent, then build a FRESH norm per subplot below — reusing one
+    # Detect log intent, then build a FRESH norm per subplot below; reusing one
     # Normalize/LogNorm instance across imshow() calls makes matplotlib share its
     # autoscaled vmin/vmax, which silently forces universal scaling. Universal
     # mode instead uses one global vmin/vmax (matching the img+1 used in imshow).

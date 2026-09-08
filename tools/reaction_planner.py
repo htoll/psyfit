@@ -1,12 +1,12 @@
 # tools/reaction_planner.py
 """
-Reaction Planner — two synthesis calculators in one tool.
+Reaction Planner: two synthesis calculators in one tool.
 
 1. Functionalization / Stoichiometry
    Given a nanoparticle concentration and a reagent, work out how much reagent
    to add either at a target stoichiometry (equivalents per particle) or at a
-   target final concentration. Reports moles, mass (mg), and — if the reagent is
-   added from a stock solution — the volume to pipette.
+   target final concentration. Reports moles, mass (mg), and, if the reagent is
+   added from a stock solution, the volume to pipette.
 
 2. Core Synthesis (mmol → mg)
    Build a weigh-out sheet: pick reagents, enter the mmol you want, get the mg to
@@ -39,7 +39,7 @@ ATOMIC = {
     "N": 14.007, "F": 18.998, "Li": 6.941, "K": 39.098,
 }
 
-# Rare-earth series (Pm omitted — radioactive, not used), Y grouped in.
+# Rare-earth series (Pm omitted: radioactive, not used), Y grouped in.
 LN_ORDER = ["Y", "La", "Ce", "Pr", "Nd", "Sm", "Eu", "Gd", "Tb",
             "Dy", "Ho", "Er", "Tm", "Yb", "Lu"]
 
@@ -188,8 +188,8 @@ def _peg_calculator_ui(key_prefix: str) -> float:
                     format="%.2f", disabled=True, key=f"{key_prefix}_peg_mw")
     if not (PEG_END_GROUPS[end_a][1] and PEG_END_GROUPS[end_b][1]):
         st.caption(
-            "⚠️ DBCO / tetrazine / HaloTag handle masses are approximate and "
-            "vendor/linker-dependent — override MW manually if you need it exact."
+            "DBCO / tetrazine / HaloTag handle masses are approximate and "
+            "vendor/linker-dependent. Override the MW manually if you need it exact."
         )
     return mw
 
@@ -217,7 +217,7 @@ def _functionalization_tab():
         vol_val = st.number_input(
             "Volume of nanoparticle added", min_value=0.0, value=1.0, step=0.1,
             format="%.4g", key="rp_vol_val",
-            help="Volume of the nanoparticle solution in the reaction — used as "
+            help="Volume of the nanoparticle solution in the reaction, used as "
                  "the reaction volume for moles and final concentration.",
         )
         vol_unit = st.selectbox(
@@ -234,7 +234,7 @@ def _functionalization_tab():
         if mw_source == "Reagent list":
             reagent_code = st.selectbox(
                 "Reagent", REAGENT_CODES, key="rp_func_reagent",
-                format_func=lambda c: f"{c} — {REAGENTS[c]['formula']}",
+                format_func=lambda c: f"{c} ({REAGENTS[c]['formula']})",
             )
             mw = REAGENTS[reagent_code]["mm"]
             st.number_input(
@@ -324,8 +324,8 @@ def _functionalization_tab():
         m4.metric("Equivalents / particle", f"{equiv:.4g}")
         if vol_stock_L > volume_L:
             st.warning(
-                "The stock volume to add exceeds the nanoparticle volume — "
-                "use a more concentrated stock."
+                "The stock volume to add exceeds the nanoparticle volume. "
+                "Use a more concentrated stock."
             )
     else:
         m1, m2, m3 = st.columns(3)
@@ -500,7 +500,7 @@ def _core_synthesis_tab():
     st.subheader("Other solids")
     st.markdown(
         "Enter the **mmol** of each reagent you want; the sheet returns the "
-        "**mg to weigh out**. Use the ➕ at the bottom of the table to add rows."
+        "**mg to weigh out**. Use the + at the bottom of the table to add rows."
     )
 
     default = pd.DataFrame({

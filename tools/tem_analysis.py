@@ -39,7 +39,7 @@ from skimage.segmentation import watershed
 
 from utils import file_uploader_with_clear, install_canvas_image_compat
 
-# Optional — emd support requires h5py
+# Optional: emd support requires h5py
 try:
     import h5py
     _HAS_H5PY = True
@@ -47,7 +47,7 @@ except ImportError:
     h5py = None
     _HAS_H5PY = False
 
-# Optional — dm3 support
+# Optional: dm3 support
 try:
     import dm3_lib as pyDM3reader
     _HAS_DM3 = True
@@ -55,11 +55,11 @@ except ImportError:
     pyDM3reader = None
     _HAS_DM3 = False
 
-# Optional — annotation-driven tuning needs a drawing canvas
+# Optional: annotation-driven tuning needs a drawing canvas
 try:
     from PIL import Image, ImageDraw
     from streamlit_drawable_canvas import st_canvas
-    # Must run before the first st_canvas() call — see install_canvas_image_compat.
+    # Must run before the first st_canvas() call; see install_canvas_image_compat.
     install_canvas_image_compat()
     _HAS_CANVAS = True
 except ImportError:
@@ -616,7 +616,7 @@ def plot_annotated_image(ax, image_data, draw_shapes, nm_per_px: float = float("
                          unit: str = "px", show_mag: bool = False, mask_alpha: float = 0.4):
     """Grayscale image with the fitted-shape overlays. When the image is calibrated a scale
     bar (sized 'nicely' relative to the field of view) is drawn lower-left; ``show_mag`` adds
-    the estimated magnification below it — only valid for a full image, not a cropped ROI.
+    the estimated magnification below it, which is only valid for a full image, not a cropped ROI.
     ``mask_alpha`` controls the fill opacity of the fitted-shape overlays."""
     zmin, zmax = np.percentile(image_data, [0.1, 99.9])
     ax.imshow(image_data, cmap="gray", vmin=zmin, vmax=zmax)
@@ -638,9 +638,9 @@ def plot_annotated_image(ax, image_data, draw_shapes, nm_per_px: float = float("
 # ═══════════════════════════════════════════════════════════════════════════
 @st.cache_data(show_spinner=False)
 def run_batch_analysis(file_data: List[Tuple[bytes, str]], shape_type: str, params: dict) -> List[Dict[str, Any]]:
-    # Measurement schema v3: Tic Tac results now carry stadium geometry —
+    # Measurement schema v3: Tic Tac results now carry stadium geometry:
     # "tic_tac_width" (body width W), "tic_tac_body_length" (straight plateau L_body)
-    # and "tic_tac_cap_depth" (arc sagitta d) — replacing the old "tic_tac_minor".
+    # and "tic_tac_cap_depth" (arc sagitta d), replacing the old "tic_tac_minor".
     # "hex_rect_widths" (rectangle minor axis) remains for the hexagonal-prism
     # rectangle-GMM width estimate. Schema v4 adds "objects": a per-shape list of
     # {cx, cy, dims{key: value}} used to crop the summary FOV to the densest region of
@@ -671,7 +671,7 @@ def _fit_gaussians(
 
     When ``mu_ranges`` (one (lo, hi) window per component) is supplied for a multi-component
     fit, each component's mean is *constrained* to its window by fitting an independent
-    Gaussian to the data inside it — guaranteeing each μ lands in its range. Otherwise a
+    Gaussian to the data inside it, guaranteeing each μ lands in its range. Otherwise a
     standard ``n_components`` GaussianMixture is fit.
     """
     n_fit = len(values)
@@ -724,7 +724,7 @@ def _plot_hist_on_ax(
     if n_fit > 0:
         if cropped:
             # Pad the visible x-axis by a fraction of the fit span on each side so the plot isn't
-            # over-zoomed. The padding is always added (even past the data) — real bins inside it
+            # over-zoomed. The padding is always added (even past the data), so real bins inside it
             # still show; beyond the data it's just breathing room. Only the low edge is clamped
             # at 0 since a size axis can't go negative.
             pad = x_buffer_frac * (float(fit_max) - float(fit_min))
@@ -750,7 +750,7 @@ def _plot_hist_on_ax(
                     ax.plot(x, comp * n_fit * bw, '--', alpha=0.8)
             ax.plot(x, total * n_fit * bw, 'k', linewidth=1.5)
             stats = " | ".join(f"μ{'' if len(mus) == 1 else i + 1}={mus[i]:.2f}, σ={stds[i]:.2f}" for i in range(len(mus)))
-            ax.set_title(f"{title} — {method} (n={n_fit})\n{stats} {unit_label}", fontsize=12)
+            ax.set_title(f"{title} · {method} (n={n_fit})\n{stats} {unit_label}", fontsize=12)
         else:
             ax.set_title(f"{title} (n={n_fit})", fontsize=12)
         ax.set_xlim(vis_min, vis_max)
@@ -851,7 +851,7 @@ def reff_with_sd(vol_fn, dims: List[Tuple[float, float]]) -> Tuple[float, float]
 
     ``vol_fn`` maps an array of dimension means to a volume; ``dims`` is a list of
     ``(mean, sd)`` pairs (the population spread of each measured dimension). The SD of
-    ``r_eff`` is obtained by linearised propagation through ``vol_fn`` — general enough
+    ``r_eff`` is obtained by linearised propagation through ``vol_fn``, general enough
     for products (prisms) and sums (the tic-tac body + caps) alike:
         σ_r = |dr/dV| · sqrt(Σ_i (∂V/∂x_i · σ_i)²),   dr/dV = r / (3V).
     """
@@ -909,7 +909,7 @@ def measure_with_sd(fn, dims: List[Tuple[float, float]]) -> Tuple[float, float]:
 
 def _hexagon_perimeter(ax_x: float, ax_y: float) -> float:
     """Perimeter of the (possibly anisotropic) hexagon whose vertices sit at
-    ``(ax_x·cosθ, ax_y·sinθ)`` for θ = 0,60,…,300° — the same cross-section the wireframe
+    ``(ax_x·cosθ, ax_y·sinθ)`` for θ = 0,60,...,300°, the same cross-section the wireframe
     draws. Reduces to ``6·(W/2) = 3W`` for a regular hexagon of vertex-to-vertex width ``W``
     (``ax_x = ax_y = W/2``)."""
     ang = np.pi / 3.0 * np.arange(6)
@@ -928,9 +928,9 @@ def _ellipsoid_surface_area(a: float, b: float, c: float) -> float:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Reported geometry — 2-D projections + an orthographically-projected 3-D wireframe
+# Reported geometry: 2-D projections + an orthographically-projected 3-D wireframe
 # ═══════════════════════════════════════════════════════════════════════════
-# 30 kx on this microscope images an 848.37 × 565.58 nm field of view — measured from
+# 30 kx on this microscope images an 848.37 × 565.58 nm field of view, measured from
 # HWT08_047L_Er02Yb05_5mmolNaOH_90min_1001.dm3, a 4008 × 2672 px frame at 0.21167 nm/px
 # whose "Indicated Magnification" tag reads 30000. The summary figure defaults to
 # whichever uploaded image is closest to this magnification.
@@ -1128,7 +1128,7 @@ def draw_tem_with_fits(ax, tem: dict, shape_type: str, geom: Dict[str, float], u
     ax.set_title("\n".join(textwrap.wrap(f"TEM: {tem.get('name', '')}", width=42)), fontsize=10)
 
     if not (np.isfinite(nmpp) and nmpp > 0):
-        ax.text(0.5, 0.04, "Uncalibrated image — cannot render fits to scale",
+        ax.text(0.5, 0.04, "Uncalibrated image, cannot render fits to scale",
                 transform=ax.transAxes, ha="center", color="yellow", fontsize=9)
         return
 
@@ -1194,11 +1194,11 @@ def draw_fits_no_tem(ax, shape_type: str, geom: Dict[str, float], unit: str) -> 
         mx = 0.08 * max(total_w, max_h)
         ax.set_xlim(-mx, total_w + mx); ax.set_ylim(-mx, max_h + 0.14 * max_h)
     ax.set_aspect("equal"); ax.axis("off")
-    ax.set_title(f"{_FIT_TITLE} (no calibrated image — arbitrary scale, {unit})", fontsize=10)
+    ax.set_title(f"{_FIT_TITLE} (no calibrated image, arbitrary scale, {unit})", fontsize=10)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Dimension guide — annotated example of what each measured dimension means
+# Dimension guide: annotated example of what each measured dimension means
 # ═══════════════════════════════════════════════════════════════════════════
 def _dim_arrow(ax, p0, p1, label, lab_off=(0.0, 0.0), ha="center", va="center", color="#222222"):
     """Double-headed measurement arrow from ``p0`` to ``p1`` with a bold label offset from its
@@ -1222,7 +1222,7 @@ def _dim_finish(ax, x0, x1, y0, y1, title):
 
 def build_dimension_guide_figure(shape_type: str) -> plt.Figure:
     """A small annotated diagram of the projection(s) the tool measures, with every reported
-    dimension called out — so 'width' vs 'body length' vs 'total length' etc. are unambiguous."""
+    dimension called out, so 'width' vs 'body length' vs 'total length' etc. are unambiguous."""
     c0, c1 = IBM_DARK[0], IBM_DARK[1]
     if shape_type == "Sphere":
         fig, ax = plt.subplots(figsize=(3.2, 3.3), dpi=130, layout="constrained")
@@ -1282,7 +1282,7 @@ def build_dimension_guide_figure(shape_type: str) -> plt.Figure:
 
 def render_dimension_guide(shape_type: str) -> None:
     """Collapsible panel showing the annotated dimension diagram for the selected shape."""
-    with st.expander(f"📐 What each {shape_type} dimension means", expanded=False):
+    with st.expander(f"What each {shape_type} dimension means", expanded=False):
         fig = build_dimension_guide_figure(shape_type)
         st.pyplot(fig)
         plt.close(fig)
@@ -1296,7 +1296,7 @@ def render_dimension_guide(shape_type: str) -> None:
 # setting whose measurements best reproduce those annotations.
 #
 # Why the box must be *exhaustively* annotated: the score penalises detected particles inside
-# the box that no annotation matches. Without that penalty the search has a degenerate optimum —
+# the box that no annotation matches. Without that penalty the search has a degenerate optimum:
 # over-segment the image into many small blobs and something will overlap every annotation, so
 # recall is perfect and nothing is ever charged for the spurious detections.
 #
@@ -1408,7 +1408,7 @@ def _canvas_lines_to_truth(json_data: Optional[dict], scale: float, nm_per_px: f
         h = float(obj.get("height", 0.0)) * float(obj.get("scaleY", 1.0)) * scale
         # streamlit-drawable-canvas builds line objects with originX/originY = "center", so
         # fabric reports `left`/`top` as the line's MIDPOINT, not its bounding-box corner. Its
-        # endpoints are opposite corners of that box, so the length is the box diagonal —
+        # endpoints are opposite corners of that box, so the length is the box diagonal,
         # both quantities are independent of which way the user dragged.
         mx = origin[0] + float(obj.get("left", 0.0)) * scale
         my = origin[1] + float(obj.get("top", 0.0)) * scale
@@ -1465,7 +1465,7 @@ def score_against_annotations(
     """Score a segmentation against exhaustively-annotated ground truth inside ``box_px``.
 
     Returns a scalar ``score`` (lower is better) plus a per-dimension breakdown and, for each
-    annotation, whether it was matched — the caller uses those flags to spot annotations that no
+    annotation, whether it was matched; the caller uses those flags to spot annotations that no
     parameter setting can ever reach.
     """
     x0, y0, x1, y1 = box_px
@@ -1496,7 +1496,7 @@ def score_against_annotations(
             errs.append(abs(o["dims"][dim] - ln["value"]) / max(ln["value"], 1e-9))
             flags.append(True)
         n_extra = max(len(cands) - len(matched), 0)
-        # No match at all scores as a 100% size error — bad, but bounded, so a setting that finds
+        # No match at all scores as a 100% size error: bad, but bounded, so a setting that finds
         # nothing still ranks below one that finds particles at slightly wrong sizes.
         size_err = float(np.mean(errs)) if errs else 1.0
         count_err = (n_missed + n_extra) / len(lines)
@@ -1511,7 +1511,7 @@ def score_against_annotations(
     return {"score": total / n_dims if n_dims else float("inf"), "per_dim": per_dim}
 
 # Search design, measured on real annotated data rather than assumed. The objective turns out to
-# be jagged and multi-basin — thresh_offset can score well at 0.85 and at 1.00 while scoring
+# be jagged and multi-basin; thresh_offset can score well at 0.85 and at 1.00 while scoring
 # poorly at 0.95 in between, and the two best settings found sat in unrelated regions of
 # (contrast_clip, thresh_offset). Three consequences, all baked in below:
 #   * gradient/simplex methods are useless (plateaus and cliffs), so this is a grid sweep;
@@ -1523,7 +1523,7 @@ TUNE_CLIP_GRID = (0.01, 0.04, 0.08)
 TUNE_THRESH_GRID = (0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.15)
 # Peak spacing matters only relative to particle size, so candidates are fractions of the
 # largest annotated dimension rather than absolute values. Empirically only the small end of
-# this range ever wins — larger spacings under-split clumps — hence the downward bias.
+# this range ever wins (larger spacings under-split clumps), hence the downward bias.
 TUNE_PEAK_FRACS = (0.15, 0.22, 0.30, 0.40, 0.55)
 # Its effect is close to separable from the other three (every top-scoring setting observed
 # shared the same peak spacing), so the main sweep holds it fixed here and it gets its own
@@ -1568,8 +1568,8 @@ def autotune_parameters(
     ``thresh_offset`` against a histogram the full-image run never sees. Only detections inside
     ``box_px`` are scored.
 
-    Stages are cached by the parameters they actually depend on — preprocessing by
-    (sigma, clip), the binary mask additionally by thresh_offset — which is where the bulk of
+    Stages are cached by the parameters they actually depend on: preprocessing by
+    (sigma, clip), the binary mask additionally by thresh_offset, which is where the bulk of
     the speed-up comes from, since preprocessing alone is roughly half the cost of one
     segmentation.
     """
@@ -1578,7 +1578,7 @@ def autotune_parameters(
     pre_cache: Dict[tuple, np.ndarray] = {}
     mask_cache: Dict[tuple, np.ndarray] = {}
     memo: Dict[tuple, Dict[str, Any]] = {}
-    # Annotations that no evaluated setting ever matched — usually rejected by
+    # Annotations that no evaluated setting ever matched, usually rejected by
     # classify_projection's fixed thresholds rather than by any parameter under search.
     ever_matched: Dict[str, np.ndarray] = {d: np.zeros(len(v), dtype=bool) for d, v in truth.items() if v}
 
@@ -1629,7 +1629,7 @@ def autotune_parameters(
         if progress:
             progress(min(done / max(n_total, 1), 1.0))
 
-    # Stage 1 — sweep sigma × clip × thresh at a fixed, deliberately small peak spacing.
+    # Stage 1: sweep sigma × clip × thresh at a fixed, deliberately small peak spacing.
     coarse: List[Dict[str, Any]] = []
     for sigma in TUNE_SIGMA_GRID:
         for clip in TUNE_CLIP_GRID:
@@ -1639,7 +1639,7 @@ def autotune_parameters(
     coarse.sort(key=lambda r: r["score"])
     coarse_score = coarse[0]["score"]
 
-    # Stage 2 — give the most promising settings their own peak-spacing sweep.
+    # Stage 2: give the most promising settings their own peak-spacing sweep.
     pool = list(coarse)
     for r0 in coarse[:TUNE_N_PEAK_STARTS]:
         for peak in peak_grid:
@@ -1648,7 +1648,7 @@ def autotune_parameters(
             _tick()
     pool.sort(key=lambda r: r["score"])
 
-    # Stage 3 — refine from several starts, since the good basins are isolated. Each start gets
+    # Stage 3: refine from several starts, since the good basins are isolated. Each start gets
     # one-at-a-time steps plus a joint sigma × thresh grid (the two coupled, jagged parameters).
     starts, seen = [], set()
     for r in pool:
@@ -1700,14 +1700,14 @@ def autotune_parameters(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Annotation-driven auto-tuning — UI
+# Annotation-driven auto-tuning: UI
 # ═══════════════════════════════════════════════════════════════════════════
 ANNO_CANVAS_W = 560          # annotation canvases are drawn large: 1 canvas px ≈ 1.7 ROI px at
                              # the default 200 nm ROI, so hand precision, not display
                              # resolution, is what limits the annotations
 TUNE_PARAM_KEYS = {"smoothing_sigma": "tem_sigma", "contrast_clip": "tem_clip",
                    "thresh_offset": "tem_thresh", "min_peak_distance": "tem_peak"}
-# Staging slot for tuned parameters on their way into the manual widgets — see
+# Staging slot for tuned parameters on their way into the manual widgets; see
 # consume_pending_tuned_params.
 TUNE_PENDING_KEY = "tem_pending_params"
 
@@ -1717,7 +1717,7 @@ def consume_pending_tuned_params() -> bool:
 
     Must be called *before* those widgets are instantiated: Streamlit raises
     ``StreamlitAPIException`` if a widget's session-state entry is written after the widget
-    exists, so the auto-tuner's Apply button cannot assign them directly — it stages them and
+    exists, so the auto-tuner's Apply button cannot assign them directly; it stages them and
     reruns, and this consumes the staged values at the one point in the script where writing
     them is legal.
     """
@@ -1735,7 +1735,7 @@ def _crop_bounds(shape: Tuple[int, ...],
     """Integer, in-bounds pixel bounds for a drawn box.
 
     Single source of truth for both the zoomed background image and the mapping of canvas
-    coordinates back to ROI pixels — if those two disagreed, every annotation would be offset.
+    coordinates back to ROI pixels; if those two disagreed, every annotation would be offset.
     """
     h, w = shape[0], shape[1]
     x0 = int(max(0, np.floor(box[0])));  y0 = int(max(0, np.floor(box[1])))
@@ -1790,7 +1790,7 @@ def _truth_fingerprint(truth: Dict[str, List[Dict[str, Any]]],
 def _annotation_token(file_name: str, roi_size: float, shape_type: str) -> str:
     """Annotations are pixel coordinates into one specific ROI, so they are scoped to the image,
     the ROI size that produced it, and the shape whose dimensions were drawn. Changing any of
-    those invalidates them — the token is embedded in the canvas keys to force a clean slate."""
+    those invalidates them; the token is embedded in the canvas keys to force a clean slate."""
     return f"{file_name}|{roi_size:g}|{shape_type}"
 
 def annotation_tuning_ui(
@@ -1809,14 +1809,14 @@ def annotation_tuning_ui(
 
     st.markdown(
         "Draw a box over a **small, representative** patch, then mark **every** particle inside "
-        "it — one line per particle, for each dimension in turn. Exhaustive labelling is what "
+        "it: one line per particle, for each dimension in turn. Exhaustive labelling is what "
         "lets the tuner count spurious detections; if particles inside the box are left "
         "unmarked, the search is rewarded for over-segmenting. Around **10 particles** is "
         "plenty."
     )
 
     scale = roi_data.shape[1] / ANNO_CANVAS_W
-    st.markdown("**Step A — box the patch you will annotate**")
+    st.markdown("**Step A. Box the patch you will annotate**")
     box_canvas = st_canvas(
         fill_color="rgba(220, 30, 120, 0.10)", stroke_width=2, stroke_color="#DC267F",
         background_image=_roi_to_pil(roi_data, ANNO_CANVAS_W), update_streamlit=True,
@@ -1837,10 +1837,10 @@ def annotation_tuning_ui(
     if live_seg is not None:
         n_in_box = sum(1 for o in live_seg["objects"]
                        if box[0] <= o["cx"] <= box[2] and box[1] <= o["cy"] <= box[3])
-    st.caption(f"Box {box_nm[0]:.0f} × {box_nm[1]:.0f} {unit} — the current manual settings find "
+    st.caption(f"Box {box_nm[0]:.0f} × {box_nm[1]:.0f} {unit} · the current manual settings find "
                f"**{n_in_box}** particle(s) inside it.")
 
-    st.markdown("**Step B — annotate each dimension**")
+    st.markdown("**Step B. Annotate each dimension**")
     # Annotate on a zoom of the box, not the whole ROI: at the default 200 nm ROI this is
     # typically a 2–5× magnification over Step A, which is what makes hand-drawn lines precise
     # enough for the size errors to mean anything.
@@ -1880,7 +1880,7 @@ def annotation_tuning_ui(
                 if lines:
                     truth[spec["key"]] = lines
                     vals = np.array([l["value"] for l in lines])
-                    st.caption(f"{len(lines)} line(s) — median {np.median(vals):.1f} {unit}, "
+                    st.caption(f"{len(lines)} line(s) · median {np.median(vals):.1f} {unit}, "
                                f"range {vals.min():.1f}–{vals.max():.1f} {unit}")
 
     n_anno = sum(len(v) for v in truth.values())
@@ -1889,13 +1889,13 @@ def annotation_tuning_ui(
         return
     st.caption(f"**{n_anno}** annotation(s) across {len(truth)} dimension(s).")
 
-    if st.button("🎯 Run auto-tune", type="primary", key=f"anno_run_{token}"):
-        bar = st.progress(0.0, text="Searching parameters…")
+    if st.button("Run auto-tune", type="primary", key=f"anno_run_{token}"):
+        bar = st.progress(0.0, text="Searching parameters...")
         try:
             res = autotune_parameters(
                 data=roi_data, nm_per_px=nm_per_px, shape_type=shape_type,
                 min_size_value=min_feature, measurement_unit=unit, truth=truth, box_px=box,
-                progress=lambda f: bar.progress(f, text=f"Searching parameters… {f*100:.0f}%"),
+                progress=lambda f: bar.progress(f, text=f"Searching parameters... {f*100:.0f}%"),
             )
         finally:
             bar.empty()
@@ -1908,10 +1908,10 @@ def annotation_tuning_ui(
         return
     res, truth_used, box_used = stored["result"], stored["truth"], stored["box"]
 
-    st.markdown("**Step C — review and apply**")
+    st.markdown("**Step C. Review and apply**")
     if stored["fp"] != _truth_fingerprint(truth, box, min_feature):
         st.warning("Annotations, box, or min feature size have changed since this result was "
-                   "computed — re-run the auto-tune to match. The figures below still describe "
+                   "computed; re-run the auto-tune to match. The figures below still describe "
                    "the earlier annotation set.")
     m1, m2, m3 = st.columns(3)
     m1.metric("Score (lower is better)", f"{res['score']:.3f}",
@@ -1935,7 +1935,7 @@ def annotation_tuning_ui(
             "Never matched at **any** setting tried: "
             + ", ".join(f"{n} × {d}" for d, n in unreachable.items())
             + ". These particles are being rejected by the fixed shape-classification "
-              "thresholds in `classify_projection`, not by anything the search can change — "
+              "thresholds in `classify_projection`, not by anything the search can change. "
               "so the parameters below are fitted to the remaining annotations only."
         )
 
@@ -1980,7 +1980,7 @@ SUMMARY_FIG_W_IN = 12.0
 SUMMARY_FIG_H_IN = 7.0
 SUMMARY_TEM_FRAC = 0.55          # width fraction given to the TEM panel
 SUMMARY_TITLE_IN = 1.0           # approx page band reserved for the (2-line) sup-title
-# Fixed, legible font sizes (points) — identical across every summary since the page size is
+# Fixed, legible font sizes (points), identical across every summary since the page size is
 # locked, so text reads at the same physical size no matter the shape or histogram count.
 SUMMARY_SUPTITLE_FS = 16
 SUMMARY_NOTES_FS = 9.5
@@ -2027,7 +2027,7 @@ def build_summary_figure(
             spec.get("n_components", 1), spec.get("fit_min"), spec.get("fit_max"), spec.get("mu_ranges"),
         )
 
-    # File name is the heading; r_eff ± SD and surface area ± SD share the second line — same
+    # File name is the heading; r_eff ± SD and surface area ± SD share the second line, same
     # bold size, one suptitle. Wrap a long prefix/notes so nothing clips at the fixed page edge
     # (no bbox expansion now).
     head = "\n".join(textwrap.wrap(prefix, width=72)) or prefix
@@ -2101,7 +2101,7 @@ def _crop_tem_to_fov(tem: Optional[dict], crop_w_nm: float, crop_h_nm: float,
 
     # Densest window: box-count the in-range centroids (a uniform filter is a sliding window
     # sum up to a constant), then centre the crop on the max, clamped to stay inside the image
-    # — mirroring extract_representative_roi's approach.
+    # mirroring extract_representative_roi's approach.
     pmap = np.zeros((h_px, w_px))
     rr = np.clip(cents[:, 0].astype(int), 0, h_px - 1)
     cc = np.clip(cents[:, 1].astype(int), 0, w_px - 1)
@@ -2328,20 +2328,18 @@ def summary_export_ui(
 # Main Streamlit UI
 # ═══════════════════════════════════════════════════════════════════════════
 def run() -> None:
-    st.set_page_config(page_title="TEM Particle Analysis", layout="wide")
-    st.title("TEM Particle Characterization (Fast CV)")
-    
+    # Note: st.set_page_config and the page title are owned by app.py.
     if "full_run_complete" not in st.session_state:
         st.session_state.full_run_complete = False
 
     with st.sidebar:
-        st.header("1. Upload and Setup")
+        st.header("Inputs")
         accepted_types = ["dm3"] if _HAS_DM3 else []
         if _HAS_H5PY: accepted_types.append("emd")
 
         if _is_streamlit_cloud():
             st.warning(
-                "⚠️ **Running on Streamlit Cloud** — memory here is limited. "
+                "**Running on Streamlit Cloud.** Memory here is limited. "
                 "Upload only **1–2 TEM images** at a time or the app may crash. "
                 "For larger batches, run the app locally."
             )
@@ -2351,10 +2349,15 @@ def run() -> None:
         
         if not files:
             st.warning("Upload files to begin.")
-            return
+            tune_file = None
+        else:
+            tune_file_name = st.selectbox("Select image for tuning:", [f.name for f in files])
+            tune_file = next(f for f in files if f.name == tune_file_name)
 
-        tune_file_name = st.selectbox("Select image for tuning:", [f.name for f in files])
-        tune_file = next(f for f in files if f.name == tune_file_name)
+    # Placed outside the sidebar block so the hint lands in the main panel.
+    if tune_file is None:
+        st.info("Upload one or more TEM images (.dm3 or .emd) in the sidebar to begin.")
+        return
 
     tab_tune, tab_results = st.tabs(["Rapid Tuning (ROI)", "Full Batch Results"])
     
@@ -2363,7 +2366,7 @@ def run() -> None:
     unit = "nm" if calibrated else "px"
 
     with tab_tune:
-        st.subheader("Step 2: Tune Watershed Parameters")
+        st.subheader("Tune watershed parameters")
         render_dimension_guide(shape_type)
 
         c_roi, c_size, c_thresh, c_peak = st.columns(4)
@@ -2432,7 +2435,7 @@ def run() -> None:
             plot_slot.pyplot(fig)
             plt.close(fig)
 
-        with st.expander("🎯 Auto-tune from annotations", expanded=False):
+        with st.expander("Auto-tune from annotations", expanded=False):
             annotation_tuning_ui(
                 roi_data=roi_data, nm_per_px=tem_tune.nm_per_px, shape_type=shape_type,
                 unit=unit, min_feature=min_feature,
@@ -2552,7 +2555,7 @@ def run() -> None:
 
                 # W is the vertex-to-vertex hexagon width (as the notes below state and as the
                 # side-on rectangle short axis reports), so the cross-section area is
-                # (3√3/8)·W² — the same vertex-to-vertex convention used by the Tic Tac model.
+                # (3√3/8)·W², the same vertex-to-vertex convention used by the Tic Tac model.
                 hex_vol = lambda x: (3.0 * np.sqrt(3.0) / 8.0) * (x[0] ** 2) * x[1]   # V = (3√3/8)·W²·H
                 # Surface area: two hexagonal faces + six rectangular sides. For a regular hexagon
                 # of vertex-to-vertex width W the face area is (3√3/8)·W² and the perimeter is 3W,
@@ -2870,7 +2873,7 @@ def run() -> None:
                         return (3.0 * np.sqrt(3.0) / 8.0) * x[0] * x[1] * x[2] + (np.pi / 3.0) * x[0] * x[1] * x[3]
 
                     # Surface area = the (possibly anisotropic) hexagonal body lateral surface,
-                    # perimeter(W,T)·L_body, plus the two half-ellipsoid caps — whose outer surface
+                    # perimeter(W,T)·L_body, plus the two half-ellipsoid caps, whose outer surface
                     # together equals one full ellipsoid of semi-axes (W/2, T/2, d). No flat end
                     # faces (the caps replace them).
                     def tictac_area(x):

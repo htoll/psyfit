@@ -13,7 +13,7 @@ import streamlit as st
 
 def run():
   # Note: st.set_page_config is owned by app.py (called once, first); not called here.
-  st.title("CSV Plotter — Flexible, Tidy or Paired XY")
+  st.title("CSV Plotter: flexible, tidy or paired XY")
   
   with st.sidebar:
       st.header("1) Load Data")
@@ -270,7 +270,7 @@ def run():
   
       if download_cleaned:
           csv = long_df.to_csv(index=False).encode("utf-8")
-          st.download_button("⬇️ Download plotted data (CSV)", data=csv, file_name="plotted_data.csv", mime="text/csv")
+          st.download_button("Download plotted data (CSV)", data=csv, file_name="plotted_data.csv", mime="text/csv")
   
   def draw_paired_plot(tidy: pd.DataFrame):
       if tidy.empty:
@@ -308,7 +308,7 @@ def run():
   
       if download_cleaned:
           csv = plot_df.to_csv(index=False).encode("utf-8")
-          st.download_button("⬇️ Download plotted data (CSV)", data=csv, file_name="plotted_data_paired.csv", mime="text/csv")
+          st.download_button("Download plotted data (CSV)", data=csv, file_name="plotted_data_paired.csv", mime="text/csv")
   
   # Load data
   if uploaded is not None:

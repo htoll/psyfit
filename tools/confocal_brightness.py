@@ -233,10 +233,7 @@ def integrate_dat(
     return pd.DataFrame(results)
 
 def run():
-    st.header("Analyze Confocal .dat Files")
-    st.markdown(r"""
-    $Brightness = \frac{Amplitude}{Dwell \times Accumulation}$
-    """)
+    st.markdown(r"$Brightness = \frac{Amplitude}{Dwell \times Accumulation}$")
 
     # --- Sidebar Controls ---
     with st.sidebar:

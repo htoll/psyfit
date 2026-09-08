@@ -3,19 +3,19 @@
 ``.msr`` files are OBF (Omas Binary Format) containers: one file holds many
 "stacks" (channels / detection windows / measurements), each with its own pixel
 data, physical pixel size, and a block of Imspector acquisition metadata
-(excitation wavelength, laser power, imaging window, dwell time, …).
+(excitation wavelength, laser power, imaging window, dwell time, and so on).
 
 This tool wraps :mod:`msr_reader` (a pure-Python OBF reader) and provides:
 
-* **Preview & Select** — thumbnail grid of every stack in the file with
+* **Preview and select**: thumbnail grid of every stack in the file with
   checkboxes to choose which images to carry into analysis/overlay.
-* **Metadata** — a collapsed dropdown of *all* saved metadata per stack, with the
+* **Metadata**: a collapsed dropdown of *all* saved metadata per stack, with the
   key acquisition parameters (excitation wavelength, imaging window, excitation
   intensity, dwell, pixel size) surfaced at the top.
-* **Confocal Brightness** — runs the same per-particle Gaussian brightness fit as
+* **Confocal brightness**: runs the same per-particle Gaussian brightness fit as
   the "Brightness (Conf)" tool on the selected stacks, using the pixel size read
   directly from the file.
-* **Overlay FOVs** — merge selected stacks on top of each other with per-channel
+* **Overlay FOVs**: merge selected stacks on top of each other with per-channel
   colormaps, contrast, and opacity.
 
 The heavy lifting for the readers/plotters is shared with the existing confocal
@@ -266,7 +266,7 @@ def render_preview(filename, stacks, cmap_name, log_scale, min_pct, max_pct):
                 px = f"{s['pix_size_nm']:.1f} nm/px" if s["pix_size_nm"] else "px size ?"
                 dims = "×".join(str(d) for d in s["dim_sizes"]) or "—"
                 st.caption(f"**{s['name']}**  \n{dims}  ·  {px}"
-                           + ("  ·  ⚠ multi-dim (projected)" if (s["ndim"] or 0) > 2 else ""))
+                           + ("  ·  multi-dim (projected)" if (s["ndim"] or 0) > 2 else ""))
                 st.checkbox("Use this image", key=_sel_key(filename, s["index"]))
 
 
@@ -311,7 +311,7 @@ def render_metadata(filename, stacks):
     with st.expander("All saved metadata", expanded=False):
         query = st.text_input(
             "Filter", key=f"meta_filter_{filename}_{s['index']}",
-            placeholder="e.g. wavelength, power, dwell…",
+            placeholder="e.g. wavelength, power, dwell",
         )
         df_meta = pd.DataFrame(flat, columns=["parameter", "value"])
         if query:
@@ -506,12 +506,6 @@ def render_overlay(filename, stacks, sel, log_scale):
 # Entry point
 # ---------------------------------------------------------------------------
 def run():
-    st.header("Abberior .msr Analysis")
-    st.caption(
-        "Load Imspector .msr files, preview and select images, inspect saved "
-        "metadata, run confocal brightness, and overlay fields of view."
-    )
-
     if OBFFile is None:
         st.error(
             "The `msr-reader` package is required to read .msr files but could "
@@ -568,7 +562,7 @@ def run():
     st.caption(f"{len(stacks)} images in file · {len(sel)} selected")
 
     tab_prev, tab_meta, tab_bright, tab_overlay = st.tabs(
-        ["🖼 Preview & select", "📋 Metadata", "✨ Brightness", "🔀 Overlay"]
+        ["Preview and select", "Metadata", "Brightness", "Overlay"]
     )
     with tab_prev:
         render_preview(active_name, stacks, cmap_name, log_scale, min_pct, max_pct)
