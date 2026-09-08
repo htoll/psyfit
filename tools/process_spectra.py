@@ -12,7 +12,9 @@ Consumes the CSVs produced by ``tools/get_spectra.py`` (columns:
   * volume-normalize by a per-file effective radius (r_eff),
   * pick each file's color (true-color picker; individual traces are shades),
   * combine every CSV's average into one legended figure, optionally shaded
-    with each file's ±1 SD band, and
+    with each file's ±1 SD band,
+  * save the whole analysis (CSVs + every setting + which spectra are excluded)
+    to a session zip and restore it later to resume exactly where it left off, and
   * drag two regions on the combined plot to read per-file area ratios.
 
 All spectra are cropped at ``CROP_NM`` (artifacts dominate past it). The heavy
@@ -21,7 +23,11 @@ exclusions only re-renders; it does not recompute.
 """
 
 import io
+import json
+import hashlib
+import zipfile
 import colorsys
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -102,6 +108,33 @@ POP_FILL_ALPHA = 0.18
 
 # Fill opacity for the optional ±1 SD ribbons on the combined plot.
 SD_FILL_ALPHA = 0.18
+
+# --- Session bundles --------------------------------------------------------
+# A saved session is a zip: session.json (every setting + which spectra are
+# excluded), data/ (the uploaded CSVs, byte-for-byte), and particles.csv (a
+# per-spectrum status manifest for reading outside this app). Bump SESSION_SCHEMA
+# whenever the JSON layout changes incompatibly.
+SESSION_SCHEMA = 1
+SESSION_TOOL = "process_spectra"
+SESSION_JSON = "session.json"
+SESSION_DATA_DIR = "data"
+SESSION_PARTICLES = "particles.csv"
+
+# Widget keys for the global processing controls. Named (rather than relying on
+# Streamlit's auto-keys) so a restored session can write them back.
+K_SHOW_AVERAGE = "ps_show_average"
+K_BARPLOT = "ps_barplot"
+K_SHOW_SD = "ps_show_sd"
+K_ROI_ENABLED = "ps_roi_enabled"
+K_BASELINE = "ps_baseline_method"
+K_BL_MEAN_LO = "ps_bl_mean_lo"
+K_BL_MEAN_HI = "ps_bl_mean_hi"
+K_BL_LAM = "ps_bl_lam_log"
+K_BL_P = "ps_bl_p"
+K_BL_KNOTS = "ps_bl_knots"
+K_NORM = "ps_norm_method"
+K_RNG_LO = "ps_rng_lo"
+K_RNG_HI = "ps_rng_hi"
 
 # Crameri "romaO" cyclic colormap, sampled at 33 evenly spaced anchors (RGB in
 # 0–1). Embedded so the population plot can color peaks without a runtime
@@ -499,8 +532,9 @@ def _color_select_ui(file_name, default_idx):
     st.markdown(strip, unsafe_allow_html=True)
 
     choice = st.selectbox(
-        "Color", options=list(range(n)), index=idx,
+        "Color", options=list(range(n)),
         format_func=lambda i: f"{pal[i][0]}  ({pal[i][1]})", key=sel_key,
+        **_widget_kwargs(sel_key, index=idx),
     )
     chosen = pal[choice][1]
     st.markdown(
@@ -998,6 +1032,406 @@ def _handle_roi_selection(event):
     st.rerun()
 
 
+# --- Session save / resume --------------------------------------------------
+class _RestoredFile:
+    """Stand-in for a Streamlit UploadedFile, backed by bytes from a session zip.
+
+    ``run()`` only ever needs ``.name`` and ``.getvalue()`` from an upload, so a
+    restored CSV can flow through the whole app unchanged.
+    """
+
+    def __init__(self, name, data):
+        self.name = name
+        self._data = bytes(data)
+        self.size = len(self._data)
+
+    def getvalue(self):
+        return self._data
+
+    def getbuffer(self):
+        return memoryview(self._data)
+
+    def read(self):
+        return self._data
+
+
+def _widget_kwargs(key, **defaults):
+    """Widget defaults, dropped once ``key`` already lives in session state.
+
+    Passing e.g. ``index=`` alongside a key that was written through the Session
+    State API makes Streamlit warn and ignore the default, so restored settings
+    would look like they had been silently discarded. Omitting the default lets
+    session state be the single source of truth.
+    """
+    return {} if key in st.session_state else defaults
+
+
+def _seed_from_store(key):
+    """Reinstate a value for a conditional widget Streamlit purged while hidden.
+
+    Streamlit drops a widget's state on any run that doesn't render it, so the
+    baseline-window and normalization-range inputs would otherwise snap back to
+    their defaults every time the method is switched away and back — and a
+    restored session would lose the params for whichever method isn't active.
+    Mirrors the ``reff_store`` workaround used for r_eff.
+    """
+    store = st.session_state.ps_param_store
+    if key not in st.session_state and key in store:
+        st.session_state[key] = store[key]
+
+
+def _remember(key, value):
+    """Persist a conditional widget's current value (see :func:`_seed_from_store`)."""
+    st.session_state.ps_param_store[key] = value
+    return value
+
+
+def _palette_index_for(color_hex, fallback_idx):
+    """Palette index whose swatch is ``color_hex``, else ``fallback_idx``."""
+    pal = _curated_palette()
+    if isinstance(color_hex, str):
+        target = color_hex.strip().lower()
+        for i, (_lbl, h) in enumerate(pal):
+            if h.lower() == target:
+                return i
+    if isinstance(fallback_idx, int) and 0 <= fallback_idx < len(pal):
+        return fallback_idx
+    return None
+
+
+def _session_particle_rows(files_payload, files_meta, proc):
+    """One row per spectrum describing its status under the current settings.
+
+    Excluded spectra are kept and flagged (never dropped), so the manifest is a
+    complete census of the dataset: manual exclusions, spectra hidden by the
+    illumination filter, and spectra outside the ROI are all marked, and
+    ``Included`` is the conjunction that says whether it fed the averages.
+    """
+    rows = []
+    for name, raw in files_payload:
+        meta = files_meta.get(name, {})
+        specs, err = _process_csv(raw, proc["method"], proc["rng"],
+                                  proc["volumes"].get(name), proc["baseline_tuple"])
+        if err:
+            continue
+        excluded = set(meta.get("excluded") or [])
+        for key, _wvl, _y, rel, xy in specs:
+            src, _, pid = key.partition("::")
+            tier = _illum_tier(rel)
+            hidden_illum = tier is not None and tier not in proc["illum_tiers"]
+            outside_roi = not _in_roi(xy, proc["roi"])
+            is_excluded = key in excluded
+            rows.append({
+                "CSV_File": name,
+                "Legend_Name": meta.get("legend_name", name),
+                "Source_File": src,
+                "Particle_ID": pid,
+                "Key": key,
+                "File_Shown": bool(meta.get("show", True)),
+                "Excluded_Manually": is_excluded,
+                "Hidden_By_Illumination": bool(hidden_illum),
+                "Outside_ROI": bool(outside_roi),
+                "Included": bool(meta.get("show", True) and not is_excluded
+                                 and not hidden_illum and not outside_roi),
+                "Relative_Illumination": rel,
+                "Illumination_Tier": tier or "",
+                "Particle_X": xy[0],
+                "Particle_Y": xy[1],
+                "r_eff_nm": meta.get("reff"),
+            })
+    return rows
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def _build_session_zip(files_payload, spec_json):
+    """Serialize the whole analysis into a session zip; returns its bytes.
+
+    Cached on the CSV bytes plus a JSON snapshot of every setting, so the
+    download button can always offer an up-to-date bundle without rebuilding it
+    on each rerun. Deliberately takes plain data (no session_state reads) so the
+    cache key really does cover everything that lands in the file.
+    """
+    spec = json.loads(spec_json)
+    files_meta, settings, proc = spec["files_meta"], spec["settings"], spec["proc"]
+    # Retuple what JSON flattened, so _process_csv hits the same cache entries
+    # the live render loop populated.
+    proc["rng"] = tuple(proc["rng"])
+    proc["baseline_tuple"] = (tuple(proc["baseline_tuple"])
+                              if proc["baseline_tuple"] else None)
+    proc["roi"] = tuple(proc["roi"]) if proc["roi"] else None
+    proc["illum_tiers"] = set(proc["illum_tiers"])
+
+    payload = {
+        "schema": SESSION_SCHEMA,
+        "tool": SESSION_TOOL,
+        "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "settings": settings,
+        "files": [],
+    }
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, raw in files_payload:
+            meta = dict(files_meta.get(name, {}))
+            meta.update({
+                "name": name,
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "bytes": len(raw),
+            })
+            payload["files"].append(meta)
+            zf.writestr(f"{SESSION_DATA_DIR}/{name}", raw)
+
+        rows = _session_particle_rows(files_payload, files_meta, proc)
+        if rows:
+            zf.writestr(SESSION_PARTICLES,
+                        pd.DataFrame(rows).to_csv(index=False))
+        zf.writestr(SESSION_JSON, json.dumps(payload, indent=2, default=str))
+
+    return buf.getvalue()
+
+
+def _session_spec_json(files_meta, settings, proc):
+    """Cache key / build input for :func:`_build_session_zip`.
+
+    Everything that ends up in the bundle goes through here, so a change to any
+    setting produces a different key and therefore a freshly built zip.
+    """
+    return json.dumps(
+        {
+            "files_meta": files_meta,
+            "settings": settings,
+            "proc": {
+                "method": proc["method"],
+                "rng": list(proc["rng"]),
+                "baseline_tuple": (list(proc["baseline_tuple"])
+                                   if proc["baseline_tuple"] else None),
+                "volumes": proc["volumes"],
+                "roi": list(proc["roi"]) if proc["roi"] else None,
+                "illum_tiers": sorted(proc["illum_tiers"]),
+            },
+        },
+        sort_keys=True, default=str,
+    )
+
+
+def _read_session_zip(raw):
+    """Parse a session zip; returns ``(payload, files, error)``.
+
+    ``files`` is a list of ``(name, bytes)`` for the archived CSVs.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            names = zf.namelist()
+            if SESSION_JSON not in names:
+                return None, [], f"not a session file (no {SESSION_JSON})"
+            payload = json.loads(zf.read(SESSION_JSON).decode("utf-8"))
+            prefix = f"{SESSION_DATA_DIR}/"
+            files = [(n[len(prefix):], zf.read(n)) for n in names
+                     if n.startswith(prefix) and not n.endswith("/")]
+    except (zipfile.BadZipFile, KeyError, ValueError, UnicodeDecodeError) as e:
+        return None, [], f"could not read session file: {e}"
+
+    if payload.get("tool") != SESSION_TOOL:
+        return None, [], f"session file is for a different tool ({payload.get('tool')!r})"
+    schema = payload.get("schema")
+    if not isinstance(schema, int) or schema > SESSION_SCHEMA:
+        return None, [], (f"session schema {schema} is newer than this build "
+                          f"understands (max {SESSION_SCHEMA})")
+    if not files:
+        return None, [], "session file contains no CSVs"
+    return payload, files, None
+
+
+def _apply_session(payload, files):
+    """Write a parsed session back into ``st.session_state``.
+
+    Settings land on the widget keys themselves so every control comes up on the
+    restored value; the CSVs are held as ``_RestoredFile`` objects that ``run()``
+    treats like uploads. Widget keys whose valid range depends on the data
+    (wavelength/ROI bounds) are cleared instead of restored, so they reseed from
+    the restored ranges rather than tripping Streamlit's min/max validation.
+    """
+    s = payload.get("settings") or {}
+
+    st.session_state.ps_restored_files = [_RestoredFile(n, b) for n, b in files]
+
+    st.session_state[K_SHOW_AVERAGE] = bool(s.get("show_average", True))
+    st.session_state[K_BARPLOT] = bool(s.get("barplot", False))
+    st.session_state[K_SHOW_SD] = bool(s.get("show_sd", False))
+    st.session_state[K_ROI_ENABLED] = bool(s.get("roi_enabled", False))
+
+    tiers = s.get("illum_tiers")
+    if tiers is not None:
+        st.session_state["illum_low"] = "Low" in tiers
+        st.session_state["illum_med"] = "Medium" in tiers
+        st.session_state["illum_high"] = "High" in tiers
+
+    # Conditional widgets go through the param store as well as their own key, so
+    # the values survive the runs where their method isn't selected.
+    def _set_param(key, value):
+        st.session_state[key] = value
+        st.session_state.ps_param_store[key] = value
+
+    if s.get("baseline_method") in BASELINE_METHODS:
+        st.session_state[K_BASELINE] = s["baseline_method"]
+    mean_win = s.get("baseline_mean") or []
+    if len(mean_win) == 2:
+        _set_param(K_BL_MEAN_LO, float(mean_win[0]))
+        _set_param(K_BL_MEAN_HI, float(mean_win[1]))
+    spline = s.get("baseline_spline") or {}
+    if spline:
+        _set_param(K_BL_LAM, float(spline.get("lam_log", 3.0)))
+        _set_param(K_BL_P, float(spline.get("p", 0.010)))
+        _set_param(K_BL_KNOTS, int(spline.get("num_knots", 100)))
+
+    if s.get("norm_method") in NORM_METHODS:
+        st.session_state[K_NORM] = s["norm_method"]
+    nrng = s.get("norm_range") or []
+    if len(nrng) == 2:
+        _set_param(K_RNG_LO, float(nrng[0]))
+        _set_param(K_RNG_HI, float(nrng[1]))
+
+    roi_box = s.get("roi_box")
+    st.session_state.roi_box = tuple(float(v) for v in roi_box) if roi_box else None
+    st.session_state.roi_last = None
+    st.session_state.roi_nonce += 1
+    for k in ("roi_x0", "roi_x1", "roi_y0", "roi_y1"):
+        st.session_state.pop(k, None)
+
+    combined = s.get("combined") or {}
+    ckey = "__combined__"
+    st.session_state.show_combined = bool(combined.get("shown", False))
+    if combined.get("tool") in COMBINED_TOOLS:
+        st.session_state["combined_tool"] = combined["tool"]
+    ratio = combined.get("ratio_ranges") or [None, None]
+    st.session_state.ratio_ranges[ckey] = [
+        tuple(float(v) for v in r) if r else None for r in ratio[:2]
+    ] or [None, None]
+    st.session_state.ratio_ptr[ckey] = int(combined.get("ratio_ptr", 0)) & 1
+    st.session_state.ratio_last.pop(ckey, None)
+    st.session_state.pop_centers[ckey] = [float(c) for c in
+                                          (combined.get("pop_centers") or [])]
+    st.session_state.pop_last.pop(ckey, None)
+    creg = combined.get("region_range")
+    st.session_state.region_range[ckey] = tuple(float(v) for v in creg) if creg else None
+    st.session_state.region_last.pop(ckey, None)
+    st.session_state.combined_nonce += 1
+    for k in ("region_lo", "region_hi"):
+        st.session_state.pop(k, None)
+
+    recs = payload.get("files") or []
+    n_files = max(len(recs), 1)
+    for i, rec in enumerate(recs):
+        name = rec.get("name")
+        if not name:
+            continue
+        st.session_state[f"show_{name}"] = bool(rec.get("show", True))
+        st.session_state[f"name_{name}"] = rec.get("legend_name") or name
+        # Clamp to the widget's 1..n_files range so a bundle saved with more
+        # files than it ships can't push the number_input out of bounds.
+        order = int(rec.get("order", i + 1) or (i + 1))
+        st.session_state[f"order_{name}"] = min(max(order, 1), n_files)
+        cidx = _palette_index_for(rec.get("color"), rec.get("color_index"))
+        if cidx is not None:
+            st.session_state[f"colorsel_{name}"] = cidx
+        reff = rec.get("reff")
+        if reff is not None:
+            st.session_state.reff_store[name] = float(reff)
+            st.session_state[f"reff_{name}"] = float(reff)
+        st.session_state.spectra_excluded[name] = set(rec.get("excluded") or [])
+        st.session_state.plot_nonce[name] = st.session_state.plot_nonce.get(name, 0) + 1
+
+
+def _render_session_ui(csv_files, files_meta, settings, proc):
+    """Sidebar 'Save / resume session' panel: download and restore.
+
+    The bundle is rebuilt (cached) from the live settings on every rerun rather
+    than snapshotted behind a button, so the file you download can never lag
+    behind the analysis on screen. Restoring is guarded by a content hash so a
+    later rerun doesn't reapply the same file over your subsequent edits.
+    """
+    st.divider()
+    with st.expander("Save / resume session", expanded=False):
+        st.caption("A session file holds every uploaded CSV plus all settings: "
+                   "legend names, order, colors, r_eff, normalization, baseline, "
+                   "illumination and ROI filters, and exactly which spectra are "
+                   "excluded. Excluded spectra are kept and flagged, not dropped.")
+
+        if csv_files:
+            files_payload = tuple((uf.name, uf.getvalue()) for uf in csv_files)
+            with st.spinner("Packaging session..."):
+                blob = _build_session_zip(
+                    files_payload, _session_spec_json(files_meta, settings, proc))
+            size = (f"{len(blob) / 1e6:.1f} MB" if len(blob) >= 1e6
+                    else f"{len(blob) / 1e3:.0f} KB")
+            st.download_button(
+                f"Download session ({size})", data=blob,
+                file_name=(f"psyfit_spectra_session_"
+                           f"{datetime.now().strftime('%Y%m%d-%H%M')}.zip"),
+                mime="application/zip", key="ps_session_dl",
+            )
+        else:
+            st.caption("Upload CSVs (or restore a session) to save one.")
+
+        up = st.file_uploader("Resume from a session file", type=["zip"],
+                              key="ps_session_upload", accept_multiple_files=False)
+        if up is not None:
+            raw = up.getvalue()
+            sig = hashlib.sha256(raw).hexdigest()
+            if sig != st.session_state.get("ps_session_loaded"):
+                payload, files, err = _read_session_zip(raw)
+                if err:
+                    st.error(err)
+                else:
+                    # Don't apply here: this panel renders after every sidebar
+                    # widget exists, and Streamlit refuses writes to a widget's
+                    # key once it's instantiated. Hand the payload to the top of
+                    # run() (before any widget is built) and rerun.
+                    st.session_state.ps_session_loaded = sig
+                    st.session_state.ps_pending_session = (payload, files)
+                    st.rerun()
+
+        restored = st.session_state.get("ps_restored_files") or []
+        if restored:
+            st.caption("Restored: " + ", ".join(f.name for f in restored))
+            if st.button("Discard restored session", key="ps_session_discard"):
+                st.session_state.ps_restored_files = []
+                st.session_state.ps_session_loaded = None
+                st.rerun()
+
+
+def _session_settings(show_average, barplot, show_sd, illum_tiers, roi_enabled,
+                      baseline_method, baseline, method, rng):
+    """The current global settings as a JSON-safe dict for a session bundle."""
+    ckey = "__combined__"
+    ratio = st.session_state.ratio_ranges.get(ckey) or [None, None]
+    region = st.session_state.region_range.get(ckey)
+    return {
+        "show_average": bool(show_average),
+        "barplot": bool(barplot),
+        "show_sd": bool(show_sd),
+        "illum_tiers": sorted(illum_tiers),
+        "roi_enabled": bool(roi_enabled),
+        "roi_box": list(st.session_state.roi_box) if st.session_state.roi_box else None,
+        "baseline_method": baseline_method,
+        "baseline_mean": ([baseline["lo"], baseline["hi"]]
+                          if baseline and baseline["method"] == "mean" else None),
+        "baseline_spline": ({"lam_log": float(np.log10(baseline["lam"])),
+                             "p": baseline["p"], "num_knots": baseline["num_knots"]}
+                            if baseline and baseline["method"] == "spline" else None),
+        "norm_method": method,
+        "norm_range": [rng[0], rng[1]] if method in NORM_RANGE_METHODS else None,
+        "combined": {
+            "shown": bool(st.session_state.show_combined),
+            "tool": st.session_state.get("combined_tool", TOOL_NONE),
+            "ratio_ranges": [list(r) if r else None for r in ratio],
+            "ratio_ptr": int(st.session_state.ratio_ptr.get(ckey, 0)),
+            "pop_centers": [float(c) for c in st.session_state.pop_centers.get(ckey, [])],
+            "region_range": list(region) if region else None,
+        },
+    }
+
+
 # --- App --------------------------------------------------------------------
 def run():
     st.session_state.setdefault("spectra_excluded", {})  # file_key -> set(keys)
@@ -1015,26 +1449,50 @@ def run():
     st.session_state.setdefault("roi_box", None)     # (x0, x1, y0, y1) centroid ROI
     st.session_state.setdefault("roi_last", None)    # last ROI box signature
     st.session_state.setdefault("roi_nonce", 0)      # remount ROI map to clear selection
+    st.session_state.setdefault("ps_restored_files", [])  # CSVs from a session file
+    st.session_state.setdefault("ps_session_loaded", None)  # hash of applied session
+    st.session_state.setdefault("ps_param_store", {})  # conditional widget values
+
+    # Apply a restored session here, before a single widget is instantiated:
+    # session_state writes to a widget's key are rejected once that widget has
+    # been created, so the upload handler defers the payload to this point.
+    pending = st.session_state.pop("ps_pending_session", None)
+    if pending is not None:
+        payload, files = pending
+        _apply_session(payload, files)
+        st.success(f"Restored {len(files)} CSV(s) and all settings from "
+                   f"{payload.get('saved_at', 'a saved session')}.")
 
     with st.sidebar:
         st.header("Inputs")
-        csv_files = file_uploader_with_clear(
+        uploaded = file_uploader_with_clear(
             "Spectra CSVs (from Get Spectra)",
             key="process_spectra_uploads",
             type=["csv"], accept_multiple_files=True,
         )
+        # CSVs recovered from a session file behave like uploads; a real upload
+        # of the same name wins, so re-uploading a file replaces its copy.
+        uploaded = list(uploaded or [])
+        up_names = {uf.name for uf in uploaded}
+        csv_files = uploaded + [f for f in st.session_state.ps_restored_files
+                                if f.name not in up_names]
 
         st.divider()
         st.header("Processing")
-        show_average = st.checkbox("Show average of all spectra", value=True)
+        show_average = st.checkbox(
+            "Show average of all spectra", key=K_SHOW_AVERAGE,
+            **_widget_kwargs(K_SHOW_AVERAGE, value=True),
+        )
         barplot = st.checkbox(
-            "Barplot integrated regions", value=False,
+            "Barplot integrated regions", key=K_BARPLOT,
             help="Integrate each CSV's average over Blue/Green/Red/NIR bands.",
+            **_widget_kwargs(K_BARPLOT, value=False),
         )
         show_sd = st.checkbox(
-            "Shade ±1 SD on combined plot", value=False,
+            "Shade ±1 SD on combined plot", key=K_SHOW_SD,
             help="Shade each average in the combined plot with ±1 standard "
                  "deviation across that file's individual included spectra.",
+            **_widget_kwargs(K_SHOW_SD, value=False),
         )
 
         st.caption("Illumination tiers to include "
@@ -1042,55 +1500,76 @@ def run():
                    "High ≥ that, of the brightest calibration point):")
         ci1, ci2, ci3 = st.columns(3)
         illum_tiers = set()
-        if ci1.checkbox("Low", value=True, key="illum_low"):
-            illum_tiers.add("Low")
-        if ci2.checkbox("Med", value=True, key="illum_med"):
-            illum_tiers.add("Medium")
-        if ci3.checkbox("High", value=True, key="illum_high"):
-            illum_tiers.add("High")
+        for col, label, wkey, tier in ((ci1, "Low", "illum_low", "Low"),
+                                       (ci2, "Med", "illum_med", "Medium"),
+                                       (ci3, "High", "illum_high", "High")):
+            if col.checkbox(label, key=wkey, **_widget_kwargs(wkey, value=True)):
+                illum_tiers.add(tier)
 
         roi_enabled = st.checkbox(
-            "Custom spatial ROI (particle centroid)", value=False,
+            "Custom spatial ROI (particle centroid)", key=K_ROI_ENABLED,
             help="Draw a box on a map of particle centroids and plot only the "
                  "spectra whose centroid falls inside it. Needs the "
                  "Particle_X/Particle_Y columns written by Get Spectra.",
+            **_widget_kwargs(K_ROI_ENABLED, value=False),
         )
 
         baseline_method = st.radio(
-            "Baseline correction", BASELINE_METHODS, index=0,
+            "Baseline correction", BASELINE_METHODS, key=K_BASELINE,
             help="Mean: subtract the average value in a window (default 600–630 nm) "
                  "from each trace. Spline: subtract a penalized-spline asymmetric "
                  "baseline (pybaselines pspline_asls).",
+            **_widget_kwargs(K_BASELINE, index=0),
         )
         baseline = None
         baseline_tuple = None
         if baseline_method == BASELINE_MEAN:
             c1, c2 = st.columns(2)
-            blo = c1.number_input("Mean window min (nm)", value=BASELINE_MEAN_LO)
-            bhi = c2.number_input("Mean window max (nm)", value=BASELINE_MEAN_HI)
+            for k in (K_BL_MEAN_LO, K_BL_MEAN_HI):
+                _seed_from_store(k)
+            blo = _remember(K_BL_MEAN_LO, c1.number_input(
+                "Mean window min (nm)", key=K_BL_MEAN_LO,
+                **_widget_kwargs(K_BL_MEAN_LO, value=BASELINE_MEAN_LO)))
+            bhi = _remember(K_BL_MEAN_HI, c2.number_input(
+                "Mean window max (nm)", key=K_BL_MEAN_HI,
+                **_widget_kwargs(K_BL_MEAN_HI, value=BASELINE_MEAN_HI)))
             blo, bhi = min(blo, bhi), max(blo, bhi)
             baseline = {"method": "mean", "lo": blo, "hi": bhi}
             baseline_tuple = ("mean", blo, bhi)
         elif baseline_method == BASELINE_SPLINE:
-            lam_log = st.slider("Baseline stiffness (log₁₀ λ)", 0.0, 7.0, 3.0, 0.5)
-            p_asym = st.slider("Baseline asymmetry (p)", 0.001, 0.100, 0.010, 0.001,
-                               format="%.3f")
-            n_knots = st.slider("Spline knots", 10, 200, 100, 10)
+            for k in (K_BL_LAM, K_BL_P, K_BL_KNOTS):
+                _seed_from_store(k)
+            lam_log = _remember(K_BL_LAM, st.slider(
+                "Baseline stiffness (log₁₀ λ)", 0.0, 7.0, step=0.5, key=K_BL_LAM,
+                **_widget_kwargs(K_BL_LAM, value=3.0)))
+            p_asym = _remember(K_BL_P, st.slider(
+                "Baseline asymmetry (p)", 0.001, 0.100, step=0.001, format="%.3f",
+                key=K_BL_P, **_widget_kwargs(K_BL_P, value=0.010)))
+            n_knots = _remember(K_BL_KNOTS, st.slider(
+                "Spline knots", 10, 200, step=10, key=K_BL_KNOTS,
+                **_widget_kwargs(K_BL_KNOTS, value=100)))
             baseline = {"method": "spline", "lam": 10.0 ** lam_log, "p": p_asym,
                         "num_knots": n_knots, "niter": 10}
             baseline_tuple = ("spline", baseline["lam"], baseline["p"],
                               baseline["num_knots"], baseline["niter"])
 
         method = st.radio(
-            "Normalize by", NORM_METHODS, index=0,
+            "Normalize by", NORM_METHODS, key=K_NORM,
             help="Mutually exclusive. Volume (r_eff) divides each CSV's intensities "
                  "by V = (4/3)·π·r_eff³ (per-file r_eff below).",
+            **_widget_kwargs(K_NORM, index=0),
         )
         rng = (0.0, 0.0)
         if method in NORM_RANGE_METHODS:
             c1, c2 = st.columns(2)
-            lo = c1.number_input("Range min (nm)", value=600.0)
-            hi = c2.number_input("Range max (nm)", value=700.0)
+            for k in (K_RNG_LO, K_RNG_HI):
+                _seed_from_store(k)
+            lo = _remember(K_RNG_LO, c1.number_input(
+                "Range min (nm)", key=K_RNG_LO,
+                **_widget_kwargs(K_RNG_LO, value=600.0)))
+            hi = _remember(K_RNG_HI, c2.number_input(
+                "Range max (nm)", key=K_RNG_HI,
+                **_widget_kwargs(K_RNG_HI, value=700.0)))
             rng = (min(lo, hi), max(lo, hi))
         volume_norm = method == NORM_VOLUME
 
@@ -1124,20 +1603,32 @@ def run():
             )
             for uf in settings_order:
                 i = upload_idx[uf.name]
+                show_key = f"show_{uf.name}"
+                name_key = f"name_{uf.name}"
+                order_key = f"order_{uf.name}"
+                # A persisted order can outrun the widget's 1..n_files bounds once
+                # files are removed (or a bigger session is restored), which would
+                # make Streamlit reject the value outright.
+                if order_key in st.session_state:
+                    st.session_state[order_key] = min(
+                        max(int(st.session_state[order_key]), 1), n_files)
                 with st.expander(uf.name, expanded=n_files <= 4):
                     file_show[uf.name] = st.checkbox(
-                        "Show", value=True, key=f"show_{uf.name}",
+                        "Show", key=show_key,
                         help="Uncheck to hide this file from the plots, averages, "
                              "and summaries.",
+                        **_widget_kwargs(show_key, value=True),
                     )
                     file_names[uf.name] = st.text_input(
-                        "Legend name", value=uf.name, key=f"name_{uf.name}",
+                        "Legend name", key=name_key,
                         help="Used in the combined-averages legend and summaries.",
+                        **_widget_kwargs(name_key, value=uf.name),
                     )
                     file_order[uf.name] = st.number_input(
-                        "Order", min_value=1, max_value=n_files,
-                        value=min(i + 1, n_files), step=1, key=f"order_{uf.name}",
+                        "Order", min_value=1, max_value=n_files, step=1,
+                        key=order_key,
                         help="Combined-plot legend / stack sequence.",
+                        **_widget_kwargs(order_key, value=min(i + 1, n_files)),
                     )
                     file_colors[uf.name] = _color_select_ui(uf.name, default_color_idx[uf.name])
                     if volume_norm:
@@ -1161,6 +1652,30 @@ def run():
                         # Keep the last-entered r_eff available for the legend/CSV.
                         file_reff[uf.name] = st.session_state.reff_store.get(uf.name)
                         file_volumes[uf.name] = None
+
+        # Save / resume lives at the end of the sidebar because it needs every
+        # per-file setting above. Exclusions and ROI come from session state, so
+        # they're already the current values.
+        files_meta = {
+            uf.name: {
+                "legend_name": file_names.get(uf.name) or uf.name,
+                "order": int(file_order.get(uf.name, 1)),
+                "color": file_colors.get(uf.name, "#1f77b4"),
+                "color_index": st.session_state.get(f"colorsel_{uf.name}"),
+                "reff": file_reff.get(uf.name),
+                "show": bool(file_show.get(uf.name, True)),
+                "excluded": sorted(st.session_state.spectra_excluded.get(uf.name, set())),
+            }
+            for uf in csv_files
+        }
+        _render_session_ui(
+            csv_files, files_meta,
+            _session_settings(show_average, barplot, show_sd, illum_tiers,
+                              roi_enabled, baseline_method, baseline, method, rng),
+            {"method": method, "rng": rng, "baseline_tuple": baseline_tuple,
+             "volumes": file_volumes, "roi": st.session_state.roi_box if roi_enabled
+             else None, "illum_tiers": illum_tiers},
+        )
 
     if not csv_files:
         st.info("Upload one or more spectra CSVs exported by **Get Spectra** to begin.")

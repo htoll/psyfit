@@ -318,6 +318,27 @@ _COLORS = {
     "circle": "lime", "hexagon": "cyan", "rectangle": "yellow",
     "square": "orange", "diamond": "magenta", "ellipse": "violet", "stadium": "violet", "unknown": "gray"
 }
+# Telling a hexagonal prism's two projections apart.
+#
+# `fill` = area / (major_axis · minor_axis) is exactly 0.7794 for ANY hexagon and 0.7500 for ANY
+# rectangle. Both values are independent of how elongated or how rotated the projection is,
+# because area and the second-moment axis lengths are all rotation-invariant and scale
+# identically under an anisotropic stretch (a rectangle a×b gives ab/(16ab/12) = 3/4; a hexagon
+# of circumradius R gives 2.598R²/(1.8257R)² = 0.7794).
+#
+# That invariance is what makes it the right discriminator, because aspect ratio is not one: the
+# two projections overlap heavily in aspect. Measured on HWT08_047, 22 of 78 well-formed
+# particles were slightly tilted face-on hexagons reading aspect 1.15–1.6 — squarely inside the
+# range a genuine side-on rectangle occupies — while their fill sat at 0.7795, i.e. hexagonal to
+# the third decimal. Circularity is no use either: the ideal values are only 0.830 (hexagon) vs
+# 0.790 (square), and a pixelated perimeter scatters the measured value far more than that gap.
+# The threshold is the midpoint of the two exact values.
+HEX_RECT_FILL_SPLIT = 0.765
+# Both projections of a prism are convex, so solidity gates out watershed fragments and merged
+# clumps before shape is judged at all. On real images intact particles sit above ~0.94 while
+# fragments and clumps fall below ~0.80.
+HEX_MIN_SOLIDITY = 0.88
+
 def classify_projection(prop, target_shape: str) -> str:
     area, perim = float(prop.area), float(getattr(prop, "perimeter", 0.0)) or 1e-6
     circ = 4.0 * np.pi * area / perim ** 2
@@ -325,12 +346,13 @@ def classify_projection(prop, target_shape: str) -> str:
     maj = float(getattr(prop, "major_axis_length", 0.0)) or 1e-6
     minor = float(getattr(prop, "minor_axis_length", 0.0)) or 1e-6
     aspect = maj / minor
+    fill = area / (maj * minor)
 
     if target_shape == "Sphere" and circ > 0.60: return "circle"
     elif target_shape == "Hexagonal Prism":
-        # Removed 'extent' check. Relying purely on aspect ratio and solidity!
-        if solidity > 0.75 and aspect > 1.15: return "rectangle"
-        elif circ > 0.60 and solidity > 0.80: return "hexagon"
+        # Shape, not elongation, decides which projection this is — see HEX_RECT_FILL_SPLIT.
+        if solidity > HEX_MIN_SOLIDITY:
+            return "hexagon" if fill > HEX_RECT_FILL_SPLIT else "rectangle"
     elif target_shape == "Cube" and solidity > 0.82: return "square"
     elif target_shape == "Octahedron" and solidity > 0.72: return "diamond"
     elif target_shape == "Tic Tac" and solidity > 0.85 and 1.1 <= aspect <= 4.0: return "stadium"
@@ -2166,6 +2188,11 @@ def _export_fit_columns(spec: dict) -> Dict[str, Any]:
         "dim_n_measured": int(vals.size), "dim_n_in_fit_range": int(cropped.size),
         "dim_mean": float(np.mean(cropped)) if cropped.size else float("nan"),
         "dim_sd": float(np.std(cropped)) if cropped.size else float("nan"),
+        # Relative spread, exported alongside r_eff_cv because r_eff's CV is *not* comparable to
+        # these: r_eff ∝ V^(1/3), so the cube root scales each dimension's CV down by its
+        # exponent in the volume model (2/3 for a squared term, 1/3 for a linear one).
+        "dim_cv": (float(np.std(cropped) / np.mean(cropped))
+                   if cropped.size and np.mean(cropped) else float("nan")),
         # "" from _fit_gaussians means the sample was too small to fit at all.
         "fit_method": method or "not fitted (sample too small)",
         "fit_n_components": n_comp,
@@ -2253,8 +2280,10 @@ def analysis_csv_download_ui(
 ) -> None:
     """One download with all measurements, fit parameters and run metadata."""
     volume = (4.0 / 3.0) * np.pi * reff ** 3 if np.isfinite(reff) else float("nan")
-    derived = {"r_eff": reff, "r_eff_sd": reff_sd, "surface_area": area,
-               "surface_area_sd": area_sd, "volume_from_r_eff": volume}
+    derived = {"r_eff": reff, "r_eff_sd": reff_sd,
+               "r_eff_cv": (reff_sd / reff) if (np.isfinite(reff) and reff) else float("nan"),
+               "surface_area": area, "surface_area_sd": area_sd,
+               "volume_from_r_eff": volume}
     df = build_analysis_dataframe(shape_type, hist_specs, geom, unit, notes, results,
                                   st.session_state.get("run_params"), derived)
     if df.empty:
@@ -2856,7 +2885,6 @@ def run() -> None:
                     # Total length (body + both caps) for reference.
                     if all_maj.size > 0:
                         mjmin, mjmax = get_min_max_ui("tic_maj", f"Total length ({unit_full})", all_maj)
-                        maj_crop = all_maj[(all_maj >= mjmin) & (all_maj <= mjmax)]
                         fig_maj, _, _, _ = histogram_with_fit(
                             all_maj, "Tic Tac total length", unit_full, fit_min=mjmin, fit_max=mjmax,
                         )
