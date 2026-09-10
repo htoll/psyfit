@@ -282,22 +282,75 @@ def gaussian(x, amp, mu, sigma):
 
 
 
+def acquisition_title(gain=None, exposure=None, cycles=None):
+    """Build the "EM Gain | Exposure | Cycles" plot title, skipping unknowns.
+
+    Camera metadata is only available for Andor ``.sif`` acquisitions; confocal
+    ``.dat``/``.msr`` data has none of it. Missing values are dropped rather than
+    rendered as "N/A" (and, critically, never arithmetic'd -- multiplying the
+    'N/A' placeholder used to produce a 1000x-repeated string title).
+    """
+    parts = []
+    if gain is not None and gain != 'N/A':
+        parts.append(f"EM Gain: {gain}")
+    try:
+        parts.append(f"Exposure: {float(exposure) * 1000:g} ms")
+    except (TypeError, ValueError):
+        pass
+    if cycles is not None and cycles != 'N/A':
+        parts.append(f"Cycles: {cycles}")
+    return " | ".join(parts)
+
+
+def _plotly_colorscale(cmap):
+    """Coerce a colormap spec into something Plotly's ``color_continuous_scale``
+    accepts.
+
+    Named Matplotlib colormaps with a Plotly twin are mapped by name; anything
+    else (including the custom ``LinearSegmentedColormap`` LUTs used by the
+    visualization tools) is sampled into an explicit colorscale so custom LUTs
+    survive into interactive plots instead of silently falling back.
+    """
+    named = {
+        "magma": "Magma", "viridis": "Viridis", "plasma": "Plasma",
+        "hot": "Hot", "gray": "Gray", "hsv": "HSV", "cividis": "Cividis",
+        "inferno": "Inferno",
+    }
+    if isinstance(cmap, str):
+        return named.get(cmap, "Magma")
+    if callable(cmap):  # matplotlib Colormap -> sampled colorscale
+        n = 32
+        scale = []
+        for i in range(n):
+            frac = i / (n - 1)
+            r, g, b = (int(round(c * 255)) for c in cmap(frac)[:3])
+            scale.append([frac, f"rgb({r},{g},{b})"])
+        return scale
+    return cmap  # already an explicit Plotly colorscale
+
+
 def plot_brightness(
     image_data_cps,
     df,
     img_meta=None,
     show_fits=True,
-    plot_brightness_histogram=False,   
+    plot_brightness_histogram=False,
     normalization=False,
     pix_size_um=0.1,
     cmap='magma',
     *,
-    interactive=False,                
-    dragmode='zoom'                    # 'zoom' (magnifier) or 'pan'
+    interactive=False,
+    dragmode='zoom',                   # 'zoom' (magnifier) or 'pan'
+    vmin=None,                         # display contrast floor, in raw pps
+    vmax=None,                         # display contrast ceiling, in raw pps
 ):
     """
     If interactive=False (default): returns a Matplotlib Figure (original behavior).
     If interactive=True: returns a Plotly Figure with box-zoom/pan and crisp vector overlays.
+
+    ``cmap`` may be a colormap name or a Matplotlib ``Colormap`` object (custom
+    LUTs included). ``vmin``/``vmax`` clamp the *display* contrast only; hover
+    readouts still report the underlying pps values.
     """
     # --- MATPLOTLIB PATH (UNCHANGED DEFAULT) ---
     if not interactive:
@@ -309,8 +362,16 @@ def plot_brightness(
         scale = fig_width / 5
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
-        norm = LogNorm() if normalization else None
-        im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=norm, origin='lower')
+        # The image is displayed shifted by +1 (so log scaling is safe), so any
+        # explicit contrast limits have to be shifted the same way.
+        lo = None if vmin is None else vmin + 1
+        hi = None if vmax is None else vmax + 1
+        if normalization:
+            im = ax.imshow(image_data_cps + 1, cmap=cmap, origin='lower',
+                           norm=LogNorm(vmin=lo, vmax=hi))
+        else:
+            im = ax.imshow(image_data_cps + 1, cmap=cmap, origin='lower',
+                           vmin=lo, vmax=hi)
         ax.tick_params(axis='both', length=0, labelleft=False, labelright=False,
                        labeltop=False, labelbottom=False)
 
@@ -326,8 +387,9 @@ def plot_brightness(
 
         if show_fits and df is not None and not df.empty:
 
-            ax.set_title(f"EM Gain: {gain} | Exposure: {exposure*1000} ms | Cycles: {cycles}", 
-                         fontweight='bold', color='black', fontsize=12)
+            title = acquisition_title(gain, exposure, cycles)
+            if title:
+                ax.set_title(title, fontweight='bold', color='black', fontsize=12)
             for _, row in df.iterrows():
                 x_px = row['x_pix']
                 y_px = row['y_pix']
@@ -348,27 +410,33 @@ def plot_brightness(
     # --- PLOTLY PATH (INTERACTIVE) ---
     import numpy as np
 
-    # Map Matplotlib colormap names to Plotly scales
-    cmap_map = {
-        "magma": "Magma", "viridis": "Viridis", "plasma": "Plasma",
-        "hot": "Hot", "gray": "Gray", "hsv": "HSV", "cividis": "Cividis", "inferno": "Inferno"
-    }
-    plotly_scale = cmap_map.get(cmap, "Magma")
+    plotly_scale = _plotly_colorscale(cmap)
 
     # Approximate LogNorm for image display if requested
     img = image_data_cps.astype(float)
     if normalization:
         eps = max(float(np.percentile(img, 0.01)), 1e-9)
         img_display = np.log10(np.clip(img + 1.0, eps, None))
+
+        def _to_display(v):
+            return float(np.log10(max(float(v) + 1.0, eps)))
     else:
         img_display = img
+        _to_display = float
+
+    # Contrast limits arrive in raw pps; push them through the same transform
+    # as the image so they mean the same thing on a log display.
+    zmin = None if vmin is None else _to_display(vmin)
+    zmax = None if vmax is None else _to_display(vmax)
 
     # Base image with stored cps for hover
     fig = px.imshow(
         img_display,
         origin="lower",
         aspect="equal",
-        color_continuous_scale=plotly_scale
+        color_continuous_scale=plotly_scale,
+        zmin=zmin,
+        zmax=zmax,
     )
     # store original cps values for accurate hover information
     img_custom = np.expand_dims(img, axis=-1)
@@ -412,17 +480,19 @@ def plot_brightness(
     xs = ys = rs = br = None
     if df is not None and not df.empty:
 
-        gain = df['gainDAC'].iloc[0] if 'gainDAC' in df.columns else 'N/A'
-        exposure = df['exposure_time_sec'].iloc[0] if 'exposure_time_sec' in df.columns else 'N/A'
-        cycles = df['accumulated_cycles'].iloc[0] if 'accumulated_cycles' in df.columns else 'N/A'
-        fig.update_layout(
-            title=dict(
-                text=f"<b>EM Gain: {gain} | Exposure: {exposure*1000} ms | Cycles: {cycles}</b>",
-                font=dict(color="black", size=16),
-                x=0.5,             # Centers the title
-                xanchor="center"
+        gain = df['gainDAC'].iloc[0] if 'gainDAC' in df.columns else None
+        exposure = df['exposure_time_sec'].iloc[0] if 'exposure_time_sec' in df.columns else None
+        cycles = df['accumulated_cycles'].iloc[0] if 'accumulated_cycles' in df.columns else None
+        title = acquisition_title(gain, exposure, cycles)
+        if title:
+            fig.update_layout(
+                title=dict(
+                    text=f"<b>{title}</b>",
+                    font=dict(color="black", size=16),
+                    x=0.5,             # Centers the title
+                    xanchor="center"
+                )
             )
-        )
         xs = df["x_pix"].to_numpy()
         ys = df["y_pix"].to_numpy()
         rs = (2 * np.maximum(df["sigx_fit"].to_numpy(), df["sigy_fit"].to_numpy()) / pix_size_um).astype(float)
