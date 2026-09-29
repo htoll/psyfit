@@ -415,14 +415,32 @@ def run():
                     st.metric("Total Spots", len(combined_df))
                     st.metric("Mean Brightness", f"{combined_df['brightness_integrated'].mean():.0f} pps")
                     
-                    fig_hist, mu, sigma = plot_histogram(
-                        combined_df,
-                        min_val=combined_df['brightness_integrated'].min(),
-                        max_val=combined_df['brightness_integrated'].max(),
-                        num_bins=30
-                    )
-                    st.pyplot(fig_hist, use_container_width=True)
-                    plt.close(fig_hist)
+                    # User-adjustable brightness range for the histogram/fit
+                    b_vals = combined_df['brightness_integrated']
+                    data_min, data_max = float(b_vals.min()), float(b_vals.max())
+                    c_min, c_max, c_gmm = st.columns(3)
+                    with c_min:
+                        hist_min = st.number_input("Hist Min (pps)", value=data_min, format="%.0f")
+                    with c_max:
+                        hist_max = st.number_input("Hist Max (pps)", value=data_max, format="%.0f")
+                    with c_gmm:
+                        n_components = st.number_input("GMM Components", value=2, min_value=1, max_value=10, step=1)
+
+                    n_in_range = int(((b_vals >= hist_min) & (b_vals <= hist_max)).sum())
+                    if hist_min >= hist_max:
+                        st.warning("Hist Min must be less than Hist Max.")
+                    elif n_in_range == 0:
+                        st.warning("No spots fall within the selected brightness range.")
+                    else:
+                        fig_hist, mu, sigma = plot_histogram(
+                            combined_df,
+                            min_val=hist_min,
+                            max_val=hist_max,
+                            num_bins=30,
+                            n_components=int(n_components)
+                        )
+                        st.pyplot(fig_hist, use_container_width=True)
+                        plt.close(fig_hist)
 
                     csv = combined_df.to_csv(index=False).encode('utf-8')
                     st.download_button(
