@@ -2014,7 +2014,7 @@ def build_summary_figure(
 ) -> plt.Figure:
     """One figure at a locked page size/aspect: the TEM image with the reported geometry (2-D
     projections + 3-D wireframe) overlaid to scale on the left, and every histogram + fit in
-    fixed-height rows on the right. The file name is the main heading; r_eff ± SD sits bold
+    fixed-height rows on the right. The file name is the main heading; d_eff ± SD sits bold
     beneath it. The fixed geometry (see the SUMMARY_* constants) makes many summaries tile
     cleanly no matter the magnification, shape, or histogram count."""
     n = max(len(hist_specs), 1)
@@ -2049,14 +2049,14 @@ def build_summary_figure(
             spec.get("n_components", 1), spec.get("fit_min"), spec.get("fit_max"), spec.get("mu_ranges"),
         )
 
-    # File name is the heading; r_eff ± SD and surface area ± SD share the second line, same
+    # File name is the heading; d_eff (= 2·r_eff) ± SD and surface area ± SD share the second line, same
     # bold size, one suptitle. Wrap a long prefix/notes so nothing clips at the fixed page edge
     # (no bbox expansion now).
     head = "\n".join(textwrap.wrap(prefix, width=72)) or prefix
     stat_parts = []
     if np.isfinite(reff):
-        sd_txt = f" ± {reff_sd:.2f}" if np.isfinite(reff_sd) else ""
-        stat_parts.append(f"$r_{{eff}}$ = {reff:.2f}{sd_txt} {unit}")
+        sd_txt = f" ± {2 * reff_sd:.2f}" if np.isfinite(reff_sd) else ""
+        stat_parts.append(f"$d_{{eff}}$ = {2 * reff:.2f}{sd_txt} {unit}")
     if np.isfinite(area):
         asd_txt = f" ± {area_sd:.1f}" if np.isfinite(area_sd) else ""
         stat_parts.append(f"S.A. = {area:.1f}{asd_txt} {unit}$^2$")
@@ -2282,6 +2282,7 @@ def analysis_csv_download_ui(
     volume = (4.0 / 3.0) * np.pi * reff ** 3 if np.isfinite(reff) else float("nan")
     derived = {"r_eff": reff, "r_eff_sd": reff_sd,
                "r_eff_cv": (reff_sd / reff) if (np.isfinite(reff) and reff) else float("nan"),
+               "d_eff": 2.0 * reff, "d_eff_sd": 2.0 * reff_sd,
                "surface_area": area, "surface_area_sd": area_sd,
                "volume_from_r_eff": volume}
     df = build_analysis_dataframe(shape_type, hist_specs, geom, unit, notes, results,
@@ -2302,7 +2303,7 @@ def analysis_csv_download_ui(
             "One row per measured particle-dimension. Every row also carries the segmentation "
             "parameters (`seg_*`), the fit that dimension received (`fit_*`, including each GMM "
             "component's μ/σ/weight and whether its mean was range-constrained), the resolved "
-            "geometry (`geom_*`), the derived r_eff / surface area / volume, and any caveat "
+            "geometry (`geom_*`), the derived r_eff / d_eff / surface area / volume, and any caveat "
             "notes — so a value can never be separated from how it was produced. "
             "`in_fit_range` marks whether each measurement fell inside the histogram fit window."
         )
@@ -2320,7 +2321,7 @@ def summary_export_ui(
     analysis_csv_download_ui(shape_type, hist_specs, geom, reff, reff_sd, area, area_sd,
                              unit, prefix, notes, results)
     if not st.checkbox("Build comprehensive summary figure", value=True, key=f"summary_{shape_type}"):
-        st.caption("Tick to assemble one figure with all histograms, r_eff ± SD, and a TEM image "
+        st.caption("Tick to assemble one figure with all histograms, d_eff ± SD, and a TEM image "
                    "with the reported geometry (2-D projections + 3-D wireframe) overlaid to scale.")
         return
     tem = _select_tem_for_summary(results, shape_type)
@@ -2515,7 +2516,7 @@ def run() -> None:
                 plt.close(fig_full)
 
             st.markdown("---")
-            st.markdown("### Histograms & Effective Radius ($r_{eff}$)")
+            st.markdown("### Histograms & Effective Diameter ($d_{eff}$)")
             render_dimension_guide(shape_type)
 
             prefix = _common_prefix([r["name"] for r in results])
@@ -2535,16 +2536,16 @@ def run() -> None:
                         if d_crop.size < MIN_SHAPE_COUNT:
                             st.warning(
                                 f"Only {d_crop.size} sphere(s) in the selected range (< {MIN_SHAPE_COUNT}); "
-                                "r_eff is reported directly as the mean radius but may be unreliable."
+                                "d_eff is reported directly as the mean diameter but may be unreliable."
                             )
                         mean_d, sd_d = _mean_sd(d_crop)
                         r_eff, r_eff_sd = reff_with_sd(lambda x: (np.pi / 6.0) * x[0] ** 3, [(mean_d, sd_d)])
                         # Sphere surface area S = π·D².
                         area, area_sd = measure_with_sd(lambda x: np.pi * x[0] ** 2, [(mean_d, sd_d)])
                         st.metric(
-                            label="Effective Radius (r_eff)",
-                            value=f"{r_eff:.2f} ± {r_eff_sd:.2f} {unit_full}",
-                            help=f"r_eff = mean diameter / 2, n = {d_crop.size} in selected range. ± is 1 SD.",
+                            label="Effective Diameter (d_eff)",
+                            value=f"{2 * r_eff:.2f} ± {2 * r_eff_sd:.2f} {unit_full}",
+                            help=f"d_eff = mean diameter, n = {d_crop.size} in selected range. ± is 1 SD.",
                         )
                         summary_export_ui(
                             shape_type,
@@ -2621,8 +2622,8 @@ def run() -> None:
                             for msg in notes:
                                 st.warning(msg)
                             st.metric(
-                                label="Effective Radius (r_eff)",
-                                value=f"{r_eff:.2f} ± {r_eff_sd:.2f} {unit_full}",
+                                label="Effective Diameter (d_eff)",
+                                value=f"{2 * r_eff:.2f} ± {2 * r_eff_sd:.2f} {unit_full}",
                                 help=(
                                     f"From rectangle GMM: width (smaller μ) = {mean_w:.2f}, height (larger μ) "
                                     f"= {mean_h:.2f} {unit_full}. V = (3√3/8)·W²·H (vertex-to-vertex W); ± is 1 SD propagated from the GMM peak widths."
@@ -2637,7 +2638,7 @@ def run() -> None:
                                 results=results, area=area, area_sd=area_sd,
                             )
                         else:
-                            st.warning("Not enough rectangle data to fit two distinct peaks for r_eff.")
+                            st.warning("Not enough rectangle data to fit two distinct peaks for d_eff.")
                     else:
                         st.info("No side-on rectangular projections detected.")
                 else:
@@ -2664,7 +2665,7 @@ def run() -> None:
                     if w_crop.size > 0:
                         mean_w, sd_w = _mean_sd(w_crop)
                         if w_crop.size < MIN_SHAPE_COUNT:
-                            notes.append(f"Only {w_crop.size} face-on hexagon(s) (< {MIN_SHAPE_COUNT}); the width sample is small and r_eff may be unreliable.")
+                            notes.append(f"Only {w_crop.size} face-on hexagon(s) (< {MIN_SHAPE_COUNT}); the width sample is small and d_eff may be unreliable.")
                     elif all_rw.size > 0:
                         mean_w, sd_w = _mean_sd(all_rw)
                         notes.append(f"No face-on hexagons found; width taken from the {all_rw.size} side-on rectangle short axis/axes, assuming it equals the hexagon vertex-to-vertex width.")
@@ -2674,7 +2675,7 @@ def run() -> None:
                     if h_crop.size > 0:
                         mean_h, sd_h = _mean_sd(h_crop)
                         if h_crop.size < MIN_SHAPE_COUNT:
-                            notes.append(f"Only {h_crop.size} side-on rectangle(s) (< {MIN_SHAPE_COUNT}); the height sample is small and r_eff may be unreliable.")
+                            notes.append(f"Only {h_crop.size} side-on rectangle(s) (< {MIN_SHAPE_COUNT}); the height sample is small and d_eff may be unreliable.")
                     elif np.isfinite(mean_w):
                         mean_h, sd_h = mean_w, sd_w
                         notes.append("No side-on rectangles found; prism height is assumed equal to the width (aspect ratio 1).")
@@ -2688,8 +2689,8 @@ def run() -> None:
                         r_eff, r_eff_sd = reff_with_sd(hex_vol, [(mean_w, sd_w), (mean_h, sd_h)])
                         area, area_sd = measure_with_sd(hex_area, [(mean_w, sd_w), (mean_h, sd_h)])
                         st.metric(
-                            label="Effective Radius (r_eff)",
-                            value=f"{r_eff:.2f} ± {r_eff_sd:.2f} {unit_full}",
+                            label="Effective Diameter (d_eff)",
+                            value=f"{2 * r_eff:.2f} ± {2 * r_eff_sd:.2f} {unit_full}",
                             help=f"Mean width = {mean_w:.2f}, mean height = {mean_h:.2f} {unit_full}. V = (3√3/8)·W²·H (vertex-to-vertex W); ± is 1 SD.",
                         )
                         summary_export_ui(
@@ -2698,7 +2699,7 @@ def run() -> None:
                             area=area, area_sd=area_sd,
                         )
                     else:
-                        st.warning("Both face-on (width) and side-on (height) measurements are needed to calculate r_eff for hexagonal prisms.")
+                        st.warning("Both face-on (width) and side-on (height) measurements are needed to calculate d_eff for hexagonal prisms.")
 
             elif shape_type == "Cube":
                 all_s = np.concatenate([r["side_lengths"] for r in results])
@@ -2714,15 +2715,15 @@ def run() -> None:
                         if s_crop.size < MIN_SHAPE_COUNT:
                             st.warning(
                                 f"Only {s_crop.size} cube(s) in the selected range (< {MIN_SHAPE_COUNT}); "
-                                "r_eff assumes a regular cube (V = s³) but may be unreliable."
+                                "d_eff assumes a regular cube (V = s³) but may be unreliable."
                             )
                         mean_s, sd_s = _mean_sd(s_crop)
                         r_eff, r_eff_sd = reff_with_sd(lambda x: x[0] ** 3, [(mean_s, sd_s)])
                         # Cube surface area S = 6·s².
                         area, area_sd = measure_with_sd(lambda x: 6.0 * x[0] ** 2, [(mean_s, sd_s)])
                         st.metric(
-                            label="Effective Radius (r_eff)",
-                            value=f"{r_eff:.2f} ± {r_eff_sd:.2f} {unit_full}",
+                            label="Effective Diameter (d_eff)",
+                            value=f"{2 * r_eff:.2f} ± {2 * r_eff_sd:.2f} {unit_full}",
                             help=f"V = s³ with mean side = {mean_s:.2f} {unit_full}, n = {s_crop.size}. ± is 1 SD.",
                         )
                         summary_export_ui(
@@ -2782,8 +2783,8 @@ def run() -> None:
                     for msg in notes:
                         st.warning(msg)
                     st.metric(
-                        label="Effective Radius (r_eff)",
-                        value=f"{r_eff:.2f} ± {r_eff_sd:.2f} {unit_full}",
+                        label="Effective Diameter (d_eff)",
+                        value=f"{2 * r_eff:.2f} ± {2 * r_eff_sd:.2f} {unit_full}",
                         help=f"{help_txt} V = (1/6)·major·minor² (vertex-to-vertex axes); ± is 1 SD.",
                     )
                     summary_export_ui(
@@ -2860,7 +2861,7 @@ def run() -> None:
                         sd_W = sd_T = sd_w_crop
                         notes.append("Width distribution treated as unimodal; the cross-section is assumed square (T = W).")
                     if w_crop.size < MIN_SHAPE_COUNT:
-                        notes.append(f"Only {w_crop.size} tic-tac(s) in the selected width range (< {MIN_SHAPE_COUNT}); r_eff may be unreliable.")
+                        notes.append(f"Only {w_crop.size} tic-tac(s) in the selected width range (< {MIN_SHAPE_COUNT}); d_eff may be unreliable.")
 
                     hist_specs = [{"values": all_w, "title": "Tic Tac width", "n_components": w_ncomp,
                                    "fit_min": wmin, "fit_max": wmax, "mu_ranges": mu_ranges,
@@ -2918,8 +2919,8 @@ def run() -> None:
                         v_body = (3.0 * np.sqrt(3.0) / 8.0) * W_dim * T_dim * mean_body
                         v_caps = (np.pi / 3.0) * W_dim * T_dim * mean_cap
                         st.metric(
-                            label="Effective Radius (r_eff)",
-                            value=f"{r_eff:.2f} ± {r_eff_sd:.2f} {unit_full}",
+                            label="Effective Diameter (d_eff)",
+                            value=f"{2 * r_eff:.2f} ± {2 * r_eff_sd:.2f} {unit_full}",
                             help=(
                                 f"Hex-prism body (W={W_dim:.2f}, T={T_dim:.2f}, L_body={mean_body:.2f}) "
                                 f"+ half-ellipsoid caps (depth d={mean_cap:.2f}). "
@@ -2933,6 +2934,6 @@ def run() -> None:
                             area=area, area_sd=area_sd,
                         )
                     else:
-                        st.warning("Both width and body-length measurements are needed to compute r_eff for Tic Tacs.")
+                        st.warning("Both width and body-length measurements are needed to compute d_eff for Tic Tacs.")
 if __name__ == "__main__":
     run()
