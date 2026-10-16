@@ -543,12 +543,41 @@ def plot_brightness(
 
 
 
-def plot_histogram(df, 
+def fit_brightness_gmm(values, n_components=2, pick="weight", min_weight=0.15):
+    """
+    Fit a GaussianMixture to 1-D brightness values. Returns (gmm, mu, sigma) for
+    the selected component, or (None, None, None) when there are too few points.
+    Deterministic (fixed seed), so the same data always gives the same fit.
+
+    pick="weight": the highest-weight component.
+    pick="lowest": the dimmest component holding at least `min_weight` of the
+        particles, i.e. the single-particle (monomer) peak. Unlike "weight", this
+        doesn't jump to the dimer/trimer peak when monomers aren't the majority;
+        the weight floor skips a small cluster of dim spurious detections.
+    """
+    vals = np.asarray(values, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if len(vals) <= n_components:
+        return None, None, None
+    gmm = GaussianMixture(n_components=n_components, random_state=42).fit(vals.reshape(-1, 1))
+    means, weights = gmm.means_.flatten(), gmm.weights_
+    idx = int(np.argmax(weights))
+    if pick == "lowest":
+        ok = np.flatnonzero(weights >= min_weight)
+        if ok.size:
+            idx = int(ok[np.argmin(means[ok])])
+    mu = float(means[idx])
+    sigma = float(np.sqrt(gmm.covariances_.flatten()[idx]))
+    return gmm, mu, sigma
+
+
+def plot_histogram(df,
                    min_val=None, 
                    max_val=None, 
                    num_bins='auto', 
                    thresholds=None,
-                   n_components = 2
+                   n_components = 2,
+                   pick="weight",
                   ):
     """
     Plots the brightness histogram with a Gaussian fit and optional vertical thresholds.
@@ -582,25 +611,17 @@ def plot_histogram(df,
         bins = np.linspace(min_val, max_val, int(num_bins))
 
     counts, edges, _ = ax.hist(brightness_vals, bins=bins, color='#88CCEE', edgecolor='#88CCEE', alpha=0.7)
-    bin_centers = 0.5 * (edges[:-1] + edges[1:])
 
     # Gaussian fit
-    mu, sigma = None, None
-    if len(brightness_vals) > n_components:
-        X = brightness_vals.reshape(-1, 1)
-        gmm = GaussianMixture(n_components=n_components, random_state=42).fit(X)
-        
+    gmm, mu, sigma = fit_brightness_gmm(brightness_vals, n_components, pick=pick)
+    if gmm is not None:
         x_fit = np.linspace(edges[0], edges[-1], 500).reshape(-1, 1)
         pdf = np.exp(gmm.score_samples(x_fit))
         bin_width = edges[1] - edges[0]
         y_fit = pdf * len(brightness_vals) * bin_width
         ax.plot(x_fit, y_fit, color='black', linewidth=1, label=f"{n_components}-comp GMM")
 
-        idx = np.argmax(gmm.weights_)
-        mu_primary = gmm.means_.flatten()[idx]
-        sigma_primary = np.sqrt(gmm.covariances_.flatten()[idx])
-        # Return the fitted stats to callers (previously left as None).
-        mu, sigma = mu_primary, sigma_primary
+        mu_primary, sigma_primary = mu, sigma
         sigma_over_mu = (sigma_primary / mu_primary * 100) if mu_primary != 0 else 0
         n_points = len(brightness_vals)
 

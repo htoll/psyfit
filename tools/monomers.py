@@ -9,7 +9,7 @@ import matplotlib.colors as mcolors
 import plotly.express as px
 from matplotlib.lines import Line2D
 
-from utils import plot_brightness, plot_histogram, HWT_aesthetic, file_uploader_with_clear
+from utils import plot_brightness, plot_histogram, fit_brightness_gmm, HWT_aesthetic, file_uploader_with_clear
 from tools.process_files import process_files
 from tools import roi as roi_tool
 
@@ -662,10 +662,15 @@ def run():
         "mono_dilution": "1E3",
         "mono_estimate_conc": False,
         "mono_show_fits": True,
-        "mono_normalization": True,
+        "mono_normalization": False,
         "mono_save_format": "svg",
         "mono_gen_summary": True,
+        "mono_summ_conc": True,
+        "mono_summ_ppv": True,
+        "mono_summ_dil": True,
+        "mono_summ_scope": True,
         "mono_summ_monomer": False,
+        "mono_summ_pct_val": 0.0,
         "mono_summ_psf": False,
         "mono_summ_bright": False,
         "mono_num_bins": 50,
@@ -908,15 +913,12 @@ def run():
                 "Download format", ["svg", "png", "jpeg"], key="mono_save_format"
             ).lower()
 
-            gen_summary = st.checkbox(
+            st.checkbox(
                 "Generate summary image", key="mono_gen_summary",
                 help="Build a downloadable TIFF of the field whose PSF count is "
-                     "closest to the average, annotated with Avg PPV ± SD and dilution.",
+                     "closest to the average. Choose which fields to include next "
+                     "to the preview.",
             )
-            if gen_summary:
-                st.checkbox("- include % monomers", key="mono_summ_monomer")
-                st.checkbox("- include PSF fits", key="mono_summ_psf")
-                st.checkbox("- include brightness fits", key="mono_summ_bright")
 
             # Process automatically. _process_files_cached is @st.cache_data keyed on
             # (saved_records, region, threshold, signal, pix_size_um), so tuning any of
@@ -959,7 +961,8 @@ def run():
         else:
             active_roi = roi_tool.draw_roi(
                 ref_img, key="monomers_roi_canvas",
-                cmap=st.session_state.get("monomers_cmap", "plasma"), log=True,
+                cmap=st.session_state.get("monomers_cmap", "plasma"),
+                log=st.session_state.get("mono_normalization", False),
             )
             st.session_state["monomers_roi"] = active_roi
             if active_roi is None:
@@ -1002,6 +1005,7 @@ def run():
 
         top_left, top_right = st.columns(2)
         fig_pie = None
+        pct_monomers = None
         thresholds = None
         single_ucnp_brightness_value = st.session_state.get("single_ucnp_brightness")
 
@@ -1025,11 +1029,25 @@ def run():
                 if user_min_val >= user_max_val:
                     st.warning("Min brightness must be less than max brightness.")
                 else:
-                    if single_ucnp_brightness_value is None:
-                        default_spb = float(np.mean(brightness_vals))
-                    else:
-                        default_spb = float(single_ucnp_brightness_value)
-                    default_spb = float(np.clip(default_spb, user_min_val, user_max_val))
+                    # Single-particle brightness defaults to the GMM μ of the
+                    # *current* data within the current range (the same fit drawn
+                    # on the histogram). Re-seed whenever that fit changes (new
+                    # files, reprocessing, range edits) so a value from a previous
+                    # dataset is never carried over; a manual edit sticks only
+                    # until the fit changes.
+                    in_range = brightness_vals[(brightness_vals >= user_min_val)
+                                               & (brightness_vals <= user_max_val)]
+                    _, mu_fit, _ = fit_brightness_gmm(in_range, pick="lowest")
+                    if mu_fit is None:
+                        mu_fit = float(np.median(in_range)) if in_range.size else user_min_val
+                    mu_fit = float(np.clip(mu_fit, user_min_val, user_max_val))
+                    if (st.session_state.get("_mono_spb_fit") != mu_fit
+                            or "mono_spb" not in st.session_state):
+                        st.session_state["_mono_spb_fit"] = mu_fit
+                        st.session_state["mono_spb"] = mu_fit
+                    # Keep any manual value inside the (possibly narrowed) bounds.
+                    st.session_state["mono_spb"] = float(np.clip(
+                        st.session_state["mono_spb"], user_min_val, user_max_val))
 
                     bc1, bc2 = st.columns(2)
                     num_bins = bc1.number_input("# Bins:", min_value=1, step=1, key="mono_num_bins")
@@ -1037,7 +1055,10 @@ def run():
                         "Single Particle Brightness (pps)",
                         min_value=user_min_val,
                         max_value=user_max_val,
-                        value=default_spb,
+                        format="%.4g",
+                        key="mono_spb",
+                        help=f"Defaults to the GMM fit μ of the current data in range "
+                             f"({mu_fit:.3g} pps); re-fits whenever the data or range change.",
                     )
                     st.session_state["single_ucnp_brightness"] = float(single_ucnp_brightness_value)
 
@@ -1049,6 +1070,7 @@ def run():
                         max_val=user_max_val,
                         num_bins=num_bins,
                         thresholds=thresholds,
+                        pick="lowest",
                     )
                     fig_hist_final.set_size_inches(5, 3)
                     fig_hist_final.tight_layout()
@@ -1072,6 +1094,10 @@ def run():
                         )
                         category_counts = categories.value_counts().reset_index()
                         category_counts.columns = ['Category', 'Count']
+                        n_in_range = int(categories.notna().sum())
+                        if n_in_range:
+                            pct_monomers = round(
+                                100.0 * int((categories == "Monomers").sum()) / n_in_range, 1)
 
                         fig_pie = px.pie(
                             category_counts,
@@ -1292,32 +1318,61 @@ def run():
                 dilution = st.session_state.get("dilution")
                 microscope = st.session_state.get("microscope", "MCL")
 
-                # Build annotation lines, estimated concentration first (always).
-                ann = []
-                dil_for_ppv = dilution if dilution is not None else 1.0
-                if dilution is not None and mean_count:
-                    est_s = estimate_concentration(
-                        ppv=mean_count, dilution=dilution, area_um2=mean_area_um2
+                # Computed % monomers, the same in-range breakdown as the pie,
+                # used to seed the editable estimate below.
+                pct_auto = pct_monomers
+                # Re-seed the estimate only when the computed value changes, so a
+                # manual edit isn't clobbered on every rerun.
+                if st.session_state.get("_mono_pct_auto") != pct_auto:
+                    st.session_state["_mono_pct_auto"] = pct_auto
+                    st.session_state["mono_summ_pct_val"] = (
+                        pct_auto if pct_auto is not None else 0.0
                     )
-                    rel = (ppv_sd / np.sqrt(len(counts)) / mean_count
-                           if len(counts) > 1 else 0.0)
-                    ann.append(_format_molarity_pm(est_s['molarity'],
-                                                   est_s['molarity'] * rel if rel else None))
-                else:
-                    ann.append("set dilution for conc.")
-                # Reported ppv is dilution-adjusted (measured × dilution).
-                ann.append(f"{mean_count * dil_for_ppv:.3g} ± {ppv_sd * dil_for_ppv:.2g} ppv")
-                if dilution is not None:
-                    ann.append(f"{_sci_compact(dilution)} dilution")
-                ann.append(f"{microscope}")
 
-                want_monomer = st.session_state.get("mono_summ_monomer", False)
-                if (want_monomer and spb and combined_df is not None
-                        and not combined_df.empty):
-                    t1_m = thresholds_from_single_brightness(float(spb))[0]
-                    b_all = combined_df['brightness_integrated'].to_numpy()
-                    if b_all.size:
-                        ann.append(f"{100.0 * float(np.mean(b_all < t1_m)):.0f}% monomers")
+                prev_col, opt_col = st.columns([1, 1])
+
+                # Per-field toggles for the annotation block and overlays.
+                with opt_col:
+                    st.caption("Include on summary image")
+                    st.checkbox("Concentration", key="mono_summ_conc")
+                    st.checkbox("PPV ± SD (at imaged dilution)", key="mono_summ_ppv")
+                    st.checkbox("Dilution", key="mono_summ_dil")
+                    st.checkbox("Microscope", key="mono_summ_scope")
+                    mc_a, mc_b = st.columns([1, 1])
+                    mc_a.checkbox("Est. % monomers", key="mono_summ_monomer")
+                    mc_b.number_input(
+                        "Est. % monomers", min_value=0.0, max_value=100.0, step=1.0,
+                        format="%.1f", key="mono_summ_pct_val",
+                        label_visibility="collapsed",
+                        help="Prefilled from the brightness histogram (fraction "
+                             "below 2× single-particle brightness); edit to override.",
+                        disabled=not st.session_state.get("mono_summ_monomer"),
+                    )
+                    st.checkbox("PSF fits", key="mono_summ_psf")
+                    st.checkbox("Brightness fits", key="mono_summ_bright")
+
+                # Build annotation lines, estimated concentration first.
+                ann = []
+                if st.session_state.get("mono_summ_conc"):
+                    if dilution is not None and mean_count:
+                        est_s = estimate_concentration(
+                            ppv=mean_count, dilution=dilution, area_um2=mean_area_um2
+                        )
+                        rel = (ppv_sd / np.sqrt(len(counts)) / mean_count
+                               if len(counts) > 1 else 0.0)
+                        ann.append(_format_molarity_pm(est_s['molarity'],
+                                                       est_s['molarity'] * rel if rel else None))
+                    else:
+                        ann.append("set dilution for conc.")
+                if st.session_state.get("mono_summ_ppv"):
+                    # Measured ppv of the imaged (diluted) sample, not scaled to stock.
+                    ann.append(f"{mean_count:.3g} ± {ppv_sd:.2g} ppv")
+                if st.session_state.get("mono_summ_dil") and dilution is not None:
+                    ann.append(f"{_sci_compact(dilution)} dilution")
+                if st.session_state.get("mono_summ_scope"):
+                    ann.append(f"{microscope}")
+                if st.session_state.get("mono_summ_monomer"):
+                    ann.append(f"~{float(st.session_state['mono_summ_pct_val']):.0f}% mono")
 
                 if summ_img is None:
                     st.info("No image available for the summary.")
@@ -1326,7 +1381,7 @@ def run():
                         summ_img, summ_df,
                         pix_size_um=pix,
                         cmap=st.session_state.get("monomers_cmap", "gray"),
-                        normalization=st.session_state.get("mono_normalization", True),
+                        normalization=st.session_state.get("mono_normalization", False),
                         single_ucnp_brightness=float(spb) if spb else None,
                         aperture=summ_ap,
                         annotation_lines=ann,
@@ -1336,7 +1391,6 @@ def run():
                     )
                     # Show in a half-width column so the high-DPI render is
                     # downscaled (crisp) rather than stretched up (pixelated).
-                    prev_col = st.columns([1, 1])[0]
                     prev_col.pyplot(fig_summ, use_container_width=True)
 
                     base = extract_sif_number(os.path.basename(best_name))
