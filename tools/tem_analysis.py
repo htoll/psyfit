@@ -338,6 +338,13 @@ HEX_RECT_FILL_SPLIT = 0.765
 # clumps before shape is judged at all. On real images intact particles sit above ~0.94 while
 # fragments and clumps fall below ~0.80.
 HEX_MIN_SOLIDITY = 0.88
+# regionprops' major/minor_axis_length are moment-based (4·√variance along each axis), which
+# equals the true extent only for an ellipse. For the prism projections they are biased:
+#   rectangle of side a: 4·a/√12 = 1.1547·a  → multiply by √12/4 = 0.8660 (same as Cube)
+#   hexagon of circumradius R: 4·√(5/24)·R = 1.8257·R, but the vertex-to-vertex width is 2R
+#                              → multiply by 2/1.8257 = 1.0954
+RECT_AXIS_CORR = np.sqrt(12.0) / 4.0
+HEX_AXIS_CORR = 2.0 / (4.0 * np.sqrt(5.0 / 24.0))
 
 def classify_projection(prop, target_shape: str) -> str:
     area, perim = float(prop.area), float(getattr(prop, "perimeter", 0.0)) or 1e-6
@@ -363,6 +370,42 @@ def _hexagon_vertices(cx: float, cy: float, radius: float, angle: float = 0.0) -
     # Add the rotation angle to the base angles
     angles = (np.pi / 3.0 * np.arange(6)) + angle
     return np.column_stack((cx + radius * np.cos(angles), cy + radius * np.sin(angles)))
+
+def _hexagon_angle(prop) -> float:
+    """Vertex direction (radians, (col=x, row=y) pixel space) of a face-on hexagon.
+
+    A regular hexagon's second moments are isotropic, so regionprops' ``orientation`` is
+    arbitrary for it. Instead use the 6-fold angular harmonic of the region's pixels: the
+    vertices are the farthest points from the centroid, so weighting by r⁴ makes the harmonic's
+    phase point at a vertex (phase = 6·angle)."""
+    coords = prop.coords.astype(np.float64)
+    cy, cx = coords.mean(axis=0)
+    dx, dy = coords[:, 1] - cx, coords[:, 0] - cy
+    r2 = dx * dx + dy * dy
+    return float(np.angle(np.sum(r2 * r2 * np.exp(6j * np.arctan2(dy, dx)))) / 6.0)
+
+def _rect_angle(prop, fallback: float) -> float:
+    """Long-side direction (radians, (col=x, row=y) pixel space) of a rectangular region, from
+    its minimum-area bounding rectangle (rotating calipers over the convex hull: the optimal box
+    has a side flush with one hull edge).
+
+    Like the hexagon, a near-square's second moments are almost isotropic, so regionprops'
+    ``orientation`` is unreliable for it; the bounding box follows the actual edges."""
+    from scipy.spatial import ConvexHull, QhullError
+    pts = prop.coords[:, ::-1].astype(np.float64)          # (x=col, y=row)
+    try:
+        hull = pts[ConvexHull(pts).vertices]
+    except (QhullError, ValueError):
+        return fallback
+    edges = np.diff(np.vstack([hull, hull[:1]]), axis=0)
+    best = (np.inf, fallback)
+    for theta in np.unique(np.mod(np.arctan2(edges[:, 1], edges[:, 0]), np.pi / 2.0)):
+        c, s = np.cos(theta), np.sin(theta)
+        u, v = hull @ np.array([c, s]), hull @ np.array([-s, c])
+        w, h = np.ptp(u), np.ptp(v)
+        if w * h < best[0]:
+            best = (w * h, theta if w >= h else theta + np.pi / 2.0)
+    return float(best[1])
 
 def _diamond_vertices(cx: float, cy: float, half_maj: float, half_min: float, angle: float) -> np.ndarray:
     ca, sa = np.cos(angle), np.sin(angle)
@@ -543,32 +586,32 @@ def _measure_labels(
                 draw_shapes.append({"type": "circle", "cx": cx, "cy": cy, "r": d_px/2.0, "color": color})
                 objects.append({"cx": cx, "cy": cy, "dims": {"diameters": d_val}})
         elif cls == "hexagon":
-            d_px = (maj_px + min_px) / 2.0
+            d_px = (maj_px + min_px) / 2.0 * HEX_AXIS_CORR   # vertex-to-vertex width
             d_val = d_px * sf
             if d_val >= min_size_value:
                 measurements["hex_widths"].append(d_val)
-                # Pass the 'orient' variable as the 4th argument here!
                 draw_shapes.append({
-                    "type": "polygon", 
-                    "vertices": _hexagon_vertices(cx, cy, d_px/2.0, orient),
+                    "type": "polygon",
+                    "vertices": _hexagon_vertices(cx, cy, d_px/2.0, _hexagon_angle(prop)),
                     "color": color
                 })
                 objects.append({"cx": cx, "cy": cy, "dims": {"hex_widths": d_val}})
         elif cls == "rectangle":
+            maj_px, min_px = maj_px * RECT_AXIS_CORR, min_px * RECT_AXIS_CORR   # true side lengths
             if maj_px * sf >= min_size_value:
                 measurements["hex_heights"].append(maj_px * sf)
                 # Minor axis of a side-on rectangle ≈ the hexagonal width; kept so
                 # the width can be recovered from rectangles when face-on hexagons
                 # are scarce (see the rectangle-GMM path in run()).
                 measurements["hex_rect_widths"].append(min_px * sf)
-                draw_shapes.append({"type": "polygon", "vertices": _rotated_rect_vertices(cx, cy, maj_px/2.0, min_px/2.0, orient), "color": color})
+                draw_shapes.append({"type": "polygon", "vertices": _rotated_rect_vertices(cx, cy, maj_px/2.0, min_px/2.0, _rect_angle(prop, orient)), "color": color})
                 objects.append({"cx": cx, "cy": cy,
                                 "dims": {"hex_heights": maj_px * sf, "hex_rect_widths": min_px * sf}})
         elif cls == "square":
             side_px = ((maj_px + min_px) / 2.0) * 0.8660
             if side_px * sf >= min_size_value:
                 measurements["side_lengths"].append(side_px * sf)
-                draw_shapes.append({"type": "polygon", "vertices": _rotated_rect_vertices(cx, cy, side_px/2.0, side_px/2.0, orient), "color": color})
+                draw_shapes.append({"type": "polygon", "vertices": _rotated_rect_vertices(cx, cy, side_px/2.0, side_px/2.0, _rect_angle(prop, orient)), "color": color})
                 objects.append({"cx": cx, "cy": cy, "dims": {"side_lengths": side_px * sf}})
         elif cls == "diamond":
             maj_val, min_val = maj_px * 1.2247 * sf, min_px * 1.2247 * sf
@@ -667,8 +710,10 @@ def run_batch_analysis(file_data: List[Tuple[bytes, str]], shape_type: str, para
     # rectangle-GMM width estimate. Schema v4 adds "objects": a per-shape list of
     # {cx, cy, dims{key: value}} used to crop the summary FOV to the densest region of
     # in-range particles. v5: tic-tac "tic_tac_body_length" is now measured directly from the
-    # width-profile plateau (not back-solved from area), fixing spurious bimodality. This
-    # comment is part of the cached function's source, so editing it busts any stale cache.
+    # width-profile plateau (not back-solved from area), fixing spurious bimodality. v6: hexagon
+    # widths and rectangle sides are corrected from moment-based axis lengths to true extents
+    # (HEX_AXIS_CORR / RECT_AXIS_CORR). This comment is part of the cached function's source,
+    # so editing it busts any stale cache.
     results = []
     for f_bytes, f_name in file_data:
         tem = read_tem_file(f_bytes, f_name)
