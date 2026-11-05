@@ -329,6 +329,40 @@ def _plotly_colorscale(cmap):
     return cmap  # already an explicit Plotly colorscale
 
 
+def tight_image_layout(fig, cbar_title, *, cbar_frac=0.12):
+    """
+    Plotly image layout with the colorbar hugging the image and all axis/colorbar
+    text (titles, tick labels, hover readout) in bold black.
+
+    The image keeps square pixels (y scaleanchored to x), so in a wide container
+    Plotly shrinks the x domain; by default it centers the image, leaving a gap
+    before a colorbar placed at the figure edge. Instead the plot area ends at
+    1 - cbar_frac, the image is pushed against that edge (constraintoward="right")
+    and the colorbar starts right there, so any spare width goes to the left.
+    """
+    title_font = dict(size=18, color="black")
+    tick_font = dict(size=14, color="black", weight="bold")
+    edge = 1.0 - cbar_frac
+    fig.update_layout(
+        # automargin grows the margins to fit the axis titles, which a zero
+        # figure margin would otherwise clip.
+        xaxis=dict(domain=[0.0, edge], constrain="domain", constraintoward="right",
+                   automargin=True,
+                   title=dict(text="<b>X (px)</b>", font=title_font), tickfont=tick_font),
+        yaxis=dict(constrain="domain", automargin=True,
+                   title=dict(text="<b>Y (px)</b>", font=title_font), tickfont=tick_font),
+        legend=dict(font=dict(color="black", weight="bold")),
+        coloraxis_colorbar=dict(
+            title=dict(text=f"<b>{cbar_title}</b>", font=title_font),
+            tickfont=tick_font,
+            x=edge + 0.01, xanchor="left", xpad=0,
+            y=0.5, yanchor="middle", lenmode="fraction", len=0.8, thickness=20,
+        ),
+        hoverlabel=dict(bgcolor="white", font=dict(color="black", weight="bold")),
+    )
+    return fig
+
+
 def plot_brightness(
     image_data_cps,
     df,
@@ -375,9 +409,11 @@ def plot_brightness(
         ax.tick_params(axis='both', length=0, labelleft=False, labelright=False,
                        labeltop=False, labelbottom=False)
 
-        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.ax.tick_params(labelsize=10*scale)
-        cbar.set_label('pps', fontsize=10*scale)
+        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+        cbar.ax.tick_params(labelsize=10*scale, labelcolor='black')
+        cbar.set_label('pps', fontsize=10*scale, fontweight='bold', color='black')
+        for t in cbar.ax.get_yticklabels(which='both'):
+            t.set_fontweight('bold')
         if img_meta:
             gain = img_meta.get('gainDAC', 'N/A')
             exposure = img_meta.get('exposure_time_sec', 'N/A')
@@ -445,37 +481,8 @@ def plot_brightness(
         "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata[0]:.1f}<extra></extra>"
     )
     cbar_title_text = "pps" if not normalization else "log10(pps)"
-    fig.update_layout(
-        margin=dict(l=0, r=0, t=30, b=0),
-        dragmode=dragmode,
-        xaxis_title="<b>X (px)</b>",
-        yaxis_title="<b>Y (px)</b>",
-        xaxis=dict(
-            title_font=dict(size=18, color="black"),
-            tickfont=dict(size=14, color="black"),
-            constrain="domain"  
-        ),
-        yaxis=dict(
-            title_font=dict(size=18, color="black"),
-            tickfont=dict(size=14, color="black")#, family="Arial Black") # Bold ticks
-        ),
-        coloraxis_colorbar=dict(
-            title=dict(
-                text=f"<b>{cbar_title_text}</b>",
-                font=dict(size=18, color="black")
-            ),
-            tickfont=dict(size=14, color="black"),
-            x=0.9,          # Default is ~1.02. Decrease this to move it closer.
-            xpad=0,          # Removes extra internal padding
-            xanchor="left",
-            yanchor="middle",
-            y=0.5,
-            lenmode="fraction",
-            len=0.8,
-            thickness=20,
-        )
-        
-    )
+    fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), dragmode=dragmode)
+    tight_image_layout(fig, cbar_title_text)
 
     xs = ys = rs = br = None
     if df is not None and not df.empty:

@@ -9,7 +9,8 @@ import matplotlib.colors as mcolors
 import plotly.express as px
 from matplotlib.lines import Line2D
 
-from utils import plot_brightness, plot_histogram, fit_brightness_gmm, HWT_aesthetic, file_uploader_with_clear
+from utils import (plot_brightness, plot_histogram, fit_brightness_gmm, HWT_aesthetic,
+                   file_uploader_with_clear, tight_image_layout)
 from tools.process_files import process_files
 from tools import roi as roi_tool
 
@@ -375,15 +376,45 @@ def aperture_area_um2(image, region, pix_size_um):
     return float(h) * float(w) * float(pix_size_um) ** 2
 
 
+def particle_peak_values(image, df, half=1):
+    """Peak pixel value (image units, pps) of each fitted particle: the max of the
+    (2·half+1)² window around its fitted center."""
+    if image is None or df is None or df.empty:
+        return np.array([])
+    img = np.asarray(image, dtype=float)
+    h, w = img.shape[:2]
+    ys = np.clip(np.rint(df['y_pix'].to_numpy()).astype(int), 0, h - 1)
+    xs = np.clip(np.rint(df['x_pix'].to_numpy()).astype(int), 0, w - 1)
+    return np.array([img[max(y - half, 0):y + half + 1, max(x - half, 0):x + half + 1].max()
+                     for y, x in zip(ys, xs)])
+
+
+def auto_display_vmax(processed, visible_pct=90.0):
+    """Linear-display ceiling: the `visible_pct` percentile of fitted-particle peak
+    values pooled over every processed file, so that share of particles is drawn
+    within the color range and only the brightest rest saturate (instead of a few
+    very bright multimers compressing everything else toward black). Pooling keeps
+    the scale identical across files. None when no particles were fit."""
+    peaks = [particle_peak_values(d.get("image"), d.get("df"))
+             for d in (processed or {}).values()]
+    peaks = np.concatenate(peaks) if peaks else np.array([])
+    peaks = peaks[np.isfinite(peaks)]
+    if peaks.size == 0:
+        return None
+    return float(np.percentile(peaks, visible_pct))
+
+
 def build_summary_image(image, df, *, pix_size_um, cmap, normalization,
                         single_ucnp_brightness, aperture,
                         annotation_lines, title=None,
-                        show_psf_fits=False, show_brightness_fits=False):
+                        show_psf_fits=False, show_brightness_fits=False,
+                        vmax=None):
     """
     Build a compact summary figure for the field whose PSF count is closest to
     the average: the region image titled with the raw filename, a 'pps'
     colorbar, the fitted aperture circle (if any), the given annotation lines
     (concentration first), and optional PSF-fit / brightness overlays.
+    `vmax` (pps) caps the linear color scale; ignored for log scaling.
     """
     import textwrap
 
@@ -392,8 +423,10 @@ def build_summary_image(image, df, *, pix_size_um, cmap, normalization,
     fig, ax = plt.subplots(figsize=(3.4, 3.4), dpi=300)
 
     norm = LogNorm() if normalization else None
+    # The image is drawn +1 (keeps LogNorm off zero), so shift the cap to match.
+    lin_vmax = vmax + 1 if (vmax is not None and not normalization) else None
     im = ax.imshow(np.asarray(image, dtype=float) + 1, cmap=cmap, norm=norm,
-                   origin='lower', interpolation='bilinear')
+                   vmax=lin_vmax, origin='lower', interpolation='bilinear')
     ax.set_xticks([])
     ax.set_yticks([])
     if title:
@@ -455,11 +488,13 @@ def plot_monomer_brightness(
     single_ucnp_brightness=None,
     *,
     interactive=False,
-    dragmode='zoom'
+    dragmode='zoom',
+    vmax=None,
 ):
     """
     Plot brightness map and overlay Gaussian-fit circles colored by brightness category.
     If interactive=True returns a Plotly figure; otherwise Matplotlib.
+    `vmax` (pps) caps the linear color scale; ignored for log scaling.
     """
     if not interactive:
         fig_width, fig_height = 5, 5
@@ -467,7 +502,8 @@ def plot_monomer_brightness(
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
         norm = LogNorm() if normalization else None
-        im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=norm, origin='lower')
+        lin_vmax = vmax + 1 if (vmax is not None and not normalization) else None
+        im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=norm, vmax=lin_vmax, origin='lower')
         ax.tick_params(axis='both', length=0,
                        labelleft=False, labelright=False,
                        labeltop=False, labelbottom=False)
@@ -544,26 +580,18 @@ def plot_monomer_brightness(
     else:
         img_display = img
 
-    fig = px.imshow(img_display, origin="lower", aspect="equal", color_continuous_scale=plotly_scale)
+    zrange = {}
+    if vmax is not None and not normalization:
+        zrange = dict(zmin=float(np.nanmin(img_display)), zmax=float(vmax))
+    fig = px.imshow(img_display, origin="lower", aspect="equal",
+                    color_continuous_scale=plotly_scale, **zrange)
     img_custom = np.expand_dims(img, axis=-1)
     fig.data[0].customdata = img_custom
     fig.data[0].hovertemplate = (
         "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata[0]:.1f}<extra></extra>"
     )
-    fig.update_layout(
-        margin=dict(l=0, r=0, t=30, b=0),
-        dragmode=dragmode,
-        coloraxis_colorbar=dict(
-            title="pps" if not normalization else "log10(pps)",
-            yanchor="middle",
-            y=0.5,
-            lenmode="fraction",
-            len=0.8,
-            thickness=20,
-        ),
-        xaxis_title="X (px)",
-        yaxis_title="Y (px)"
-    )
+    fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), dragmode=dragmode)
+    tight_image_layout(fig, "pps" if not normalization else "log10(pps)")
 
     if df is not None and not df.empty:
         xs = df['x_pix'].to_numpy()
@@ -663,6 +691,7 @@ def run():
         "mono_estimate_conc": False,
         "mono_show_fits": True,
         "mono_normalization": False,
+        "mono_vis_pct": 90.0,
         "mono_save_format": "svg",
         "mono_gen_summary": True,
         "mono_summ_conc": True,
@@ -691,6 +720,7 @@ def run():
     if "selected_file_name" not in st.session_state:
         st.session_state.selected_file_name = None
     normalized_records = []
+    display_vmax = None   # linear display cap (pps); None = auto range / log scaling
     selected_file_name = st.session_state.get("selected_file_name")
     threshold = None
     signal = None
@@ -909,6 +939,8 @@ def run():
             st.session_state["monomers_cmap"] = cmap
             show_fits = st.checkbox("Show fits", key="mono_show_fits")
             normalization = st.checkbox("Log Image Scaling", key="mono_normalization")
+            # Linear display-range controls; filled in once the files are processed.
+            scale_box = st.container()
             save_format = st.selectbox(
                 "Download format", ["svg", "png", "jpeg"], key="mono_save_format"
             ).lower()
@@ -943,6 +975,34 @@ def run():
                         roi=custom_roi,
                     )
                 st.session_state.processed = (processed_data, combined_df)
+
+            # Linear scaling: cap the color range at the brightness that keeps the
+            # chosen share of fitted particles in range (default 90%), so a few very
+            # bright multimers don't wash everything else out. Re-seeds whenever the
+            # data or percentage change; a typed value sticks until then.
+            if not normalization and st.session_state.get("processed"):
+                with scale_box:
+                    vis_pct = st.number_input(
+                        "Particles in display range (%)",
+                        min_value=50.0, max_value=100.0, step=5.0, format="%.0f",
+                        key="mono_vis_pct",
+                        help="Sets the linear display max to the brightness of this "
+                             "percentile of fitted particles (peak pixel, pooled over all "
+                             "files). The brightest remainder saturate; 100% = no clipping.",
+                    )
+                    vmax_auto = auto_display_vmax(st.session_state.processed[0], vis_pct)
+                    if vmax_auto is not None:
+                        if (st.session_state.get("_mono_vmax_auto") != vmax_auto
+                                or "mono_vmax" not in st.session_state):
+                            st.session_state["_mono_vmax_auto"] = vmax_auto
+                            st.session_state["mono_vmax"] = vmax_auto
+                        display_vmax = st.number_input(
+                            "Display max (pps)", min_value=0.0, format="%.4g",
+                            key="mono_vmax",
+                            help=f"Auto: {vmax_auto:.4g} pps ({vis_pct:.0f}% of particles "
+                                 "in range). Edit to override; resets when data or the "
+                                 "percentage change.",
+                        )
 
         else:
             st.session_state.selected_file_name = None
@@ -1134,6 +1194,7 @@ def run():
                     cmap=st.session_state.get("monomers_cmap", "plasma"),
                     single_ucnp_brightness=single_ucnp_brightness_value,
                     interactive=True,
+                    vmax=display_vmax,
                 )
                 if aperture is not None:
                     a = aperture
@@ -1388,6 +1449,7 @@ def run():
                         title=os.path.basename(best_name),
                         show_psf_fits=st.session_state.get("mono_summ_psf", False),
                         show_brightness_fits=st.session_state.get("mono_summ_bright", False),
+                        vmax=display_vmax,
                     )
                     # Show in a half-width column so the high-DPI render is
                     # downscaled (crisp) rather than stretched up (pixelated).

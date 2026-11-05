@@ -2847,8 +2847,10 @@ def run() -> None:
                 # Stadium model: rectangle body + two circular-arc end caps.
                 # Volume = hexagonal-prism body + two half-ellipsoid caps:
                 #   V = (3√3/8)·W·T·L_body + (π/3)·W·T·d
-                # where W,T are the cross-section dimensions (from the width
-                # distribution), L_body the straight body length, d the cap depth.
+                # where W,T are the cross-section dimensions, L_body the straight body
+                # length, d the cap depth. The cross-section is always taken as regular
+                # (T = W): growth rarely lets only some side faces outpace the others, so
+                # a single width distribution sets both.
                 all_maj  = np.concatenate([r["tic_tac_major"] for r in results])
                 all_w    = np.concatenate([r.get("tic_tac_width", np.array([])) for r in results])
                 all_body = np.concatenate([r.get("tic_tac_body_length", np.array([])) for r in results])
@@ -2862,54 +2864,23 @@ def run() -> None:
                         "body with two half-ellipsoid arc caps."
                     )
 
-                    # Width distribution → one or two cross-section dimensions (W, T).
-                    # Default the bimodal toggle from 2-component GMM peak separation.
-                    bimodal_default = False
-                    if all_w.size >= 6:
-                        try:
-                            gmm_w = GaussianMixture(n_components=2, random_state=42).fit(all_w.reshape(-1, 1))
-                            m = np.sort(gmm_w.means_.flatten())
-                            s = float(np.mean(np.sqrt(gmm_w.covariances_.flatten())))
-                            bimodal_default = (m[1] - m[0]) > 1.5 * s
-                        except Exception:
-                            pass
-                    bimodal = st.checkbox(
-                        "Width has two distinct cross-section dimensions (W ≠ T)",
-                        value=bimodal_default,
-                        help=(
-                            "When the width distribution is bimodal, a 2-component GMM is fit: the "
-                            "smaller peak is taken as the hexagonal width W, the larger as the "
-                            "perpendicular dimension T. When unchecked, the cross-section is assumed "
-                            "square (T = W). Auto-checked when the two peaks are well separated."
-                        ),
-                    )
-
-                    # Width histogram (2-component GMM when bimodal).
+                    # Width histogram: one Gaussian, which sets both cross-section
+                    # dimensions (T = W, see above).
                     wmin, wmax = get_min_max_ui("tic_w", f"Width ({unit_full})", all_w)
                     w_crop = all_w[(all_w >= wmin) & (all_w <= wmax)]
-                    w_ncomp = 2 if bimodal else 1
-                    mu_ranges = get_mu_ranges_ui("tic_w", "width", w_crop, unit_full, n_components=w_ncomp)
-                    fig_w, mus_w, stds_w, n_w = histogram_with_fit(
-                        all_w, "Tic Tac width", unit_full,
-                        n_components=w_ncomp, fit_min=wmin, fit_max=wmax, mu_ranges=mu_ranges,
+                    fig_w, *_ = histogram_with_fit(
+                        all_w, "Tic Tac width", unit_full, fit_min=wmin, fit_max=wmax,
                     )
                     st.pyplot(fig_w, use_container_width=True)
                     _download_row(fig_w, f"{prefix}_tictac_width")
 
                     notes = []
-                    mean_w_crop, sd_w_crop = _mean_sd(w_crop)
-                    if bimodal and len(mus_w) >= 2:
-                        W_dim, sd_W = float(mus_w[0]), float(stds_w[0])   # smaller mode
-                        T_dim, sd_T = float(mus_w[1]), float(stds_w[1])   # larger mode
-                    else:
-                        W_dim = T_dim = mean_w_crop
-                        sd_W = sd_T = sd_w_crop
-                        notes.append("Width distribution treated as unimodal; the cross-section is assumed square (T = W).")
+                    W_dim, sd_W = _mean_sd(w_crop)
                     if w_crop.size < MIN_SHAPE_COUNT:
                         notes.append(f"Only {w_crop.size} tic-tac(s) in the selected width range (< {MIN_SHAPE_COUNT}); d_eff may be unreliable.")
 
-                    hist_specs = [{"values": all_w, "title": "Tic Tac width", "n_components": w_ncomp,
-                                   "fit_min": wmin, "fit_max": wmax, "mu_ranges": mu_ranges,
+                    hist_specs = [{"values": all_w, "title": "Tic Tac width",
+                                   "fit_min": wmin, "fit_max": wmax,
                                    "keys": ["tic_tac_width"]}]
 
                     # Body length (straight plateau between the caps).
@@ -2942,39 +2913,41 @@ def run() -> None:
 
                     mean_cap, sd_cap = _mean_sd(all_cap) if all_cap.size > 0 else (0.0, 0.0)
 
-                    # r_eff from the stadium volume: (3√3/8)·W·T·L_body + (π/3)·W·T·d.
+                    # r_eff from the stadium volume with T = W: (3√3/8)·W²·L_body + (π/3)·W²·d.
+                    # W enters once (x[0]) rather than as two independent dims, so its SD
+                    # propagates as the single, fully correlated measurement it is.
                     def tictac_vol(x):
-                        return (3.0 * np.sqrt(3.0) / 8.0) * x[0] * x[1] * x[2] + (np.pi / 3.0) * x[0] * x[1] * x[3]
+                        return (3.0 * np.sqrt(3.0) / 8.0) * x[0] ** 2 * x[1] + (np.pi / 3.0) * x[0] ** 2 * x[2]
 
-                    # Surface area = the (possibly anisotropic) hexagonal body lateral surface,
-                    # perimeter(W,T)·L_body, plus the two half-ellipsoid caps, whose outer surface
-                    # together equals one full ellipsoid of semi-axes (W/2, T/2, d). No flat end
-                    # faces (the caps replace them).
+                    # Surface area = the regular hexagonal body's lateral surface, perimeter·L_body,
+                    # plus the two half-ellipsoid caps, whose outer surface together equals one
+                    # full spheroid of semi-axes (W/2, W/2, d). No flat end faces (the caps replace
+                    # them).
                     def tictac_area(x):
-                        return (_hexagon_perimeter(x[0] / 2.0, x[1] / 2.0) * x[2]
-                                + _ellipsoid_surface_area(x[0] / 2.0, x[1] / 2.0, x[3]))
+                        return (_hexagon_perimeter(x[0] / 2.0, x[0] / 2.0) * x[1]
+                                + _ellipsoid_surface_area(x[0] / 2.0, x[0] / 2.0, x[2]))
 
                     for msg in notes:
                         st.warning(msg)
 
-                    if np.isfinite(W_dim) and np.isfinite(T_dim) and np.isfinite(mean_body):
-                        dims_tt = [(W_dim, sd_W), (T_dim, sd_T), (mean_body, sd_body), (mean_cap, sd_cap)]
+                    if np.isfinite(W_dim) and np.isfinite(mean_body):
+                        dims_tt = [(W_dim, sd_W), (mean_body, sd_body), (mean_cap, sd_cap)]
                         r_eff, r_eff_sd = reff_with_sd(tictac_vol, dims_tt)
                         area, area_sd = measure_with_sd(tictac_area, dims_tt)
-                        v_body = (3.0 * np.sqrt(3.0) / 8.0) * W_dim * T_dim * mean_body
-                        v_caps = (np.pi / 3.0) * W_dim * T_dim * mean_cap
+                        v_body = (3.0 * np.sqrt(3.0) / 8.0) * W_dim ** 2 * mean_body
+                        v_caps = (np.pi / 3.0) * W_dim ** 2 * mean_cap
                         st.metric(
                             label="Effective Diameter (d_eff)",
                             value=f"{2 * r_eff:.2f} ± {2 * r_eff_sd:.2f} {unit_full}",
                             help=(
-                                f"Hex-prism body (W={W_dim:.2f}, T={T_dim:.2f}, L_body={mean_body:.2f}) "
+                                f"Hex-prism body (W = T = {W_dim:.2f}, L_body={mean_body:.2f}) "
                                 f"+ half-ellipsoid caps (depth d={mean_cap:.2f}). "
                                 f"V_body={v_body:.1f}, V_caps={v_caps:.1f} {unit_full}³. ± is 1 SD."
                             ),
                         )
                         summary_export_ui(
                             shape_type, hist_specs,
-                            {"W": W_dim, "T": T_dim, "L_body": mean_body, "d": mean_cap},
+                            {"W": W_dim, "T": W_dim, "L_body": mean_body, "d": mean_cap},
                             r_eff, r_eff_sd, unit_full, prefix, " ".join(notes), results=results,
                             area=area, area_sd=area_sd,
                         )
