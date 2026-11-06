@@ -376,6 +376,58 @@ def aperture_area_um2(image, region, pix_size_um):
     return float(h) * float(w) * float(pix_size_um) ** 2
 
 
+def category_fractions(brightness, bins, labels):
+    """Fraction of particles in each of CATEGORY_ORDER, binned exactly as the pie
+    (same edges, in-range particles only). None when no particle is in range."""
+    cats = pd.cut(pd.Series(np.asarray(brightness, dtype=float)), bins=bins,
+                  right=False, include_lowest=True, labels=labels)
+    n = int(cats.notna().sum())
+    if n == 0:
+        return None
+    return np.array([(cats == c).sum() / n for c in CATEGORY_ORDER], dtype=float)
+
+
+def pick_representative_field(processed, mean_count, bins=None, labels=None):
+    """
+    Field that best represents the whole dataset, scored on both PSF count and
+    population makeup:
+
+        score = |n − n̄| / n̄  +  ½·Σ_c |f_c − F_c|
+
+    The first term is the fractional deviation from the average PSF count; the
+    second is the total-variation distance between the field's category mix
+    (monomers / dimers / trimers / multimers) and the pooled mix shown in the pie,
+    i.e. the share of particles that would have to change category to match. Both
+    are fractions, so 10% off in count weighs the same as 10% of particles in the
+    wrong category. Falls back to count only when no category bins are available.
+    Returns (name, info) with the per-field numbers for display.
+    """
+    names = list(processed.keys())
+    if bins is not None and labels is not None:
+        pooled = category_fractions(
+            np.concatenate([processed[nm]["df"]["brightness_integrated"].to_numpy()
+                            for nm in names]), bins, labels)
+    else:
+        pooled = None
+
+    best, best_score, best_info = None, np.inf, {}
+    for nm in names:
+        n = len(processed[nm]["df"])
+        d_count = abs(n - mean_count) / mean_count if mean_count else 0.0
+        frac = None
+        d_mix = 0.0
+        if pooled is not None:
+            frac = category_fractions(processed[nm]["df"]["brightness_integrated"], bins, labels)
+            # A field with nothing in range can't represent the mix at all.
+            d_mix = 0.5 * float(np.abs(frac - pooled).sum()) if frac is not None else 1.0
+        score = d_count + d_mix
+        if score < best_score:
+            best, best_score = nm, score
+            best_info = {"n": n, "frac": frac, "pooled": pooled,
+                         "d_count": d_count, "d_mix": d_mix}
+    return best, best_info
+
+
 def particle_peak_values(image, df, half=1):
     """Peak pixel value (image units, pps) of each fitted particle: the max of the
     (2·half+1)² window around its fitted center."""
@@ -947,9 +999,10 @@ def run():
 
             st.checkbox(
                 "Generate summary image", key="mono_gen_summary",
-                help="Build a downloadable TIFF of the field whose PSF count is "
-                     "closest to the average. Choose which fields to include next "
-                     "to the preview.",
+                help="Build a downloadable TIFF of the most representative field: "
+                     "closest to the dataset on both PSF count and population mix "
+                     "(% monomers / dimers / trimers / multimers). Choose which fields "
+                     "to include next to the preview.",
             )
 
             # Process automatically. _process_files_cached is @st.cache_data keyed on
@@ -1066,6 +1119,7 @@ def run():
         top_left, top_right = st.columns(2)
         fig_pie = None
         pct_monomers = None
+        cat_bins = cat_labels = None   # pie category binning, reused to pick the summary field
         thresholds = None
         single_ucnp_brightness_value = st.session_state.get("single_ucnp_brightness")
 
@@ -1145,6 +1199,7 @@ def run():
                     if len(labels_for_pie) != num_bins_pie:
                         st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins_pie} bins.")
                     else:
+                        cat_bins, cat_labels = bins_for_pie, labels_for_pie
                         categories = pd.cut(
                             combined_df['brightness_integrated'],
                             bins=bins_for_pie,
@@ -1365,9 +1420,9 @@ def run():
                 st.divider()
                 st.subheader("Summary image")
 
-                # Field whose PSF count is closest to the average.
-                best_name = min(processed.keys(),
-                                key=lambda nm: abs(len(processed[nm]["df"]) - mean_count))
+                # Field closest to the dataset on both PSF count and population mix.
+                best_name, best_info = pick_representative_field(
+                    processed, mean_count, cat_bins, cat_labels)
                 best = processed[best_name]
                 summ_img = best.get("image")
                 summ_df = best.get("df")
@@ -1473,7 +1528,11 @@ def run():
                         file_name=f"summary_sif{base}.{ext}",
                         mime=mime,
                     )
-                    st.caption(
-                        f"Closest-to-average field: {os.path.basename(best_name)} "
-                        f"({len(summ_df)} PSFs vs avg {mean_count:.1f})."
-                    )
+                    cap = (f"Most representative field: {os.path.basename(best_name)}: "
+                           f"{len(summ_df)} PSFs vs avg {mean_count:.1f}")
+                    frac, pooled = best_info.get("frac"), best_info.get("pooled")
+                    if frac is not None and pooled is not None:
+                        cap += "; " + ", ".join(
+                            f"{c.lower()} {100 * frac[i]:.0f}% (all {100 * pooled[i]:.0f}%)"
+                            for i, c in enumerate(CATEGORY_ORDER) if frac[i] or pooled[i])
+                    st.caption(cap + ". Chosen on both PSF count and population mix.")
