@@ -282,22 +282,109 @@ def gaussian(x, amp, mu, sigma):
 
 
 
+def acquisition_title(gain=None, exposure=None, cycles=None):
+    """Build the "EM Gain | Exposure | Cycles" plot title, skipping unknowns.
+
+    Camera metadata is only available for Andor ``.sif`` acquisitions; confocal
+    ``.dat``/``.msr`` data has none of it. Missing values are dropped rather than
+    rendered as "N/A" (and, critically, never arithmetic'd -- multiplying the
+    'N/A' placeholder used to produce a 1000x-repeated string title).
+    """
+    parts = []
+    if gain is not None and gain != 'N/A':
+        parts.append(f"EM Gain: {gain}")
+    try:
+        parts.append(f"Exposure: {float(exposure) * 1000:g} ms")
+    except (TypeError, ValueError):
+        pass
+    if cycles is not None and cycles != 'N/A':
+        parts.append(f"Cycles: {cycles}")
+    return " | ".join(parts)
+
+
+def _plotly_colorscale(cmap):
+    """Coerce a colormap spec into something Plotly's ``color_continuous_scale``
+    accepts.
+
+    Named Matplotlib colormaps with a Plotly twin are mapped by name; anything
+    else (including the custom ``LinearSegmentedColormap`` LUTs used by the
+    visualization tools) is sampled into an explicit colorscale so custom LUTs
+    survive into interactive plots instead of silently falling back.
+    """
+    named = {
+        "magma": "Magma", "viridis": "Viridis", "plasma": "Plasma",
+        "hot": "Hot", "gray": "Gray", "hsv": "HSV", "cividis": "Cividis",
+        "inferno": "Inferno",
+    }
+    if isinstance(cmap, str):
+        return named.get(cmap, "Magma")
+    if callable(cmap):  # matplotlib Colormap -> sampled colorscale
+        n = 32
+        scale = []
+        for i in range(n):
+            frac = i / (n - 1)
+            r, g, b = (int(round(c * 255)) for c in cmap(frac)[:3])
+            scale.append([frac, f"rgb({r},{g},{b})"])
+        return scale
+    return cmap  # already an explicit Plotly colorscale
+
+
+def tight_image_layout(fig, cbar_title, *, cbar_frac=0.12):
+    """
+    Plotly image layout with the colorbar hugging the image and all axis/colorbar
+    text (titles, tick labels, hover readout) in bold black.
+
+    The image keeps square pixels (y scaleanchored to x), so in a wide container
+    Plotly shrinks the x domain; by default it centers the image, leaving a gap
+    before a colorbar placed at the figure edge. Instead the plot area ends at
+    1 - cbar_frac, the image is pushed against that edge (constraintoward="right")
+    and the colorbar starts right there, so any spare width goes to the left.
+    """
+    title_font = dict(size=18, color="black")
+    tick_font = dict(size=14, color="black", weight="bold")
+    edge = 1.0 - cbar_frac
+    fig.update_layout(
+        # automargin grows the margins to fit the axis titles, which a zero
+        # figure margin would otherwise clip.
+        xaxis=dict(domain=[0.0, edge], constrain="domain", constraintoward="right",
+                   automargin=True,
+                   title=dict(text="<b>X (px)</b>", font=title_font), tickfont=tick_font),
+        yaxis=dict(constrain="domain", automargin=True,
+                   title=dict(text="<b>Y (px)</b>", font=title_font), tickfont=tick_font),
+        legend=dict(font=dict(color="black", weight="bold")),
+        coloraxis_colorbar=dict(
+            title=dict(text=f"<b>{cbar_title}</b>", font=title_font),
+            tickfont=tick_font,
+            x=edge + 0.01, xanchor="left", xpad=0,
+            y=0.5, yanchor="middle", lenmode="fraction", len=0.8, thickness=20,
+        ),
+        hoverlabel=dict(bgcolor="white", font=dict(color="black", weight="bold")),
+    )
+    return fig
+
+
 def plot_brightness(
     image_data_cps,
     df,
     img_meta=None,
     show_fits=True,
-    plot_brightness_histogram=False,   
+    plot_brightness_histogram=False,
     normalization=False,
     pix_size_um=0.1,
     cmap='magma',
     *,
-    interactive=False,                
-    dragmode='zoom'                    # 'zoom' (magnifier) or 'pan'
+    interactive=False,
+    dragmode='zoom',                   # 'zoom' (magnifier) or 'pan'
+    vmin=None,                         # display contrast floor, in raw pps
+    vmax=None,                         # display contrast ceiling, in raw pps
 ):
     """
     If interactive=False (default): returns a Matplotlib Figure (original behavior).
     If interactive=True: returns a Plotly Figure with box-zoom/pan and crisp vector overlays.
+
+    ``cmap`` may be a colormap name or a Matplotlib ``Colormap`` object (custom
+    LUTs included). ``vmin``/``vmax`` clamp the *display* contrast only; hover
+    readouts still report the underlying pps values.
     """
     # --- MATPLOTLIB PATH (UNCHANGED DEFAULT) ---
     if not interactive:
@@ -309,14 +396,24 @@ def plot_brightness(
         scale = fig_width / 5
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
-        norm = LogNorm() if normalization else None
-        im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=norm, origin='lower')
+        # The image is displayed shifted by +1 (so log scaling is safe), so any
+        # explicit contrast limits have to be shifted the same way.
+        lo = None if vmin is None else vmin + 1
+        hi = None if vmax is None else vmax + 1
+        if normalization:
+            im = ax.imshow(image_data_cps + 1, cmap=cmap, origin='lower',
+                           norm=LogNorm(vmin=lo, vmax=hi))
+        else:
+            im = ax.imshow(image_data_cps + 1, cmap=cmap, origin='lower',
+                           vmin=lo, vmax=hi)
         ax.tick_params(axis='both', length=0, labelleft=False, labelright=False,
                        labeltop=False, labelbottom=False)
 
-        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.ax.tick_params(labelsize=10*scale)
-        cbar.set_label('pps', fontsize=10*scale)
+        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+        cbar.ax.tick_params(labelsize=10*scale, labelcolor='black')
+        cbar.set_label('pps', fontsize=10*scale, fontweight='bold', color='black')
+        for t in cbar.ax.get_yticklabels(which='both'):
+            t.set_fontweight('bold')
         if img_meta:
             gain = img_meta.get('gainDAC', 'N/A')
             exposure = img_meta.get('exposure_time_sec', 'N/A')
@@ -326,8 +423,9 @@ def plot_brightness(
 
         if show_fits and df is not None and not df.empty:
 
-            ax.set_title(f"EM Gain: {gain} | Exposure: {exposure*1000} ms | Cycles: {cycles}", 
-                         fontweight='bold', color='black', fontsize=12)
+            title = acquisition_title(gain, exposure, cycles)
+            if title:
+                ax.set_title(title, fontweight='bold', color='black', fontsize=12)
             for _, row in df.iterrows():
                 x_px = row['x_pix']
                 y_px = row['y_pix']
@@ -348,27 +446,33 @@ def plot_brightness(
     # --- PLOTLY PATH (INTERACTIVE) ---
     import numpy as np
 
-    # Map Matplotlib colormap names to Plotly scales
-    cmap_map = {
-        "magma": "Magma", "viridis": "Viridis", "plasma": "Plasma",
-        "hot": "Hot", "gray": "Gray", "hsv": "HSV", "cividis": "Cividis", "inferno": "Inferno"
-    }
-    plotly_scale = cmap_map.get(cmap, "Magma")
+    plotly_scale = _plotly_colorscale(cmap)
 
     # Approximate LogNorm for image display if requested
     img = image_data_cps.astype(float)
     if normalization:
         eps = max(float(np.percentile(img, 0.01)), 1e-9)
         img_display = np.log10(np.clip(img + 1.0, eps, None))
+
+        def _to_display(v):
+            return float(np.log10(max(float(v) + 1.0, eps)))
     else:
         img_display = img
+        _to_display = float
+
+    # Contrast limits arrive in raw pps; push them through the same transform
+    # as the image so they mean the same thing on a log display.
+    zmin = None if vmin is None else _to_display(vmin)
+    zmax = None if vmax is None else _to_display(vmax)
 
     # Base image with stored cps for hover
     fig = px.imshow(
         img_display,
         origin="lower",
         aspect="equal",
-        color_continuous_scale=plotly_scale
+        color_continuous_scale=plotly_scale,
+        zmin=zmin,
+        zmax=zmax,
     )
     # store original cps values for accurate hover information
     img_custom = np.expand_dims(img, axis=-1)
@@ -377,52 +481,25 @@ def plot_brightness(
         "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata[0]:.1f}<extra></extra>"
     )
     cbar_title_text = "pps" if not normalization else "log10(pps)"
-    fig.update_layout(
-        margin=dict(l=0, r=0, t=30, b=0),
-        dragmode=dragmode,
-        xaxis_title="<b>X (px)</b>",
-        yaxis_title="<b>Y (px)</b>",
-        xaxis=dict(
-            title_font=dict(size=18, color="black"),
-            tickfont=dict(size=14, color="black"),
-            constrain="domain"  
-        ),
-        yaxis=dict(
-            title_font=dict(size=18, color="black"),
-            tickfont=dict(size=14, color="black")#, family="Arial Black") # Bold ticks
-        ),
-        coloraxis_colorbar=dict(
-            title=dict(
-                text=f"<b>{cbar_title_text}</b>",
-                font=dict(size=18, color="black")
-            ),
-            tickfont=dict(size=14, color="black"),
-            x=0.9,          # Default is ~1.02. Decrease this to move it closer.
-            xpad=0,          # Removes extra internal padding
-            xanchor="left",
-            yanchor="middle",
-            y=0.5,
-            lenmode="fraction",
-            len=0.8,
-            thickness=20,
-        )
-        
-    )
+    fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), dragmode=dragmode)
+    tight_image_layout(fig, cbar_title_text)
 
     xs = ys = rs = br = None
     if df is not None and not df.empty:
 
-        gain = df['gainDAC'].iloc[0] if 'gainDAC' in df.columns else 'N/A'
-        exposure = df['exposure_time_sec'].iloc[0] if 'exposure_time_sec' in df.columns else 'N/A'
-        cycles = df['accumulated_cycles'].iloc[0] if 'accumulated_cycles' in df.columns else 'N/A'
-        fig.update_layout(
-            title=dict(
-                text=f"<b>EM Gain: {gain} | Exposure: {exposure*1000} ms | Cycles: {cycles}</b>",
-                font=dict(color="black", size=16),
-                x=0.5,             # Centers the title
-                xanchor="center"
+        gain = df['gainDAC'].iloc[0] if 'gainDAC' in df.columns else None
+        exposure = df['exposure_time_sec'].iloc[0] if 'exposure_time_sec' in df.columns else None
+        cycles = df['accumulated_cycles'].iloc[0] if 'accumulated_cycles' in df.columns else None
+        title = acquisition_title(gain, exposure, cycles)
+        if title:
+            fig.update_layout(
+                title=dict(
+                    text=f"<b>{title}</b>",
+                    font=dict(color="black", size=16),
+                    x=0.5,             # Centers the title
+                    xanchor="center"
+                )
             )
-        )
         xs = df["x_pix"].to_numpy()
         ys = df["y_pix"].to_numpy()
         rs = (2 * np.maximum(df["sigx_fit"].to_numpy(), df["sigy_fit"].to_numpy()) / pix_size_um).astype(float)
@@ -473,12 +550,41 @@ def plot_brightness(
 
 
 
-def plot_histogram(df, 
+def fit_brightness_gmm(values, n_components=2, pick="weight", min_weight=0.15):
+    """
+    Fit a GaussianMixture to 1-D brightness values. Returns (gmm, mu, sigma) for
+    the selected component, or (None, None, None) when there are too few points.
+    Deterministic (fixed seed), so the same data always gives the same fit.
+
+    pick="weight": the highest-weight component.
+    pick="lowest": the dimmest component holding at least `min_weight` of the
+        particles, i.e. the single-particle (monomer) peak. Unlike "weight", this
+        doesn't jump to the dimer/trimer peak when monomers aren't the majority;
+        the weight floor skips a small cluster of dim spurious detections.
+    """
+    vals = np.asarray(values, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if len(vals) <= n_components:
+        return None, None, None
+    gmm = GaussianMixture(n_components=n_components, random_state=42).fit(vals.reshape(-1, 1))
+    means, weights = gmm.means_.flatten(), gmm.weights_
+    idx = int(np.argmax(weights))
+    if pick == "lowest":
+        ok = np.flatnonzero(weights >= min_weight)
+        if ok.size:
+            idx = int(ok[np.argmin(means[ok])])
+    mu = float(means[idx])
+    sigma = float(np.sqrt(gmm.covariances_.flatten()[idx]))
+    return gmm, mu, sigma
+
+
+def plot_histogram(df,
                    min_val=None, 
                    max_val=None, 
                    num_bins='auto', 
                    thresholds=None,
-                   n_components = 2
+                   n_components = 2,
+                   pick="weight",
                   ):
     """
     Plots the brightness histogram with a Gaussian fit and optional vertical thresholds.
@@ -512,25 +618,17 @@ def plot_histogram(df,
         bins = np.linspace(min_val, max_val, int(num_bins))
 
     counts, edges, _ = ax.hist(brightness_vals, bins=bins, color='#88CCEE', edgecolor='#88CCEE', alpha=0.7)
-    bin_centers = 0.5 * (edges[:-1] + edges[1:])
 
     # Gaussian fit
-    mu, sigma = None, None
-    if len(brightness_vals) > n_components:
-        X = brightness_vals.reshape(-1, 1)
-        gmm = GaussianMixture(n_components=n_components, random_state=42).fit(X)
-        
+    gmm, mu, sigma = fit_brightness_gmm(brightness_vals, n_components, pick=pick)
+    if gmm is not None:
         x_fit = np.linspace(edges[0], edges[-1], 500).reshape(-1, 1)
         pdf = np.exp(gmm.score_samples(x_fit))
         bin_width = edges[1] - edges[0]
         y_fit = pdf * len(brightness_vals) * bin_width
         ax.plot(x_fit, y_fit, color='black', linewidth=1, label=f"{n_components}-comp GMM")
 
-        idx = np.argmax(gmm.weights_)
-        mu_primary = gmm.means_.flatten()[idx]
-        sigma_primary = np.sqrt(gmm.covariances_.flatten()[idx])
-        # Return the fitted stats to callers (previously left as None).
-        mu, sigma = mu_primary, sigma_primary
+        mu_primary, sigma_primary = mu, sigma
         sigma_over_mu = (sigma_primary / mu_primary * 100) if mu_primary != 0 else 0
         n_points = len(brightness_vals)
 

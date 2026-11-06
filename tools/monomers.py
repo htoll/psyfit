@@ -9,7 +9,8 @@ import matplotlib.colors as mcolors
 import plotly.express as px
 from matplotlib.lines import Line2D
 
-from utils import plot_brightness, plot_histogram, HWT_aesthetic, file_uploader_with_clear
+from utils import (plot_brightness, plot_histogram, fit_brightness_gmm, HWT_aesthetic,
+                   file_uploader_with_clear, tight_image_layout)
 from tools.process_files import process_files
 from tools import roi as roi_tool
 
@@ -375,15 +376,97 @@ def aperture_area_um2(image, region, pix_size_um):
     return float(h) * float(w) * float(pix_size_um) ** 2
 
 
+def category_fractions(brightness, bins, labels):
+    """Fraction of particles in each of CATEGORY_ORDER, binned exactly as the pie
+    (same edges, in-range particles only). None when no particle is in range."""
+    cats = pd.cut(pd.Series(np.asarray(brightness, dtype=float)), bins=bins,
+                  right=False, include_lowest=True, labels=labels)
+    n = int(cats.notna().sum())
+    if n == 0:
+        return None
+    return np.array([(cats == c).sum() / n for c in CATEGORY_ORDER], dtype=float)
+
+
+def pick_representative_field(processed, mean_count, bins=None, labels=None):
+    """
+    Field that best represents the whole dataset, scored on both PSF count and
+    population makeup:
+
+        score = |n − n̄| / n̄  +  ½·Σ_c |f_c − F_c|
+
+    The first term is the fractional deviation from the average PSF count; the
+    second is the total-variation distance between the field's category mix
+    (monomers / dimers / trimers / multimers) and the pooled mix shown in the pie,
+    i.e. the share of particles that would have to change category to match. Both
+    are fractions, so 10% off in count weighs the same as 10% of particles in the
+    wrong category. Falls back to count only when no category bins are available.
+    Returns (name, info) with the per-field numbers for display.
+    """
+    names = list(processed.keys())
+    if bins is not None and labels is not None:
+        pooled = category_fractions(
+            np.concatenate([processed[nm]["df"]["brightness_integrated"].to_numpy()
+                            for nm in names]), bins, labels)
+    else:
+        pooled = None
+
+    best, best_score, best_info = None, np.inf, {}
+    for nm in names:
+        n = len(processed[nm]["df"])
+        d_count = abs(n - mean_count) / mean_count if mean_count else 0.0
+        frac = None
+        d_mix = 0.0
+        if pooled is not None:
+            frac = category_fractions(processed[nm]["df"]["brightness_integrated"], bins, labels)
+            # A field with nothing in range can't represent the mix at all.
+            d_mix = 0.5 * float(np.abs(frac - pooled).sum()) if frac is not None else 1.0
+        score = d_count + d_mix
+        if score < best_score:
+            best, best_score = nm, score
+            best_info = {"n": n, "frac": frac, "pooled": pooled,
+                         "d_count": d_count, "d_mix": d_mix}
+    return best, best_info
+
+
+def particle_peak_values(image, df, half=1):
+    """Peak pixel value (image units, pps) of each fitted particle: the max of the
+    (2·half+1)² window around its fitted center."""
+    if image is None or df is None or df.empty:
+        return np.array([])
+    img = np.asarray(image, dtype=float)
+    h, w = img.shape[:2]
+    ys = np.clip(np.rint(df['y_pix'].to_numpy()).astype(int), 0, h - 1)
+    xs = np.clip(np.rint(df['x_pix'].to_numpy()).astype(int), 0, w - 1)
+    return np.array([img[max(y - half, 0):y + half + 1, max(x - half, 0):x + half + 1].max()
+                     for y, x in zip(ys, xs)])
+
+
+def auto_display_vmax(processed, visible_pct=90.0):
+    """Linear-display ceiling: the `visible_pct` percentile of fitted-particle peak
+    values pooled over every processed file, so that share of particles is drawn
+    within the color range and only the brightest rest saturate (instead of a few
+    very bright multimers compressing everything else toward black). Pooling keeps
+    the scale identical across files. None when no particles were fit."""
+    peaks = [particle_peak_values(d.get("image"), d.get("df"))
+             for d in (processed or {}).values()]
+    peaks = np.concatenate(peaks) if peaks else np.array([])
+    peaks = peaks[np.isfinite(peaks)]
+    if peaks.size == 0:
+        return None
+    return float(np.percentile(peaks, visible_pct))
+
+
 def build_summary_image(image, df, *, pix_size_um, cmap, normalization,
                         single_ucnp_brightness, aperture,
                         annotation_lines, title=None,
-                        show_psf_fits=False, show_brightness_fits=False):
+                        show_psf_fits=False, show_brightness_fits=False,
+                        vmax=None):
     """
     Build a compact summary figure for the field whose PSF count is closest to
     the average: the region image titled with the raw filename, a 'pps'
     colorbar, the fitted aperture circle (if any), the given annotation lines
     (concentration first), and optional PSF-fit / brightness overlays.
+    `vmax` (pps) caps the linear color scale; ignored for log scaling.
     """
     import textwrap
 
@@ -392,8 +475,10 @@ def build_summary_image(image, df, *, pix_size_um, cmap, normalization,
     fig, ax = plt.subplots(figsize=(3.4, 3.4), dpi=300)
 
     norm = LogNorm() if normalization else None
+    # The image is drawn +1 (keeps LogNorm off zero), so shift the cap to match.
+    lin_vmax = vmax + 1 if (vmax is not None and not normalization) else None
     im = ax.imshow(np.asarray(image, dtype=float) + 1, cmap=cmap, norm=norm,
-                   origin='lower', interpolation='bilinear')
+                   vmax=lin_vmax, origin='lower', interpolation='bilinear')
     ax.set_xticks([])
     ax.set_yticks([])
     if title:
@@ -455,11 +540,13 @@ def plot_monomer_brightness(
     single_ucnp_brightness=None,
     *,
     interactive=False,
-    dragmode='zoom'
+    dragmode='zoom',
+    vmax=None,
 ):
     """
     Plot brightness map and overlay Gaussian-fit circles colored by brightness category.
     If interactive=True returns a Plotly figure; otherwise Matplotlib.
+    `vmax` (pps) caps the linear color scale; ignored for log scaling.
     """
     if not interactive:
         fig_width, fig_height = 5, 5
@@ -467,7 +554,8 @@ def plot_monomer_brightness(
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
         norm = LogNorm() if normalization else None
-        im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=norm, origin='lower')
+        lin_vmax = vmax + 1 if (vmax is not None and not normalization) else None
+        im = ax.imshow(image_data_cps + 1, cmap=cmap, norm=norm, vmax=lin_vmax, origin='lower')
         ax.tick_params(axis='both', length=0,
                        labelleft=False, labelright=False,
                        labeltop=False, labelbottom=False)
@@ -544,26 +632,18 @@ def plot_monomer_brightness(
     else:
         img_display = img
 
-    fig = px.imshow(img_display, origin="lower", aspect="equal", color_continuous_scale=plotly_scale)
+    zrange = {}
+    if vmax is not None and not normalization:
+        zrange = dict(zmin=float(np.nanmin(img_display)), zmax=float(vmax))
+    fig = px.imshow(img_display, origin="lower", aspect="equal",
+                    color_continuous_scale=plotly_scale, **zrange)
     img_custom = np.expand_dims(img, axis=-1)
     fig.data[0].customdata = img_custom
     fig.data[0].hovertemplate = (
         "x=%{x:.0f}px<br>y=%{y:.0f}px<br>pps=%{customdata[0]:.1f}<extra></extra>"
     )
-    fig.update_layout(
-        margin=dict(l=0, r=0, t=30, b=0),
-        dragmode=dragmode,
-        coloraxis_colorbar=dict(
-            title="pps" if not normalization else "log10(pps)",
-            yanchor="middle",
-            y=0.5,
-            lenmode="fraction",
-            len=0.8,
-            thickness=20,
-        ),
-        xaxis_title="X (px)",
-        yaxis_title="Y (px)"
-    )
+    fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), dragmode=dragmode)
+    tight_image_layout(fig, "pps" if not normalization else "log10(pps)")
 
     if df is not None and not df.empty:
         xs = df['x_pix'].to_numpy()
@@ -662,10 +742,16 @@ def run():
         "mono_dilution": "1E3",
         "mono_estimate_conc": False,
         "mono_show_fits": True,
-        "mono_normalization": True,
+        "mono_normalization": False,
+        "mono_vis_pct": 90.0,
         "mono_save_format": "svg",
         "mono_gen_summary": True,
+        "mono_summ_conc": True,
+        "mono_summ_ppv": True,
+        "mono_summ_dil": True,
+        "mono_summ_scope": True,
         "mono_summ_monomer": False,
+        "mono_summ_pct_val": 0.0,
         "mono_summ_psf": False,
         "mono_summ_bright": False,
         "mono_num_bins": 50,
@@ -686,6 +772,7 @@ def run():
     if "selected_file_name" not in st.session_state:
         st.session_state.selected_file_name = None
     normalized_records = []
+    display_vmax = None   # linear display cap (pps); None = auto range / log scaling
     selected_file_name = st.session_state.get("selected_file_name")
     threshold = None
     signal = None
@@ -904,19 +991,19 @@ def run():
             st.session_state["monomers_cmap"] = cmap
             show_fits = st.checkbox("Show fits", key="mono_show_fits")
             normalization = st.checkbox("Log Image Scaling", key="mono_normalization")
+            # Linear display-range controls; filled in once the files are processed.
+            scale_box = st.container()
             save_format = st.selectbox(
                 "Download format", ["svg", "png", "jpeg"], key="mono_save_format"
             ).lower()
 
-            gen_summary = st.checkbox(
+            st.checkbox(
                 "Generate summary image", key="mono_gen_summary",
-                help="Build a downloadable TIFF of the field whose PSF count is "
-                     "closest to the average, annotated with Avg PPV ± SD and dilution.",
+                help="Build a downloadable TIFF of the most representative field: "
+                     "closest to the dataset on both PSF count and population mix "
+                     "(% monomers / dimers / trimers / multimers). Choose which fields "
+                     "to include next to the preview.",
             )
-            if gen_summary:
-                st.checkbox("- include % monomers", key="mono_summ_monomer")
-                st.checkbox("- include PSF fits", key="mono_summ_psf")
-                st.checkbox("- include brightness fits", key="mono_summ_bright")
 
             # Process automatically. _process_files_cached is @st.cache_data keyed on
             # (saved_records, region, threshold, signal, pix_size_um), so tuning any of
@@ -942,6 +1029,34 @@ def run():
                     )
                 st.session_state.processed = (processed_data, combined_df)
 
+            # Linear scaling: cap the color range at the brightness that keeps the
+            # chosen share of fitted particles in range (default 90%), so a few very
+            # bright multimers don't wash everything else out. Re-seeds whenever the
+            # data or percentage change; a typed value sticks until then.
+            if not normalization and st.session_state.get("processed"):
+                with scale_box:
+                    vis_pct = st.number_input(
+                        "Particles in display range (%)",
+                        min_value=50.0, max_value=100.0, step=5.0, format="%.0f",
+                        key="mono_vis_pct",
+                        help="Sets the linear display max to the brightness of this "
+                             "percentile of fitted particles (peak pixel, pooled over all "
+                             "files). The brightest remainder saturate; 100% = no clipping.",
+                    )
+                    vmax_auto = auto_display_vmax(st.session_state.processed[0], vis_pct)
+                    if vmax_auto is not None:
+                        if (st.session_state.get("_mono_vmax_auto") != vmax_auto
+                                or "mono_vmax" not in st.session_state):
+                            st.session_state["_mono_vmax_auto"] = vmax_auto
+                            st.session_state["mono_vmax"] = vmax_auto
+                        display_vmax = st.number_input(
+                            "Display max (pps)", min_value=0.0, format="%.4g",
+                            key="mono_vmax",
+                            help=f"Auto: {vmax_auto:.4g} pps ({vis_pct:.0f}% of particles "
+                                 "in range). Edit to override; resets when data or the "
+                                 "percentage change.",
+                        )
+
         else:
             st.session_state.selected_file_name = None
             st.session_state.processed = None
@@ -959,7 +1074,8 @@ def run():
         else:
             active_roi = roi_tool.draw_roi(
                 ref_img, key="monomers_roi_canvas",
-                cmap=st.session_state.get("monomers_cmap", "plasma"), log=True,
+                cmap=st.session_state.get("monomers_cmap", "plasma"),
+                log=st.session_state.get("mono_normalization", False),
             )
             st.session_state["monomers_roi"] = active_roi
             if active_roi is None:
@@ -1002,6 +1118,8 @@ def run():
 
         top_left, top_right = st.columns(2)
         fig_pie = None
+        pct_monomers = None
+        cat_bins = cat_labels = None   # pie category binning, reused to pick the summary field
         thresholds = None
         single_ucnp_brightness_value = st.session_state.get("single_ucnp_brightness")
 
@@ -1025,11 +1143,25 @@ def run():
                 if user_min_val >= user_max_val:
                     st.warning("Min brightness must be less than max brightness.")
                 else:
-                    if single_ucnp_brightness_value is None:
-                        default_spb = float(np.mean(brightness_vals))
-                    else:
-                        default_spb = float(single_ucnp_brightness_value)
-                    default_spb = float(np.clip(default_spb, user_min_val, user_max_val))
+                    # Single-particle brightness defaults to the GMM μ of the
+                    # *current* data within the current range (the same fit drawn
+                    # on the histogram). Re-seed whenever that fit changes (new
+                    # files, reprocessing, range edits) so a value from a previous
+                    # dataset is never carried over; a manual edit sticks only
+                    # until the fit changes.
+                    in_range = brightness_vals[(brightness_vals >= user_min_val)
+                                               & (brightness_vals <= user_max_val)]
+                    _, mu_fit, _ = fit_brightness_gmm(in_range, pick="lowest")
+                    if mu_fit is None:
+                        mu_fit = float(np.median(in_range)) if in_range.size else user_min_val
+                    mu_fit = float(np.clip(mu_fit, user_min_val, user_max_val))
+                    if (st.session_state.get("_mono_spb_fit") != mu_fit
+                            or "mono_spb" not in st.session_state):
+                        st.session_state["_mono_spb_fit"] = mu_fit
+                        st.session_state["mono_spb"] = mu_fit
+                    # Keep any manual value inside the (possibly narrowed) bounds.
+                    st.session_state["mono_spb"] = float(np.clip(
+                        st.session_state["mono_spb"], user_min_val, user_max_val))
 
                     bc1, bc2 = st.columns(2)
                     num_bins = bc1.number_input("# Bins:", min_value=1, step=1, key="mono_num_bins")
@@ -1037,7 +1169,10 @@ def run():
                         "Single Particle Brightness (pps)",
                         min_value=user_min_val,
                         max_value=user_max_val,
-                        value=default_spb,
+                        format="%.4g",
+                        key="mono_spb",
+                        help=f"Defaults to the GMM fit μ of the current data in range "
+                             f"({mu_fit:.3g} pps); re-fits whenever the data or range change.",
                     )
                     st.session_state["single_ucnp_brightness"] = float(single_ucnp_brightness_value)
 
@@ -1049,6 +1184,7 @@ def run():
                         max_val=user_max_val,
                         num_bins=num_bins,
                         thresholds=thresholds,
+                        pick="lowest",
                     )
                     fig_hist_final.set_size_inches(5, 3)
                     fig_hist_final.tight_layout()
@@ -1063,6 +1199,7 @@ def run():
                     if len(labels_for_pie) != num_bins_pie:
                         st.warning(f"Label/bin mismatch: {len(labels_for_pie)} labels for {num_bins_pie} bins.")
                     else:
+                        cat_bins, cat_labels = bins_for_pie, labels_for_pie
                         categories = pd.cut(
                             combined_df['brightness_integrated'],
                             bins=bins_for_pie,
@@ -1072,6 +1209,10 @@ def run():
                         )
                         category_counts = categories.value_counts().reset_index()
                         category_counts.columns = ['Category', 'Count']
+                        n_in_range = int(categories.notna().sum())
+                        if n_in_range:
+                            pct_monomers = round(
+                                100.0 * int((categories == "Monomers").sum()) / n_in_range, 1)
 
                         fig_pie = px.pie(
                             category_counts,
@@ -1108,6 +1249,7 @@ def run():
                     cmap=st.session_state.get("monomers_cmap", "plasma"),
                     single_ucnp_brightness=single_ucnp_brightness_value,
                     interactive=True,
+                    vmax=display_vmax,
                 )
                 if aperture is not None:
                     a = aperture
@@ -1278,9 +1420,9 @@ def run():
                 st.divider()
                 st.subheader("Summary image")
 
-                # Field whose PSF count is closest to the average.
-                best_name = min(processed.keys(),
-                                key=lambda nm: abs(len(processed[nm]["df"]) - mean_count))
+                # Field closest to the dataset on both PSF count and population mix.
+                best_name, best_info = pick_representative_field(
+                    processed, mean_count, cat_bins, cat_labels)
                 best = processed[best_name]
                 summ_img = best.get("image")
                 summ_df = best.get("df")
@@ -1292,32 +1434,61 @@ def run():
                 dilution = st.session_state.get("dilution")
                 microscope = st.session_state.get("microscope", "MCL")
 
-                # Build annotation lines, estimated concentration first (always).
-                ann = []
-                dil_for_ppv = dilution if dilution is not None else 1.0
-                if dilution is not None and mean_count:
-                    est_s = estimate_concentration(
-                        ppv=mean_count, dilution=dilution, area_um2=mean_area_um2
+                # Computed % monomers, the same in-range breakdown as the pie,
+                # used to seed the editable estimate below.
+                pct_auto = pct_monomers
+                # Re-seed the estimate only when the computed value changes, so a
+                # manual edit isn't clobbered on every rerun.
+                if st.session_state.get("_mono_pct_auto") != pct_auto:
+                    st.session_state["_mono_pct_auto"] = pct_auto
+                    st.session_state["mono_summ_pct_val"] = (
+                        pct_auto if pct_auto is not None else 0.0
                     )
-                    rel = (ppv_sd / np.sqrt(len(counts)) / mean_count
-                           if len(counts) > 1 else 0.0)
-                    ann.append(_format_molarity_pm(est_s['molarity'],
-                                                   est_s['molarity'] * rel if rel else None))
-                else:
-                    ann.append("set dilution for conc.")
-                # Reported ppv is dilution-adjusted (measured × dilution).
-                ann.append(f"{mean_count * dil_for_ppv:.3g} ± {ppv_sd * dil_for_ppv:.2g} ppv")
-                if dilution is not None:
-                    ann.append(f"{_sci_compact(dilution)} dilution")
-                ann.append(f"{microscope}")
 
-                want_monomer = st.session_state.get("mono_summ_monomer", False)
-                if (want_monomer and spb and combined_df is not None
-                        and not combined_df.empty):
-                    t1_m = thresholds_from_single_brightness(float(spb))[0]
-                    b_all = combined_df['brightness_integrated'].to_numpy()
-                    if b_all.size:
-                        ann.append(f"{100.0 * float(np.mean(b_all < t1_m)):.0f}% monomers")
+                prev_col, opt_col = st.columns([1, 1])
+
+                # Per-field toggles for the annotation block and overlays.
+                with opt_col:
+                    st.caption("Include on summary image")
+                    st.checkbox("Concentration", key="mono_summ_conc")
+                    st.checkbox("PPV ± SD (at imaged dilution)", key="mono_summ_ppv")
+                    st.checkbox("Dilution", key="mono_summ_dil")
+                    st.checkbox("Microscope", key="mono_summ_scope")
+                    mc_a, mc_b = st.columns([1, 1])
+                    mc_a.checkbox("Est. % monomers", key="mono_summ_monomer")
+                    mc_b.number_input(
+                        "Est. % monomers", min_value=0.0, max_value=100.0, step=1.0,
+                        format="%.1f", key="mono_summ_pct_val",
+                        label_visibility="collapsed",
+                        help="Prefilled from the brightness histogram (fraction "
+                             "below 2× single-particle brightness); edit to override.",
+                        disabled=not st.session_state.get("mono_summ_monomer"),
+                    )
+                    st.checkbox("PSF fits", key="mono_summ_psf")
+                    st.checkbox("Brightness fits", key="mono_summ_bright")
+
+                # Build annotation lines, estimated concentration first.
+                ann = []
+                if st.session_state.get("mono_summ_conc"):
+                    if dilution is not None and mean_count:
+                        est_s = estimate_concentration(
+                            ppv=mean_count, dilution=dilution, area_um2=mean_area_um2
+                        )
+                        rel = (ppv_sd / np.sqrt(len(counts)) / mean_count
+                               if len(counts) > 1 else 0.0)
+                        ann.append(_format_molarity_pm(est_s['molarity'],
+                                                       est_s['molarity'] * rel if rel else None))
+                    else:
+                        ann.append("set dilution for conc.")
+                if st.session_state.get("mono_summ_ppv"):
+                    # Measured ppv of the imaged (diluted) sample, not scaled to stock.
+                    ann.append(f"{mean_count:.3g} ± {ppv_sd:.2g} ppv")
+                if st.session_state.get("mono_summ_dil") and dilution is not None:
+                    ann.append(f"{_sci_compact(dilution)} dilution")
+                if st.session_state.get("mono_summ_scope"):
+                    ann.append(f"{microscope}")
+                if st.session_state.get("mono_summ_monomer"):
+                    ann.append(f"~{float(st.session_state['mono_summ_pct_val']):.0f}% mono")
 
                 if summ_img is None:
                     st.info("No image available for the summary.")
@@ -1326,17 +1497,17 @@ def run():
                         summ_img, summ_df,
                         pix_size_um=pix,
                         cmap=st.session_state.get("monomers_cmap", "gray"),
-                        normalization=st.session_state.get("mono_normalization", True),
+                        normalization=st.session_state.get("mono_normalization", False),
                         single_ucnp_brightness=float(spb) if spb else None,
                         aperture=summ_ap,
                         annotation_lines=ann,
                         title=os.path.basename(best_name),
                         show_psf_fits=st.session_state.get("mono_summ_psf", False),
                         show_brightness_fits=st.session_state.get("mono_summ_bright", False),
+                        vmax=display_vmax,
                     )
                     # Show in a half-width column so the high-DPI render is
                     # downscaled (crisp) rather than stretched up (pixelated).
-                    prev_col = st.columns([1, 1])[0]
                     prev_col.pyplot(fig_summ, use_container_width=True)
 
                     base = extract_sif_number(os.path.basename(best_name))
@@ -1357,7 +1528,11 @@ def run():
                         file_name=f"summary_sif{base}.{ext}",
                         mime=mime,
                     )
-                    st.caption(
-                        f"Closest-to-average field: {os.path.basename(best_name)} "
-                        f"({len(summ_df)} PSFs vs avg {mean_count:.1f})."
-                    )
+                    cap = (f"Most representative field: {os.path.basename(best_name)}: "
+                           f"{len(summ_df)} PSFs vs avg {mean_count:.1f}")
+                    frac, pooled = best_info.get("frac"), best_info.get("pooled")
+                    if frac is not None and pooled is not None:
+                        cap += "; " + ", ".join(
+                            f"{c.lower()} {100 * frac[i]:.0f}% (all {100 * pooled[i]:.0f}%)"
+                            for i, c in enumerate(CATEGORY_ORDER) if frac[i] or pooled[i])
+                    st.caption(cap + ". Chosen on both PSF count and population mix.")

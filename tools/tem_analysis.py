@@ -338,6 +338,13 @@ HEX_RECT_FILL_SPLIT = 0.765
 # clumps before shape is judged at all. On real images intact particles sit above ~0.94 while
 # fragments and clumps fall below ~0.80.
 HEX_MIN_SOLIDITY = 0.88
+# regionprops' major/minor_axis_length are moment-based (4·√variance along each axis), which
+# equals the true extent only for an ellipse. For the prism projections they are biased:
+#   rectangle of side a: 4·a/√12 = 1.1547·a  → multiply by √12/4 = 0.8660 (same as Cube)
+#   hexagon of circumradius R: 4·√(5/24)·R = 1.8257·R, but the vertex-to-vertex width is 2R
+#                              → multiply by 2/1.8257 = 1.0954
+RECT_AXIS_CORR = np.sqrt(12.0) / 4.0
+HEX_AXIS_CORR = 2.0 / (4.0 * np.sqrt(5.0 / 24.0))
 
 def classify_projection(prop, target_shape: str) -> str:
     area, perim = float(prop.area), float(getattr(prop, "perimeter", 0.0)) or 1e-6
@@ -363,6 +370,42 @@ def _hexagon_vertices(cx: float, cy: float, radius: float, angle: float = 0.0) -
     # Add the rotation angle to the base angles
     angles = (np.pi / 3.0 * np.arange(6)) + angle
     return np.column_stack((cx + radius * np.cos(angles), cy + radius * np.sin(angles)))
+
+def _hexagon_angle(prop) -> float:
+    """Vertex direction (radians, (col=x, row=y) pixel space) of a face-on hexagon.
+
+    A regular hexagon's second moments are isotropic, so regionprops' ``orientation`` is
+    arbitrary for it. Instead use the 6-fold angular harmonic of the region's pixels: the
+    vertices are the farthest points from the centroid, so weighting by r⁴ makes the harmonic's
+    phase point at a vertex (phase = 6·angle)."""
+    coords = prop.coords.astype(np.float64)
+    cy, cx = coords.mean(axis=0)
+    dx, dy = coords[:, 1] - cx, coords[:, 0] - cy
+    r2 = dx * dx + dy * dy
+    return float(np.angle(np.sum(r2 * r2 * np.exp(6j * np.arctan2(dy, dx)))) / 6.0)
+
+def _rect_angle(prop, fallback: float) -> float:
+    """Long-side direction (radians, (col=x, row=y) pixel space) of a rectangular region, from
+    its minimum-area bounding rectangle (rotating calipers over the convex hull: the optimal box
+    has a side flush with one hull edge).
+
+    Like the hexagon, a near-square's second moments are almost isotropic, so regionprops'
+    ``orientation`` is unreliable for it; the bounding box follows the actual edges."""
+    from scipy.spatial import ConvexHull, QhullError
+    pts = prop.coords[:, ::-1].astype(np.float64)          # (x=col, y=row)
+    try:
+        hull = pts[ConvexHull(pts).vertices]
+    except (QhullError, ValueError):
+        return fallback
+    edges = np.diff(np.vstack([hull, hull[:1]]), axis=0)
+    best = (np.inf, fallback)
+    for theta in np.unique(np.mod(np.arctan2(edges[:, 1], edges[:, 0]), np.pi / 2.0)):
+        c, s = np.cos(theta), np.sin(theta)
+        u, v = hull @ np.array([c, s]), hull @ np.array([-s, c])
+        w, h = np.ptp(u), np.ptp(v)
+        if w * h < best[0]:
+            best = (w * h, theta if w >= h else theta + np.pi / 2.0)
+    return float(best[1])
 
 def _diamond_vertices(cx: float, cy: float, half_maj: float, half_min: float, angle: float) -> np.ndarray:
     ca, sa = np.cos(angle), np.sin(angle)
@@ -543,32 +586,32 @@ def _measure_labels(
                 draw_shapes.append({"type": "circle", "cx": cx, "cy": cy, "r": d_px/2.0, "color": color})
                 objects.append({"cx": cx, "cy": cy, "dims": {"diameters": d_val}})
         elif cls == "hexagon":
-            d_px = (maj_px + min_px) / 2.0
+            d_px = (maj_px + min_px) / 2.0 * HEX_AXIS_CORR   # vertex-to-vertex width
             d_val = d_px * sf
             if d_val >= min_size_value:
                 measurements["hex_widths"].append(d_val)
-                # Pass the 'orient' variable as the 4th argument here!
                 draw_shapes.append({
-                    "type": "polygon", 
-                    "vertices": _hexagon_vertices(cx, cy, d_px/2.0, orient),
+                    "type": "polygon",
+                    "vertices": _hexagon_vertices(cx, cy, d_px/2.0, _hexagon_angle(prop)),
                     "color": color
                 })
                 objects.append({"cx": cx, "cy": cy, "dims": {"hex_widths": d_val}})
         elif cls == "rectangle":
+            maj_px, min_px = maj_px * RECT_AXIS_CORR, min_px * RECT_AXIS_CORR   # true side lengths
             if maj_px * sf >= min_size_value:
                 measurements["hex_heights"].append(maj_px * sf)
                 # Minor axis of a side-on rectangle ≈ the hexagonal width; kept so
                 # the width can be recovered from rectangles when face-on hexagons
                 # are scarce (see the rectangle-GMM path in run()).
                 measurements["hex_rect_widths"].append(min_px * sf)
-                draw_shapes.append({"type": "polygon", "vertices": _rotated_rect_vertices(cx, cy, maj_px/2.0, min_px/2.0, orient), "color": color})
+                draw_shapes.append({"type": "polygon", "vertices": _rotated_rect_vertices(cx, cy, maj_px/2.0, min_px/2.0, _rect_angle(prop, orient)), "color": color})
                 objects.append({"cx": cx, "cy": cy,
                                 "dims": {"hex_heights": maj_px * sf, "hex_rect_widths": min_px * sf}})
         elif cls == "square":
             side_px = ((maj_px + min_px) / 2.0) * 0.8660
             if side_px * sf >= min_size_value:
                 measurements["side_lengths"].append(side_px * sf)
-                draw_shapes.append({"type": "polygon", "vertices": _rotated_rect_vertices(cx, cy, side_px/2.0, side_px/2.0, orient), "color": color})
+                draw_shapes.append({"type": "polygon", "vertices": _rotated_rect_vertices(cx, cy, side_px/2.0, side_px/2.0, _rect_angle(prop, orient)), "color": color})
                 objects.append({"cx": cx, "cy": cy, "dims": {"side_lengths": side_px * sf}})
         elif cls == "diamond":
             maj_val, min_val = maj_px * 1.2247 * sf, min_px * 1.2247 * sf
@@ -667,8 +710,10 @@ def run_batch_analysis(file_data: List[Tuple[bytes, str]], shape_type: str, para
     # rectangle-GMM width estimate. Schema v4 adds "objects": a per-shape list of
     # {cx, cy, dims{key: value}} used to crop the summary FOV to the densest region of
     # in-range particles. v5: tic-tac "tic_tac_body_length" is now measured directly from the
-    # width-profile plateau (not back-solved from area), fixing spurious bimodality. This
-    # comment is part of the cached function's source, so editing it busts any stale cache.
+    # width-profile plateau (not back-solved from area), fixing spurious bimodality. v6: hexagon
+    # widths and rectangle sides are corrected from moment-based axis lengths to true extents
+    # (HEX_AXIS_CORR / RECT_AXIS_CORR). This comment is part of the cached function's source,
+    # so editing it busts any stale cache.
     results = []
     for f_bytes, f_name in file_data:
         tem = read_tem_file(f_bytes, f_name)
@@ -2802,8 +2847,10 @@ def run() -> None:
                 # Stadium model: rectangle body + two circular-arc end caps.
                 # Volume = hexagonal-prism body + two half-ellipsoid caps:
                 #   V = (3√3/8)·W·T·L_body + (π/3)·W·T·d
-                # where W,T are the cross-section dimensions (from the width
-                # distribution), L_body the straight body length, d the cap depth.
+                # where W,T are the cross-section dimensions, L_body the straight body
+                # length, d the cap depth. The cross-section is always taken as regular
+                # (T = W): growth rarely lets only some side faces outpace the others, so
+                # a single width distribution sets both.
                 all_maj  = np.concatenate([r["tic_tac_major"] for r in results])
                 all_w    = np.concatenate([r.get("tic_tac_width", np.array([])) for r in results])
                 all_body = np.concatenate([r.get("tic_tac_body_length", np.array([])) for r in results])
@@ -2817,54 +2864,23 @@ def run() -> None:
                         "body with two half-ellipsoid arc caps."
                     )
 
-                    # Width distribution → one or two cross-section dimensions (W, T).
-                    # Default the bimodal toggle from 2-component GMM peak separation.
-                    bimodal_default = False
-                    if all_w.size >= 6:
-                        try:
-                            gmm_w = GaussianMixture(n_components=2, random_state=42).fit(all_w.reshape(-1, 1))
-                            m = np.sort(gmm_w.means_.flatten())
-                            s = float(np.mean(np.sqrt(gmm_w.covariances_.flatten())))
-                            bimodal_default = (m[1] - m[0]) > 1.5 * s
-                        except Exception:
-                            pass
-                    bimodal = st.checkbox(
-                        "Width has two distinct cross-section dimensions (W ≠ T)",
-                        value=bimodal_default,
-                        help=(
-                            "When the width distribution is bimodal, a 2-component GMM is fit: the "
-                            "smaller peak is taken as the hexagonal width W, the larger as the "
-                            "perpendicular dimension T. When unchecked, the cross-section is assumed "
-                            "square (T = W). Auto-checked when the two peaks are well separated."
-                        ),
-                    )
-
-                    # Width histogram (2-component GMM when bimodal).
+                    # Width histogram: one Gaussian, which sets both cross-section
+                    # dimensions (T = W, see above).
                     wmin, wmax = get_min_max_ui("tic_w", f"Width ({unit_full})", all_w)
                     w_crop = all_w[(all_w >= wmin) & (all_w <= wmax)]
-                    w_ncomp = 2 if bimodal else 1
-                    mu_ranges = get_mu_ranges_ui("tic_w", "width", w_crop, unit_full, n_components=w_ncomp)
-                    fig_w, mus_w, stds_w, n_w = histogram_with_fit(
-                        all_w, "Tic Tac width", unit_full,
-                        n_components=w_ncomp, fit_min=wmin, fit_max=wmax, mu_ranges=mu_ranges,
+                    fig_w, *_ = histogram_with_fit(
+                        all_w, "Tic Tac width", unit_full, fit_min=wmin, fit_max=wmax,
                     )
                     st.pyplot(fig_w, use_container_width=True)
                     _download_row(fig_w, f"{prefix}_tictac_width")
 
                     notes = []
-                    mean_w_crop, sd_w_crop = _mean_sd(w_crop)
-                    if bimodal and len(mus_w) >= 2:
-                        W_dim, sd_W = float(mus_w[0]), float(stds_w[0])   # smaller mode
-                        T_dim, sd_T = float(mus_w[1]), float(stds_w[1])   # larger mode
-                    else:
-                        W_dim = T_dim = mean_w_crop
-                        sd_W = sd_T = sd_w_crop
-                        notes.append("Width distribution treated as unimodal; the cross-section is assumed square (T = W).")
+                    W_dim, sd_W = _mean_sd(w_crop)
                     if w_crop.size < MIN_SHAPE_COUNT:
                         notes.append(f"Only {w_crop.size} tic-tac(s) in the selected width range (< {MIN_SHAPE_COUNT}); d_eff may be unreliable.")
 
-                    hist_specs = [{"values": all_w, "title": "Tic Tac width", "n_components": w_ncomp,
-                                   "fit_min": wmin, "fit_max": wmax, "mu_ranges": mu_ranges,
+                    hist_specs = [{"values": all_w, "title": "Tic Tac width",
+                                   "fit_min": wmin, "fit_max": wmax,
                                    "keys": ["tic_tac_width"]}]
 
                     # Body length (straight plateau between the caps).
@@ -2897,39 +2913,41 @@ def run() -> None:
 
                     mean_cap, sd_cap = _mean_sd(all_cap) if all_cap.size > 0 else (0.0, 0.0)
 
-                    # r_eff from the stadium volume: (3√3/8)·W·T·L_body + (π/3)·W·T·d.
+                    # r_eff from the stadium volume with T = W: (3√3/8)·W²·L_body + (π/3)·W²·d.
+                    # W enters once (x[0]) rather than as two independent dims, so its SD
+                    # propagates as the single, fully correlated measurement it is.
                     def tictac_vol(x):
-                        return (3.0 * np.sqrt(3.0) / 8.0) * x[0] * x[1] * x[2] + (np.pi / 3.0) * x[0] * x[1] * x[3]
+                        return (3.0 * np.sqrt(3.0) / 8.0) * x[0] ** 2 * x[1] + (np.pi / 3.0) * x[0] ** 2 * x[2]
 
-                    # Surface area = the (possibly anisotropic) hexagonal body lateral surface,
-                    # perimeter(W,T)·L_body, plus the two half-ellipsoid caps, whose outer surface
-                    # together equals one full ellipsoid of semi-axes (W/2, T/2, d). No flat end
-                    # faces (the caps replace them).
+                    # Surface area = the regular hexagonal body's lateral surface, perimeter·L_body,
+                    # plus the two half-ellipsoid caps, whose outer surface together equals one
+                    # full spheroid of semi-axes (W/2, W/2, d). No flat end faces (the caps replace
+                    # them).
                     def tictac_area(x):
-                        return (_hexagon_perimeter(x[0] / 2.0, x[1] / 2.0) * x[2]
-                                + _ellipsoid_surface_area(x[0] / 2.0, x[1] / 2.0, x[3]))
+                        return (_hexagon_perimeter(x[0] / 2.0, x[0] / 2.0) * x[1]
+                                + _ellipsoid_surface_area(x[0] / 2.0, x[0] / 2.0, x[2]))
 
                     for msg in notes:
                         st.warning(msg)
 
-                    if np.isfinite(W_dim) and np.isfinite(T_dim) and np.isfinite(mean_body):
-                        dims_tt = [(W_dim, sd_W), (T_dim, sd_T), (mean_body, sd_body), (mean_cap, sd_cap)]
+                    if np.isfinite(W_dim) and np.isfinite(mean_body):
+                        dims_tt = [(W_dim, sd_W), (mean_body, sd_body), (mean_cap, sd_cap)]
                         r_eff, r_eff_sd = reff_with_sd(tictac_vol, dims_tt)
                         area, area_sd = measure_with_sd(tictac_area, dims_tt)
-                        v_body = (3.0 * np.sqrt(3.0) / 8.0) * W_dim * T_dim * mean_body
-                        v_caps = (np.pi / 3.0) * W_dim * T_dim * mean_cap
+                        v_body = (3.0 * np.sqrt(3.0) / 8.0) * W_dim ** 2 * mean_body
+                        v_caps = (np.pi / 3.0) * W_dim ** 2 * mean_cap
                         st.metric(
                             label="Effective Diameter (d_eff)",
                             value=f"{2 * r_eff:.2f} ± {2 * r_eff_sd:.2f} {unit_full}",
                             help=(
-                                f"Hex-prism body (W={W_dim:.2f}, T={T_dim:.2f}, L_body={mean_body:.2f}) "
+                                f"Hex-prism body (W = T = {W_dim:.2f}, L_body={mean_body:.2f}) "
                                 f"+ half-ellipsoid caps (depth d={mean_cap:.2f}). "
                                 f"V_body={v_body:.1f}, V_caps={v_caps:.1f} {unit_full}³. ± is 1 SD."
                             ),
                         )
                         summary_export_ui(
                             shape_type, hist_specs,
-                            {"W": W_dim, "T": T_dim, "L_body": mean_body, "d": mean_cap},
+                            {"W": W_dim, "T": W_dim, "L_body": mean_body, "d": mean_cap},
                             r_eff, r_eff_sd, unit_full, prefix, " ".join(notes), results=results,
                             area=area, area_sd=area_sd,
                         )
