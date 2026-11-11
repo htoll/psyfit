@@ -345,8 +345,18 @@ HEX_MIN_SOLIDITY = 0.88
 #                              → multiply by 2/1.8257 = 1.0954
 RECT_AXIS_CORR = np.sqrt(12.0) / 4.0
 HEX_AXIS_CORR = 2.0 / (4.0 * np.sqrt(5.0 / 24.0))
+# Which hexagonal-prism projections to look for. When the sample only shows one of them, the
+# fill test above still splits it into two classes and frequently misassigns; restricting to
+# one projection skips the test and assigns every convex region to that projection.
+HEX_PROJ_BOTH, HEX_PROJ_HEX, HEX_PROJ_RECT = "both", "hexagon", "rectangle"
+# Rectangles-only volume assumption. A prism lying on a side facet shows its vertex-to-vertex
+# width as the rectangle's short side, and rotational symmetry about the c-axis says that one
+# side-on width stands in for the whole hexagonal cross-section.
+RECT_ONLY_NOTE = ("Rectangles only: width W is each rectangle's short side and height H its long "
+                  "side. Assumes rotational symmetry about the prism axis, with particles lying on a "
+                  "side facet, so the short side is the hexagon's vertex-to-vertex width.")
 
-def classify_projection(prop, target_shape: str) -> str:
+def classify_projection(prop, target_shape: str, hex_projections: str = HEX_PROJ_BOTH) -> str:
     area, perim = float(prop.area), float(getattr(prop, "perimeter", 0.0)) or 1e-6
     circ = 4.0 * np.pi * area / perim ** 2
     solidity = float(getattr(prop, "solidity", 0.0))
@@ -359,6 +369,8 @@ def classify_projection(prop, target_shape: str) -> str:
     elif target_shape == "Hexagonal Prism":
         # Shape, not elongation, decides which projection this is — see HEX_RECT_FILL_SPLIT.
         if solidity > HEX_MIN_SOLIDITY:
+            if hex_projections != HEX_PROJ_BOTH:
+                return hex_projections
             return "hexagon" if fill > HEX_RECT_FILL_SPLIT else "rectangle"
     elif target_shape == "Cube" and solidity > 0.82: return "square"
     elif target_shape == "Octahedron" and solidity > 0.72: return "diamond"
@@ -555,7 +567,7 @@ _MEASUREMENT_KEYS = ("diameters", "hex_widths", "hex_heights", "hex_rect_widths"
 
 def _measure_labels(
     labels_ws: np.ndarray, shape_type: str, min_size_value: float, sf: float,
-    img_h: int, img_w: int,
+    img_h: int, img_w: int, hex_projections: str = HEX_PROJ_BOTH,
 ) -> Tuple[Dict[str, list], list, List[Dict[str, Any]]]:
     """Classify and measure every watershed region, returning
     ``(measurements, draw_shapes, objects)``. ``sf`` scales pixels into the reported unit."""
@@ -568,7 +580,7 @@ def _measure_labels(
         # Skip objects touching the very edge
         if minr <= 2.0 or minc <= 2.0 or maxr >= img_h - 2.0 or maxc >= img_w - 2.0: continue
 
-        cls = classify_projection(prop, shape_type)
+        cls = classify_projection(prop, shape_type, hex_projections)
         if cls == "unknown": continue
 
         cy, cx = prop.centroid
@@ -649,7 +661,7 @@ def _measure_labels(
 def segment_and_measure(
     data: np.ndarray, nm_per_px: float, shape_type: str, min_size_value: float,
     measurement_unit: str, smoothing_sigma: float, contrast_clip: float,
-    thresh_offset: float, min_peak_distance: float
+    thresh_offset: float, min_peak_distance: float, hex_projections: str = HEX_PROJ_BOTH,
 ) -> Dict[str, Any]:
     preprocessed = preprocess_image(data, smoothing_sigma, contrast_clip)
     binary_mask = _binary_mask_from(preprocessed, thresh_offset)
@@ -659,7 +671,7 @@ def segment_and_measure(
     sf = nm_per_px if measurement_unit == "nm" else 1.0
     img_h, img_w = data.shape
     measurements, draw_shapes, objects = _measure_labels(
-        labels_ws, shape_type, min_size_value, sf, img_h, img_w)
+        labels_ws, shape_type, min_size_value, sf, img_h, img_w, hex_projections)
 
     # Generate random colored mask for visualization
     rand_cmap = np.random.RandomState(42).rand(max(int(labels_ws.max()) + 1, 1), 3)
@@ -702,7 +714,8 @@ def plot_annotated_image(ax, image_data, draw_shapes, nm_per_px: float = float("
 # Caching Full Batch Run
 # ═══════════════════════════════════════════════════════════════════════════
 @st.cache_data(show_spinner=False)
-def run_batch_analysis(file_data: List[Tuple[bytes, str]], shape_type: str, params: dict) -> List[Dict[str, Any]]:
+def run_batch_analysis(file_data: List[Tuple[bytes, str]], shape_type: str, params: dict,
+                       hex_projections: str = HEX_PROJ_BOTH) -> List[Dict[str, Any]]:
     # Measurement schema v3: Tic Tac results now carry stadium geometry:
     # "tic_tac_width" (body width W), "tic_tac_body_length" (straight plateau L_body)
     # and "tic_tac_cap_depth" (arc sagitta d), replacing the old "tic_tac_minor".
@@ -722,7 +735,8 @@ def run_batch_analysis(file_data: List[Tuple[bytes, str]], shape_type: str, para
             data=tem.data, nm_per_px=tem.nm_per_px, shape_type=shape_type, 
             min_size_value=params["min_feature"], measurement_unit=unit_full, 
             smoothing_sigma=params["smoothing_sigma"], contrast_clip=params["contrast_clip"],
-            thresh_offset=params["thresh_offset"], min_peak_distance=params["min_peak_distance"]
+            thresh_offset=params["thresh_offset"], min_peak_distance=params["min_peak_distance"],
+            hex_projections=hex_projections,
         )
         seg["name"] = f_name
         results.append(seg)
@@ -1627,6 +1641,7 @@ def autotune_parameters(
     data: np.ndarray, nm_per_px: float, shape_type: str, min_size_value: float,
     measurement_unit: str, truth: Dict[str, List[Dict[str, Any]]],
     box_px: Tuple[float, float, float, float], progress=None,
+    hex_projections: str = HEX_PROJ_BOTH,
 ) -> Dict[str, Any]:
     """Search segmentation parameters for the setting that best reproduces ``truth``.
 
@@ -1666,7 +1681,8 @@ def autotune_parameters(
             mask_cache[mk] = _binary_mask_from(pre_cache[pk], thresh_offset)
         labels_ws = _watershed_labels(
             mask_cache[mk], _min_peak_px(min_peak_distance, measurement_unit, nm_per_px))
-        _, _, objects = _measure_labels(labels_ws, shape_type, min_size_value, sf, img_h, img_w)
+        _, _, objects = _measure_labels(labels_ws, shape_type, min_size_value, sf, img_h, img_w,
+                                        hex_projections)
         sc = score_against_annotations(labels_ws, objects, truth, box_px, nm_per_px, measurement_unit)
         for dim, info in sc["per_dim"].items():
             ever_matched[dim] |= np.array(info["flags"], dtype=bool)
@@ -1863,6 +1879,7 @@ def _annotation_token(file_name: str, roi_size: float, shape_type: str) -> str:
 def annotation_tuning_ui(
     roi_data: np.ndarray, nm_per_px: float, shape_type: str, unit: str,
     min_feature: float, token: str, live_seg: Optional[Dict[str, Any]] = None,
+    hex_projections: str = HEX_PROJ_BOTH,
 ) -> None:
     """Draw-and-tune panel: annotate a small box exhaustively, then search the segmentation
     parameters for the setting that best reproduces the annotations."""
@@ -1870,6 +1887,11 @@ def annotation_tuning_ui(
         st.info("Install `streamlit-drawable-canvas` to enable annotation-driven tuning.")
         return
     specs = _dim_annotation_specs(shape_type)
+    # A projection that isn't being detected can never match, so don't ask for its dimensions.
+    if hex_projections == HEX_PROJ_HEX:
+        specs = [s for s in specs if s["key"] == "hex_widths"]
+    elif hex_projections == HEX_PROJ_RECT:
+        specs = [s for s in specs if s["key"] != "hex_widths"]
     if not specs:
         st.info(f"No annotatable dimensions defined for {shape_type}.")
         return
@@ -1963,6 +1985,7 @@ def annotation_tuning_ui(
                 data=roi_data, nm_per_px=nm_per_px, shape_type=shape_type,
                 min_size_value=min_feature, measurement_unit=unit, truth=truth, box_px=box,
                 progress=lambda f: bar.progress(f, text=f"Searching parameters... {f*100:.0f}%"),
+                hex_projections=hex_projections,
             )
         finally:
             bar.empty()
@@ -2016,7 +2039,7 @@ def annotation_tuning_ui(
 
     tuned_seg = segment_and_measure(
         data=roi_data, nm_per_px=nm_per_px, shape_type=shape_type,
-        min_size_value=min_feature, measurement_unit=unit, **p)
+        min_size_value=min_feature, measurement_unit=unit, hex_projections=hex_projections, **p)
     fig, ax = plt.subplots(figsize=(5.4, 5.4), dpi=150)
     _plot_annotation_review(ax, roi_data, tuned_seg, truth_used, box_used, nm_per_px, unit)
     fig.tight_layout(pad=0)
@@ -2421,7 +2444,29 @@ def run() -> None:
 
         files = file_uploader_with_clear("Upload TEM image(s)", key="tem_uploads", accept_multiple_files=True, type=accepted_types, on_change=_clear_cache, on_clear=_clear_cache)
         shape_type = st.selectbox("Particle shape", list(SHAPE_CHOICES), index=0)
-        
+        hex_projections = HEX_PROJ_BOTH
+        if shape_type == "Hexagonal Prism":
+            st.caption("Projections to look for")
+            find_hex = st.checkbox(
+                "Face-on hexagons", value=True, key="hex_find_hex",
+                help="Particles standing on a hexagonal face. Give the prism width W only.")
+            find_rect = st.checkbox(
+                "Side-on rectangles", value=True, key="hex_find_rect",
+                help="Particles lying on a side facet. Give the height H and the width W.")
+            if find_hex and find_rect:
+                hex_projections = HEX_PROJ_BOTH
+            elif find_hex:
+                hex_projections = HEX_PROJ_HEX
+                st.caption("Every convex particle is measured as a face-on hexagon. Height "
+                           "can't be seen face-on, so you'll be asked for an H/W ratio.")
+            elif find_rect:
+                hex_projections = HEX_PROJ_RECT
+                st.caption("Every convex particle is measured as a side-on rectangle. Width "
+                           "comes from each rectangle's short side.")
+            else:
+                st.error("Select at least one projection.")
+                return
+
         if not files:
             st.warning("Upload files to begin.")
             tune_file = None
@@ -2490,7 +2535,8 @@ def run() -> None:
             data=roi_data, nm_per_px=tem_tune.nm_per_px, shape_type=shape_type,
             min_size_value=min_feature, measurement_unit=unit,
             smoothing_sigma=smoothing_sigma, contrast_clip=contrast_clip,
-            thresh_offset=thresh_offset, min_peak_distance=min_peak_distance
+            thresh_offset=thresh_offset, min_peak_distance=min_peak_distance,
+            hex_projections=hex_projections,
         )
 
         plot_c1, plot_c2 = st.columns(2)
@@ -2515,7 +2561,7 @@ def run() -> None:
                 roi_data=roi_data, nm_per_px=tem_tune.nm_per_px, shape_type=shape_type,
                 unit=unit, min_feature=min_feature,
                 token=_annotation_token(tune_file_name, roi_size, shape_type),
-                live_seg=seg_roi,
+                live_seg=seg_roi, hex_projections=hex_projections,
             )
 
         if st.button("Apply to All Images and Run Full Analysis", type="primary"):
@@ -2535,7 +2581,8 @@ def run() -> None:
         else:
             with st.spinner("Processing full images with Watershed..."):
                 file_data = [(f.getvalue(), f.name) for f in files]
-                results = run_batch_analysis(file_data, shape_type, st.session_state.run_params)
+                results = run_batch_analysis(file_data, shape_type, st.session_state.run_params,
+                                             hex_projections)
             
             st.success(f"Successfully processed {len(results)} image(s).")
             
@@ -2610,12 +2657,20 @@ def run() -> None:
                 all_rw = np.concatenate([r.get("hex_rect_widths", np.array([])) for r in results])  # side-on rectangle minor (≈ width)
 
                 n_hex, n_rect = all_w.size, all_h.size
-                st.caption(f"Detected {n_hex} face-on hexagon(s) and {n_rect} side-on rectangle(s).")
+                if hex_projections == HEX_PROJ_HEX:
+                    st.caption(f"Detected {n_hex} face-on hexagon(s) (rectangles not searched for).")
+                elif hex_projections == HEX_PROJ_RECT:
+                    st.caption(f"Detected {n_rect} side-on rectangle(s) (hexagons not searched for).")
+                else:
+                    st.caption(f"Detected {n_hex} face-on hexagon(s) and {n_rect} side-on rectangle(s).")
 
                 # Auto-enable the rectangle-GMM width estimate when face-on hexagons
                 # are scarce relative to rectangles; let the user override either way.
-                auto_gmm = n_rect > 0 and n_hex < HEX_GMM_AUTO_RATIO * n_rect
-                use_rect_gmm = st.checkbox(
+                # Rectangle-only runs default to per-particle short sides instead: every
+                # rectangle there is a real side-on prism, so its own short side is the width.
+                auto_gmm = (hex_projections == HEX_PROJ_BOTH
+                            and n_rect > 0 and n_hex < HEX_GMM_AUTO_RATIO * n_rect)
+                use_rect_gmm = hex_projections != HEX_PROJ_HEX and st.checkbox(
                     "Estimate hexagonal width from rectangle GMM",
                     value=auto_gmm,
                     help=(
@@ -2653,7 +2708,9 @@ def run() -> None:
                         _download_row(fig_g, f"{prefix}_hex_rect_gmm")
 
                         notes = []
-                        if n_hex < MIN_SHAPE_COUNT:
+                        if hex_projections == HEX_PROJ_RECT:
+                            notes.append(RECT_ONLY_NOTE)
+                        elif n_hex < MIN_SHAPE_COUNT:
                             notes.append(
                                 f"Only {n_hex} face-on hexagon(s) found (< {MIN_SHAPE_COUNT}). The hexagonal "
                                 "width is estimated from the side-on rectangle short axis (GMM smaller peak), "
@@ -2704,26 +2761,53 @@ def run() -> None:
                         _download_row(fig_h, f"{prefix}_hex_height")
                         hist_specs.append({"values": all_h, "title": "Height (side-on)", "fit_min": hmin, "fit_max": hmax,
                                            "keys": ["hex_heights"]})
+                    # No face-on hexagons: the width comes from the rectangles' short sides, so
+                    # give it its own histogram and range rather than averaging it blind.
+                    rw_crop = np.array([])
+                    if all_w.size == 0 and all_rw.size > 0:
+                        rwmin, rwmax = get_min_max_ui("hex_rw", f"Width ({unit_full})", all_rw)
+                        rw_crop = all_rw[(all_rw >= rwmin) & (all_rw <= rwmax)]
+                        fig_rw, *_ = histogram_with_fit(all_rw, "Width (side-on short side)", unit_full, fit_min=rwmin, fit_max=rwmax)
+                        st.pyplot(fig_rw, use_container_width=True)
+                        _download_row(fig_rw, f"{prefix}_hex_rect_width")
+                        hist_specs.append({"values": all_rw, "title": "Width (side-on short side)", "fit_min": rwmin,
+                                           "fit_max": rwmax, "keys": ["hex_rect_widths"]})
 
                     # Resolve width & height, stating the assumption whenever a projection is scarce.
                     notes = []
+                    if hex_projections == HEX_PROJ_RECT:
+                        notes.append(RECT_ONLY_NOTE)
                     if w_crop.size > 0:
                         mean_w, sd_w = _mean_sd(w_crop)
                         if w_crop.size < MIN_SHAPE_COUNT:
                             notes.append(f"Only {w_crop.size} face-on hexagon(s) (< {MIN_SHAPE_COUNT}); the width sample is small and d_eff may be unreliable.")
-                    elif all_rw.size > 0:
-                        mean_w, sd_w = _mean_sd(all_rw)
-                        notes.append(f"No face-on hexagons found; width taken from the {all_rw.size} side-on rectangle short axis/axes, assuming it equals the hexagon vertex-to-vertex width.")
+                    elif rw_crop.size > 0:
+                        mean_w, sd_w = _mean_sd(rw_crop)
+                        if hex_projections != HEX_PROJ_RECT:
+                            notes.append(f"No face-on hexagons found; width taken from the {rw_crop.size} side-on rectangle short side(s), assuming it equals the hexagon vertex-to-vertex width.")
                     else:
                         mean_w, sd_w = float("nan"), float("nan")
 
+                    # With no side-on view, H is never observed: it is tied to W by an assumed
+                    # aspect ratio, so V ∝ W³ and the propagated SD comes from W alone (feeding
+                    # H in as a second, independent dimension would double-count W's spread).
+                    hw_ratio = None
                     if h_crop.size > 0:
                         mean_h, sd_h = _mean_sd(h_crop)
                         if h_crop.size < MIN_SHAPE_COUNT:
                             notes.append(f"Only {h_crop.size} side-on rectangle(s) (< {MIN_SHAPE_COUNT}); the height sample is small and d_eff may be unreliable.")
                     elif np.isfinite(mean_w):
-                        mean_h, sd_h = mean_w, sd_w
-                        notes.append("No side-on rectangles found; prism height is assumed equal to the width (aspect ratio 1).")
+                        hw_ratio = st.number_input(
+                            "Assumed height / width (H/W)", min_value=0.05, max_value=20.0,
+                            value=1.0, step=0.05, key="hex_hw_ratio",
+                            help=("Face-on hexagons show the width W only; the prism height H is "
+                                  "along the viewing direction and can't be measured. Set H/W from "
+                                  "another source (side-on images of the same batch, SEM, synthesis "
+                                  "conditions). 1 = as tall as wide; < 1 = plate; > 1 = rod."),
+                        )
+                        mean_h, sd_h = hw_ratio * mean_w, hw_ratio * sd_w
+                        notes.append(f"No side-on rectangles; prism height is not measured but assumed to be H = {hw_ratio:g} × W. "
+                                     f"Volume scales linearly with this ratio, so d_eff scales with its cube root.")
                     else:
                         mean_h, sd_h = float("nan"), float("nan")
 
@@ -2731,12 +2815,17 @@ def run() -> None:
                         st.warning(msg)
 
                     if np.isfinite(mean_w) and np.isfinite(mean_h):
-                        r_eff, r_eff_sd = reff_with_sd(hex_vol, [(mean_w, sd_w), (mean_h, sd_h)])
-                        area, area_sd = measure_with_sd(hex_area, [(mean_w, sd_w), (mean_h, sd_h)])
+                        if hw_ratio is None:
+                            r_eff, r_eff_sd = reff_with_sd(hex_vol, [(mean_w, sd_w), (mean_h, sd_h)])
+                            area, area_sd = measure_with_sd(hex_area, [(mean_w, sd_w), (mean_h, sd_h)])
+                        else:
+                            r_eff, r_eff_sd = reff_with_sd(lambda x: hex_vol([x[0], hw_ratio * x[0]]), [(mean_w, sd_w)])
+                            area, area_sd = measure_with_sd(lambda x: hex_area([x[0], hw_ratio * x[0]]), [(mean_w, sd_w)])
                         st.metric(
                             label="Effective Diameter (d_eff)",
                             value=f"{2 * r_eff:.2f} ± {2 * r_eff_sd:.2f} {unit_full}",
-                            help=f"Mean width = {mean_w:.2f}, mean height = {mean_h:.2f} {unit_full}. V = (3√3/8)·W²·H (vertex-to-vertex W); ± is 1 SD.",
+                            help=(f"Mean width = {mean_w:.2f}, {'assumed' if hw_ratio is not None else 'mean'} height = "
+                                  f"{mean_h:.2f} {unit_full}. V = (3√3/8)·W²·H (vertex-to-vertex W); ± is 1 SD."),
                         )
                         summary_export_ui(
                             shape_type, hist_specs, {"W": mean_w, "H": mean_h},
