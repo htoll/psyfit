@@ -8,7 +8,7 @@ pandas
 scipy
 scikit-learn
 pybaselines
-torch
+psutil  # server memory monitoring + process priority
 numpy<2
 
 # --- Image Processing ---
@@ -17,7 +17,6 @@ opencv-python-headless
 imageio
 imageio-ffmpeg
 tifffile
-cellpose
 
 # --- Visualization ---
 matplotlib

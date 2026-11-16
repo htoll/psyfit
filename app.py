@@ -18,6 +18,8 @@ REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
 # Ensure local imports work when running "streamlit run app.py"
 sys.path.insert(0, REPO_ROOT)
 
+import server_runtime as srv  # inert unless started by server/watchdog.py
+
 
 @st.cache_data(show_spinner=False)
 def _repo_last_updated(repo_path: str) -> str:
@@ -303,10 +305,9 @@ TOOLS = {
         "group": "Synthesis",
         "formats": "manual entry",
         "blurb":
-            "Two synthesis calculators: Functionalization solves reagent amounts "
-            "from a particle concentration and either a target stoichiometry or a final "
-            "concentration; core synthesis converts mmol targets into mg weigh-outs for "
-            "common precursors.",
+            "Works out how much of each compound to add for a target final concentration "
+            "or amount: mg to weigh for solids, or volume to pipette from a stock of known "
+            "concentration, plus the solvent top-up to reach the final volume.",
     },
     "TEM Size Analysis": {
         "module": "tools.tem_analysis",
@@ -333,6 +334,19 @@ TOOLS = {
     },
     # "Plot CSVs": ("tools.plot_csv", "run", "Convert and export", "Flexible CSV plotting.", False),
 }
+
+# Self-hosted server only, and only for a browser on the server computer itself.
+if srv.ENABLED and srv.is_local_request():
+    TOOLS["Server Admin"] = {
+        "module": "tools.server_admin",
+        "entry": "run",
+        "group": "Server",
+        "formats": "server computer only",
+        "blurb":
+            "Who is using this PsyFit server right now and what they have done with it: "
+            "live sessions, daily users, tool use, uploads, files saved to the lab drive, "
+            "and errors. Also clears caches or restarts the server.",
+    }
 
 OVERVIEW = "Overview"
 
@@ -362,6 +376,7 @@ for _spec in TOOLS.values():
 # ---------------------------------------------------------------------------
 st.sidebar.title("PsyFit")
 st.sidebar.caption("Microscopy and nanoparticle analysis toolkit")
+srv.render_presence()
 
 selection = st.sidebar.radio(
     "Tool",
@@ -377,6 +392,8 @@ selection = st.sidebar.radio(
 # tool's own sidebar controls sit directly under the navigation rather than
 # below the diagnostics panel. Its value is therefore read from session_state
 # here and written by the keyed widget later in the same run.
+srv.begin_run(selection)
+
 SHOW_TRACES_KEY = "psyfit_show_traces"
 show_traces = bool(st.session_state.get(SHOW_TRACES_KEY, False))
 
@@ -425,6 +442,7 @@ def render_sidebar_settings():
     every tool module on every rerun.
     """
     st.sidebar.divider()
+    srv.render_sync_panel()
     st.sidebar.toggle(
         "Show error tracebacks",
         key=SHOW_TRACES_KEY,
@@ -471,6 +489,7 @@ def render_sidebar_settings():
 # Main area: header + selected tool
 # ---------------------------------------------------------------------------
 def render_error_context(title: str, err: Exception):
+    srv.log_event("error", f"{title}: {type(err).__name__}: {err}")
     st.error(f"{title}: {type(err).__name__}: {err}")
     if show_traces:
         tb = "".join(traceback.format_exception(err))
