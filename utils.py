@@ -129,7 +129,8 @@ def file_uploader_with_clear(label, *, key, clear_label="Clear all",
     return files
 
 
-def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3, min_distance = 5, roi=None):
+def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0.1, sig_threshold = 0.3, min_distance = 5, roi=None,
+                  crowded=False):
     image_data, metadata = sif_parser.np_open(sif, ignore_corrupt=True)
     image_data = image_data[0]  # (H, W)
 
@@ -177,6 +178,21 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
         coords = blobs[:, :2]
 
     #print(f"{os.path.basename(sif)}: Found {len(coords)} peaks in region {region}")
+
+    metadata_dict = {
+        'gainDAC': gainDAC,
+        'exposure_time_sec': exposure_time,
+        'accumulated_cycles': accumulate_cycles
+    }
+    if crowded:
+        sigma_ub_um = 0.8 if region == '4' else 0.5
+        df = fit_psfs_crowded(image_data_cps, coords, radius_pix=radius_pix_fine,
+                              pix_size_um=pix_size_um, sigma_ub_um=sigma_ub_um,
+                              sig_threshold=sig_threshold, threshold_abs=threshold_abs,
+                              min_distance=min_distance)
+        for k, v in metadata_dict.items():
+            df[k] = v
+        return df, image_data_cps, metadata_dict
 
     results = []
     for center_y, center_x in coords:
@@ -276,6 +292,201 @@ def integrate_sif(sif, threshold=1, region='all', signal='UCNP', pix_size_um = 0
     df = pd.DataFrame(results)
     return df, image_data_cps, metadata_dict
     
+def fit_psfs_crowded(image, coords, radius_pix=5, pix_size_um=0.1, sigma_ub_um=0.5,
+                     sig_threshold=0.3, threshold_abs=None, min_distance=3, passes=2):
+    """Fit every detected PSF together with the neighbours that overlap its window.
+
+    The default fit in :func:`integrate_sif` models each window as one Gaussian plus a
+    flat offset, and first "refines" the detection to the brightest pixel in its window.
+    In dense fields both go wrong: the refinement jumps onto a brighter neighbour (two
+    detections end up on the same particle), and light from neighbours inside the window
+    inflates the fitted width and brightness, so the fit is distorted or rejected by the
+    width cut.
+
+    Here each PSF is fitted on raw pixels (no upsampling) as a sum of Gaussians: itself
+    plus every other detection whose centre lies within ``radius_pix + 3`` px (close
+    enough for its light to reach the window), with one shared background. Positions are
+    held within ±1 px of their detections so neighbours can't swap or merge. Only the
+    target's parameters are kept; the neighbours are re-fitted as targets in their own
+    windows. ``brightness_integrated`` subtracts the fitted neighbours as well as the
+    background, so it measures this PSF alone. Output columns match integrate_sif, with
+    sub-pixel ``x_pix``/``y_pix`` and an extra ``n_neighbors`` (how many were co-fitted).
+
+    Heavily overlapping PSFs often don't each produce a local maximum, so the first
+    detection misses some and their light is absorbed by a neighbour's fit. With
+    ``passes=2`` (and a ``threshold_abs``), every fitted PSF is subtracted, peaks are
+    searched for in what is left, and everything is fitted again with those added.
+    """
+    img = np.asarray(image, dtype=float)
+    pts = np.asarray(coords, dtype=float).reshape(-1, 2)        # (row, col)
+    if pts.size == 0:
+        return pd.DataFrame()
+    for _ in range(max(int(passes), 1) - 1):
+        if threshold_abs is None:
+            break
+        first = _fit_crowded_pass(img, pts, radius_pix, pix_size_um, sigma_ub_um)
+        if not first:
+            break
+        H, W = img.shape
+        yy, xx = np.mgrid[0:H, 0:W]
+        fitted = np.zeros_like(img)
+        for f in first:
+            r = int(4 * max(f['sx'], f['sy'])) + 1
+            ys = slice(max(int(f['y']) - r, 0), min(int(f['y']) + r + 1, H))
+            xs = slice(max(int(f['x']) - r, 0), min(int(f['x']) + r + 1, W))
+            fitted[ys, xs] += f['A'] * np.exp(-((xx[ys, xs] - f['x']) ** 2 / (2 * f['sx'] ** 2)
+                                                + (yy[ys, xs] - f['y']) ** 2 / (2 * f['sy'] ** 2)))
+        residual = gaussian_filter(img - fitted, sigma=1)
+        extra = peak_local_max(residual, min_distance=max(int(min_distance), 1),
+                               threshold_abs=threshold_abs).astype(float)
+        known = np.array([[f['y'], f['x']] for f in first])
+        if len(extra):
+            dist = np.hypot(*(extra[:, None, :] - known[None, :, :]).transpose(2, 0, 1))
+            extra = extra[dist.min(axis=1) >= 2.0]
+        if not len(extra):
+            break
+        pts = np.vstack([known, extra])
+    return _crowded_rows_to_df(
+        _fit_crowded_pass(img, pts, radius_pix, pix_size_um, sigma_ub_um),
+        pix_size_um, sig_threshold)
+
+
+def _fit_crowded_pass(img, pts, radius_pix, pix_size_um, sigma_ub_um):
+    """One neighbour-aware fit of every point in ``pts`` (see fit_psfs_crowded).
+    Returns raw per-PSF fits in pixel units, without any quality cuts."""
+    H, W = img.shape
+    r = int(radius_pix)
+    reach = r + 3
+    sig_lb, sig_ub = 0.3, max(sigma_ub_um / pix_size_um, 0.6)   # px
+    sig0 = min(0.15 / pix_size_um, sig_ub * 0.8)
+
+    def gauss(xx, yy, A, x0, y0, sx, sy):
+        return A * np.exp(-((xx - x0) ** 2 / (2 * sx ** 2) + (yy - y0) ** 2 / (2 * sy ** 2)))
+
+    rows = []
+    for i, (cy, cx) in enumerate(pts):
+        y0i, y1i = int(max(round(cy) - r, 0)), int(min(round(cy) + r + 1, H))
+        x0i, x1i = int(max(round(cx) - r, 0)), int(min(round(cx) + r + 1, W))
+        sub = img[y0i:y1i, x0i:x1i]
+        if sub.size < 9:
+            continue
+        yy, xx = np.mgrid[y0i:y1i, x0i:x1i].astype(float)
+        near = np.where((np.abs(pts[:, 0] - cy) <= reach) & (np.abs(pts[:, 1] - cx) <= reach))[0]
+        order = [i] + [j for j in near if j != i]                 # target first
+        bg0 = float(np.percentile(sub, 10))
+        peak_max = float(sub.max() - bg0) if sub.max() > bg0 else 1.0
+        p0, lb, ub = [], [], []
+        for j in order:
+            py, px = pts[j]
+            iy, ix = int(np.clip(round(py), 0, H - 1)), int(np.clip(round(px), 0, W - 1))
+            a0 = max(float(img[iy, ix]) - bg0, 1e-3)
+            p0 += [a0, px, py, sig0, sig0]
+            lb += [0.0, px - 1, py - 1, sig_lb, sig_lb]
+            ub += [max(3 * a0, 2 * peak_max, 1.0), px + 1, py + 1, sig_ub, sig_ub]
+        p0.append(bg0); lb.append(min(0.0, bg0)); ub.append(max(float(np.median(sub)), bg0 + 1e-6))
+        p0 = np.clip(p0, np.array(lb) + 1e-9, np.array(ub) - 1e-9)
+
+        def model(p):
+            m = np.full(sub.shape, p[-1])
+            for k in range(len(order)):
+                m += gauss(xx, yy, *p[5 * k:5 * k + 5])
+            return m
+
+        dx_, dy_ = xx.ravel(), yy.ravel()
+
+        def jac(p):
+            # Analytic Jacobian: finite differences would cost one model evaluation per
+            # parameter (5 per co-fitted PSF) on every iteration.
+            J = np.empty((dx_.size, len(p)))
+            for k in range(len(order)):
+                A, x0, y0, sx, sy = p[5 * k:5 * k + 5]
+                ux, uy = dx_ - x0, dy_ - y0
+                e = np.exp(-(ux ** 2 / (2 * sx ** 2) + uy ** 2 / (2 * sy ** 2)))
+                g = A * e
+                J[:, 5 * k] = e
+                J[:, 5 * k + 1] = g * ux / sx ** 2
+                J[:, 5 * k + 2] = g * uy / sy ** 2
+                J[:, 5 * k + 3] = g * ux ** 2 / sx ** 3
+                J[:, 5 * k + 4] = g * uy ** 2 / sy ** 3
+            J[:, -1] = 1.0
+            return J
+
+        try:
+            res = least_squares(lambda p: (model(p) - sub).ravel(), p0, jac=jac,
+                                bounds=(lb, ub), x_scale="jac", max_nfev=100 * len(p0))
+        except (ValueError, RuntimeError):
+            continue
+        p = res.x
+        neighbours = model(p) - p[-1] - gauss(xx, yy, *p[:5])
+        rows.append({'A': p[0], 'x': p[1], 'y': p[2], 'sx': p[3], 'sy': p[4],
+                     'offset': p[-1], 'n_neighbors': len(order) - 1,
+                     'integrated': float(np.sum(sub - p[-1] - neighbours))})
+    return rows
+
+
+def _crowded_rows_to_df(fits, pix_size_um, sig_threshold):
+    """Quality cuts (same as integrate_sif), unit conversion and de-duplication."""
+    EPS = 1e-3
+    rows = []
+    for f in fits:
+        sx_um, sy_um = f['sx'] * pix_size_um, f['sy'] * pix_size_um
+        if sx_um > sig_threshold + EPS or sy_um > sig_threshold + EPS:
+            continue
+        if f['integrated'] > 1e9 or f['integrated'] < 1:
+            continue
+        rows.append({
+            'x_pix': f['x'], 'y_pix': f['y'],
+            'x_um': f['x'] * pix_size_um, 'y_um': f['y'] * pix_size_um,
+            'amp_fit': f['A'], 'sigx_fit': sx_um, 'sigy_fit': sy_um,
+            'brightness_fit': 2 * np.pi * f['A'] * f['sx'] * f['sy'],
+            'brightness_integrated': f['integrated'],
+            'n_neighbors': f['n_neighbors'],
+        })
+
+    df = pd.DataFrame(rows)
+    if len(df) > 1:
+        # Two detections on one particle converge to the same spot: keep the brighter.
+        df = df.sort_values('brightness_fit', ascending=False).reset_index(drop=True)
+        xy = df[['x_pix', 'y_pix']].to_numpy()
+        keep = np.ones(len(df), dtype=bool)
+        for a in range(len(df)):
+            if keep[a]:
+                d = np.hypot(*(xy[a + 1:] - xy[a]).T)
+                keep[a + 1:] &= d >= 1.0
+        df = df[keep].sort_values(['y_pix', 'x_pix']).reset_index(drop=True)
+    return df
+
+
+# --- Display scaling (shared by Monomers and Dye Colocalization) ---
+
+def particle_peak_values(image, df, half=1):
+    """Peak pixel value (image units, pps) of each fitted particle: the max of the
+    (2·half+1)² window around its fitted center."""
+    if image is None or df is None or df.empty:
+        return np.array([])
+    img = np.asarray(image, dtype=float)
+    h, w = img.shape[:2]
+    ys = np.clip(np.rint(df['y_pix'].to_numpy()).astype(int), 0, h - 1)
+    xs = np.clip(np.rint(df['x_pix'].to_numpy()).astype(int), 0, w - 1)
+    return np.array([img[max(y - half, 0):y + half + 1, max(x - half, 0):x + half + 1].max()
+                     for y, x in zip(ys, xs)])
+
+
+def auto_display_vmax(processed, visible_pct=90.0):
+    """Linear-display ceiling: the `visible_pct` percentile of fitted-particle peak
+    values pooled over every processed file, so that share of particles is drawn
+    within the color range and only the brightest rest saturate (instead of a few
+    very bright multimers compressing everything else toward black). Pooling keeps
+    the scale identical across files. None when no particles were fit."""
+    peaks = [particle_peak_values(d.get("image"), d.get("df"))
+             for d in (processed or {}).values()]
+    peaks = np.concatenate(peaks) if peaks else np.array([])
+    peaks = peaks[np.isfinite(peaks)]
+    if peaks.size == 0:
+        return None
+    return float(np.percentile(peaks, visible_pct))
+
+
 def gaussian(x, amp, mu, sigma):
   return amp * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
