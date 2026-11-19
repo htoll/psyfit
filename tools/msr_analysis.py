@@ -81,6 +81,11 @@ def _to_display_2d(arr):
     Anything above 2D (z-stacks, time series, extra channels) is reduced with a
     max-intensity projection over the leading axes, matching how the confocal
     tools treat multi-dimensional TIFFs.
+
+    The result is mirrored left-right: Imspector writes its fast scan axis in the
+    opposite direction to the convention used everywhere else in PsyFit, so the
+    flip is applied once here and every downstream view (preview, brightness
+    fits, overlay) shares the same orientation.
     """
     arr = np.squeeze(np.asarray(arr))
     # Treat a trailing RGB(A) sample axis as colour channels -> luminance.
@@ -90,7 +95,9 @@ def _to_display_2d(arr):
         arr = arr.max(axis=0)
     if arr.ndim < 2:
         return None
-    return arr.astype(float)
+    # ascontiguousarray: fliplr returns a reversed view, and the fitting code
+    # downstream is happier with a plain contiguous array.
+    return np.ascontiguousarray(np.fliplr(arr.astype(float)))
 
 
 @st.cache_data(show_spinner=False)
@@ -329,7 +336,8 @@ def render_metadata(filename, stacks):
 
 
 def render_brightness(filename, stacks, sel, cmap_name, log_scale,
-                      threshold_std, min_r2, dwell_us, line_acc, px_override_nm):
+                      min_pct, max_pct, threshold_std, min_r2, dwell_us,
+                      line_acc, px_override_nm):
     """Run the confocal per-particle brightness fit on the selected stacks."""
     st.subheader("Confocal brightness")
     if not sel:
@@ -371,10 +379,16 @@ def render_brightness(filename, stacks, sel, cmap_name, log_scale,
         data = processed[name]
         df = data["df"]
         st.caption(f"{name} · {data['pix_nm']:.1f} nm/px · {len(df)} spots")
+        # Contrast percentiles are resolved against this image so the sidebar
+        # sliders act on the brightness view the same way they act on previews.
+        vmin, vmax = np.percentile(data["image"], [min_pct, max_pct])
+        if vmin >= vmax:
+            vmax = vmin + 1e-6
         fig = plot_brightness(
             data["image"], df, show_fits=True, normalization=log_scale,
-            pix_size_um=data["pix_nm"] / 1000.0, cmap=_mpl_cmap(cmap_name),
-            interactive=True,
+            pix_size_um=data["pix_nm"] / 1000.0,
+            cmap=get_custom_lut(cmap_name), interactive=True,
+            vmin=float(vmin), vmax=float(vmax),
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -402,12 +416,6 @@ def render_brightness(filename, stacks, sel, cmap_name, log_scale,
             st.warning("No spots detected in the selected images.")
 
 
-def _mpl_cmap(name):
-    """Map our LUT names onto something ``plot_brightness`` understands."""
-    plotly_ok = {"hot", "magma", "viridis", "inferno", "plasma", "gray"}
-    return name if name in plotly_ok else "hot"
-
-
 def _resize_to(img, shape):
     """Nearest-size resample of a 2D image onto ``shape`` (for overlay alignment)."""
     if img.shape == shape:
@@ -431,6 +439,10 @@ def render_overlay(filename, stacks, sel, log_scale):
 
     # Per-channel controls.
     st.markdown("**Channel settings**")
+    hdr = st.columns([2.2, 1.2, 1.0, 1.0, 1.2])
+    for col, label in zip(hdr, ["Channel", "LUT", "Min %", "Max %", "Opacity"]):
+        col.caption(label)
+
     settings = {}
     for i, s in enumerate(chosen):
         cols = st.columns([2.2, 1.2, 1.0, 1.0, 1.2])
@@ -523,10 +535,12 @@ def run():
 
         st.markdown("---")
         st.subheader("Display")
-        cmap_name = st.selectbox("Preview colormap", LUT_OPTIONS, index=7)  # 'hot'
+        cmap_name = st.selectbox("Colormap", LUT_OPTIONS, index=7)  # 'hot'
         log_scale = st.toggle("Log scale", value=False)
         min_pct = st.slider("Min contrast %", 0.0, 100.0, 1.0)
         max_pct = st.slider("Max contrast %", 0.0, 100.0, 99.5)
+        st.caption("Applies to **Preview** and **Brightness**. The **Overlay** "
+                   "tab has its own LUT and contrast per channel.")
 
         st.markdown("---")
         st.subheader("Brightness settings")
@@ -572,8 +586,8 @@ def run():
         # Re-read selection: the preview tab may have just changed it.
         render_brightness(
             active_name, stacks, selected_indices(active_name, stacks),
-            cmap_name, log_scale, threshold_std, min_r2, dwell_us, line_acc,
-            px_override_nm,
+            cmap_name, log_scale, min_pct, max_pct, threshold_std, min_r2,
+            dwell_us, line_acc, px_override_nm,
         )
     with tab_overlay:
         render_overlay(active_name, stacks,

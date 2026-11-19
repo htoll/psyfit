@@ -10,7 +10,8 @@ import plotly.express as px
 from matplotlib.lines import Line2D
 
 from utils import (plot_brightness, plot_histogram, fit_brightness_gmm, HWT_aesthetic,
-                   file_uploader_with_clear, tight_image_layout)
+                   file_uploader_with_clear, tight_image_layout,
+                   particle_peak_values, auto_display_vmax)
 from tools.process_files import process_files
 from tools import roi as roi_tool
 
@@ -426,34 +427,6 @@ def pick_representative_field(processed, mean_count, bins=None, labels=None):
             best_info = {"n": n, "frac": frac, "pooled": pooled,
                          "d_count": d_count, "d_mix": d_mix}
     return best, best_info
-
-
-def particle_peak_values(image, df, half=1):
-    """Peak pixel value (image units, pps) of each fitted particle: the max of the
-    (2·half+1)² window around its fitted center."""
-    if image is None or df is None or df.empty:
-        return np.array([])
-    img = np.asarray(image, dtype=float)
-    h, w = img.shape[:2]
-    ys = np.clip(np.rint(df['y_pix'].to_numpy()).astype(int), 0, h - 1)
-    xs = np.clip(np.rint(df['x_pix'].to_numpy()).astype(int), 0, w - 1)
-    return np.array([img[max(y - half, 0):y + half + 1, max(x - half, 0):x + half + 1].max()
-                     for y, x in zip(ys, xs)])
-
-
-def auto_display_vmax(processed, visible_pct=90.0):
-    """Linear-display ceiling: the `visible_pct` percentile of fitted-particle peak
-    values pooled over every processed file, so that share of particles is drawn
-    within the color range and only the brightest rest saturate (instead of a few
-    very bright multimers compressing everything else toward black). Pooling keeps
-    the scale identical across files. None when no particles were fit."""
-    peaks = [particle_peak_values(d.get("image"), d.get("df"))
-             for d in (processed or {}).values()]
-    peaks = np.concatenate(peaks) if peaks else np.array([])
-    peaks = peaks[np.isfinite(peaks)]
-    if peaks.size == 0:
-        return None
-    return float(np.percentile(peaks, visible_pct))
 
 
 def build_summary_image(image, df, *, pix_size_um, cmap, normalization,

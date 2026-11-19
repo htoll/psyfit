@@ -7,3 +7,6 @@ __pycache__/
 
 # Generated code-review artifacts
 CODE_REVIEW.md
+
+# Self-hosted server state: usage analytics, logs, user prefs. Never commit.
+server/data/
