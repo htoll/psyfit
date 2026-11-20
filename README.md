@@ -17,7 +17,7 @@ get back a figure and a CSV.
 
 | Tool | What it does |
 | --- | --- |
-| Batch Convert | Bulk `.sif` to SVG/TIFF/PNG/JPEG plus a combined table, with optional fit overlays |
+| Batch Convert | Bulk `.sif` to SVG/TIFF/PNG/JPEG plus a combined table, with optional fit overlays; MCL merge mode registers the four quadrant channels and overlays them as a color composite |
 | Process Movie | `.sif` movie to MP4/MOV/TIFF with colormap, log scaling, labels, and a colorbar |
 
 **Brightness and intensity**

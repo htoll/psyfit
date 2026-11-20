@@ -241,6 +241,12 @@ def _fit_circle_lsq(x, y):
     return float(cx), float(cy), r
 
 
+# Minimum sharpness of the field-stop edge (see _edge_step in
+# fit_aperture_circle). On sample data, real apertures score >= ~0.07 and false
+# fits on gradients / particle-dense patches <= ~0.03.
+_MIN_EDGE_STEP = 0.05
+
+
 def fit_aperture_circle(image, pix_size_um=None, min_diameter_um=20.0):
     """
     Fit the circular illuminated aperture (field stop) in a 2D image. Returns
@@ -253,8 +259,11 @@ def fit_aperture_circle(image, pix_size_um=None, min_diameter_um=20.0):
     accurate center/radius for the overlay. `area_px` remains the actual
     illuminated pixel count (the true counting area for concentration).
 
-    Robustness for very bright signal on a flat background (where Otsu can latch
-    onto a single bright particle and fit a tiny circle):
+    Robustness for very bright signal or uneven illumination (where Otsu can
+    latch onto a bright particle or the bright core and fit a tiny circle):
+      - particles are median-filtered out and the threshold sits halfway between
+        the dark surround and the illuminated level; a frame whose step is not
+        well above pixel noise has no visible aperture (returns None);
       - the component containing the ROI center (image center) is preferred over
         the largest one, so the fit is seeded on the aperture, not a stray blob;
       - fits smaller than `min_diameter_um` (needs `pix_size_um`) are rejected
@@ -269,14 +278,26 @@ def fit_aperture_circle(image, pix_size_um=None, min_diameter_um=20.0):
     except Exception:
         return None
 
-    sm = ndimage.gaussian_filter(img, sigma=2)
+    # Median first so bright particles don't pull the threshold up.
+    sm = ndimage.gaussian_filter(ndimage.median_filter(img, size=9), sigma=2)
     finite = sm[np.isfinite(sm)]
     if finite.size == 0 or float(np.ptp(finite)) == 0:
         return None
     try:
-        thr = float(threshold_otsu(sm))
+        otsu = float(threshold_otsu(sm))
     except Exception:
         return None
+
+    # Otsu alone can split a non-uniformly lit aperture (bright core vs dim
+    # rim) and fit a circle half the true size. Instead threshold halfway
+    # between the dark surround and the typical illuminated level, and require
+    # that step to stand well above pixel noise (else no aperture is visible).
+    lo = float(np.percentile(finite, 1))
+    hi = float(np.median(finite[finite > otsu]))
+    noise = 1.4826 * float(np.nanmedian(np.abs(img - ndimage.median_filter(img, size=3))))
+    if hi - lo < 8.0 * noise:
+        return None
+    thr = lo + 0.15 * (hi - lo)
 
     mask = sm > thr
     if mask.sum() < 0.02 * mask.size:  # need a plausibly disk-sized bright region
@@ -302,8 +323,28 @@ def fit_aperture_circle(image, pix_size_um=None, min_diameter_um=20.0):
     if pix_size_um and min_diameter_um:
         min_r_px = (float(min_diameter_um) / 2.0) / float(pix_size_um)
 
+    def _edge_step(res):
+        # Median drop in smoothed intensity across the circle (4 px in vs 4 px
+        # out), over the part of it inside the frame, as a fraction of the
+        # illuminated-to-dark contrast. A field stop is a sharp step; the
+        # contour of a gradient or of a particle-dense patch is not.
+        t = np.linspace(0, 2 * np.pi, 360, endpoint=False)
+        c, s = np.cos(t), np.sin(t)
+        xi, yi = res["cx"] + (res["r"] - 4) * c, res["cy"] + (res["r"] - 4) * s
+        xo, yo = res["cx"] + (res["r"] + 4) * c, res["cy"] + (res["r"] + 4) * s
+        ok = ((xi >= 0) & (xi <= w - 1) & (yi >= 0) & (yi <= h - 1)
+              & (xo >= 0) & (xo <= w - 1) & (yo >= 0) & (yo <= h - 1))
+        if ok.sum() < 20:
+            return 0.0
+        vin = ndimage.map_coordinates(sm, [yi[ok], xi[ok]], order=1)
+        vout = ndimage.map_coordinates(sm, [yo[ok], xo[ok]], order=1)
+        return float(np.median(vin - vout)) / (hi - lo)
+
     def _valid(res):
-        return res is not None and res["r"] >= min_r_px
+        if res is None or res["r"] < min_r_px:
+            return False
+        res["edge"] = _edge_step(res)
+        return res["edge"] >= _MIN_EDGE_STEP
 
     cy0, cx0 = ndimage.center_of_mass(disk)
     fallback = {"cx": float(cx0), "cy": float(cy0),
@@ -404,10 +445,17 @@ def pick_representative_field(processed, mean_count, bins=None, labels=None):
     Returns (name, info) with the per-field numbers for display.
     """
     names = list(processed.keys())
+
+    def _brightness(nm):
+        # A field with no fits has an empty, column-less df.
+        df = processed[nm].get("df")
+        if df is None or "brightness_integrated" not in df:
+            return np.array([])
+        return df["brightness_integrated"].to_numpy()
+
     if bins is not None and labels is not None:
         pooled = category_fractions(
-            np.concatenate([processed[nm]["df"]["brightness_integrated"].to_numpy()
-                            for nm in names]), bins, labels)
+            np.concatenate([_brightness(nm) for nm in names]), bins, labels)
     else:
         pooled = None
 
@@ -418,7 +466,7 @@ def pick_representative_field(processed, mean_count, bins=None, labels=None):
         frac = None
         d_mix = 0.0
         if pooled is not None:
-            frac = category_fractions(processed[nm]["df"]["brightness_integrated"], bins, labels)
+            frac = category_fractions(_brightness(nm), bins, labels)
             # A field with nothing in range can't represent the mix at all.
             d_mix = 0.5 * float(np.abs(frac - pooled).sum()) if frac is not None else 1.0
         score = d_count + d_mix
@@ -1017,6 +1065,7 @@ def run():
                              "files). The brightest remainder saturate; 100% = no clipping.",
                     )
                     vmax_auto = auto_display_vmax(st.session_state.processed[0], vis_pct)
+                    combined_df_empty = st.session_state.processed[1].empty
                     if vmax_auto is not None:
                         if (st.session_state.get("_mono_vmax_auto") != vmax_auto
                                 or "mono_vmax" not in st.session_state):
@@ -1025,8 +1074,11 @@ def run():
                         display_vmax = st.number_input(
                             "Display max (pps)", min_value=0.0, format="%.4g",
                             key="mono_vmax",
-                            help=f"Auto: {vmax_auto:.4g} pps ({vis_pct:.0f}% of particles "
-                                 "in range). Edit to override; resets when data or the "
+                            help=(f"Auto: {vmax_auto:.4g} pps ({vis_pct:.0f}% of particles "
+                                  "in range)" if not combined_df_empty else
+                                  f"Auto: {vmax_auto:.4g} pps (brightest pixel; no "
+                                  "particles fit)")
+                                 + ". Edit to override; resets when data or the "
                                  "percentage change.",
                         )
 

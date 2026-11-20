@@ -477,14 +477,19 @@ def auto_display_vmax(processed, visible_pct=90.0):
     values pooled over every processed file, so that share of particles is drawn
     within the color range and only the brightest rest saturate (instead of a few
     very bright multimers compressing everything else toward black). Pooling keeps
-    the scale identical across files. None when no particles were fit."""
-    peaks = [particle_peak_values(d.get("image"), d.get("df"))
-             for d in (processed or {}).values()]
+    the scale identical across files. With no fitted particles, falls back to the
+    brightest pixel (the plain auto range) so the cap stays editable. None only
+    when there are no images."""
+    data = list((processed or {}).values())
+    peaks = [particle_peak_values(d.get("image"), d.get("df")) for d in data]
     peaks = np.concatenate(peaks) if peaks else np.array([])
     peaks = peaks[np.isfinite(peaks)]
-    if peaks.size == 0:
-        return None
-    return float(np.percentile(peaks, visible_pct))
+    if peaks.size:
+        return float(np.percentile(peaks, visible_pct))
+    maxes = [np.nanmax(d["image"]) for d in data
+             if d.get("image") is not None and np.size(d["image"])]
+    maxes = [m for m in maxes if np.isfinite(m)]
+    return float(max(maxes)) if maxes else None
 
 
 def gaussian(x, amp, mu, sigma):

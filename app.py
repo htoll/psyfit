@@ -156,7 +156,9 @@ TOOLS = {
             "Converts many .sif acquisitions to images and a combined table in one pass. "
             "Splits each frame into quadrants, locates emitters with a peak finder (UCNP) "
             "or a blob detector (dye), and exports SVG, TIFF, PNG, or JPEG with optional "
-            "fit overlays.",
+            "fit overlays. MCL merge mode registers the four quadrant channels onto each "
+            "other (from a registration image, the data, or the aperture outline) and "
+            "overlays the chosen channels as a colorblind-safe composite.",
     },
     "Process Movie": {
         "module": "tools.read_movie",

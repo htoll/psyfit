@@ -15,6 +15,27 @@ def run():
         uploaded_files = file_uploader_with_clear("Upload .sif file", key="batch_convert_uploads", type=["sif"], accept_multiple_files=True)
         if uploaded_files and not isinstance(uploaded_files, list):
             uploaded_files = [uploaded_files]
+        mode = st.radio("Mode", ["Single region", "Merge MCL channels"], horizontal=True,
+                        key="batch_convert_mode",
+                        help="Merge MCL channels splits each frame into its four "
+                             "quadrant channels, registers them onto one another and "
+                             "overlays the ones you pick as a color composite.")
+        if mode == "Merge MCL channels":
+            from tools import mcl_merge
+            settings = mcl_merge.render_inputs()
+
+    if mode == "Merge MCL channels":
+        with col2:
+            if st.button("Merge", key="mcl_merge_btn"):
+                st.session_state.mcl_merge_go = True
+            if st.session_state.get("mcl_merge_go") and uploaded_files:
+                try:
+                    mcl_merge.render_outputs(uploaded_files, settings)
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
+        return
+
+    with col1:
         threshold = st.number_input("Threshold", min_value=0, value=2, help = '''
         Stringency of fit, higher value is more selective:  
         -UCNP signal sets absolute peak cut off  
