@@ -261,9 +261,11 @@ def fit_aperture_circle(image, pix_size_um=None, min_diameter_um=20.0):
 
     Robustness for very bright signal or uneven illumination (where Otsu can
     latch onto a bright particle or the bright core and fit a tiny circle):
-      - particles are median-filtered out and the threshold sits halfway between
-        the dark surround and the illuminated level; a frame whose step is not
-        well above pixel noise has no visible aperture (returns None);
+      - particles are median-filtered out and the threshold sits just above the
+        dark surround (so a dim, unevenly lit rim stays inside); a frame whose
+        dark-to-lit step is not well above pixel noise has no visible aperture;
+      - the fitted circle must cover the ROI center and sit on a sharp
+        intensity step (a field stop), not a gradient or particle-dense patch;
       - the component containing the ROI center (image center) is preferred over
         the largest one, so the fit is seeded on the aperture, not a stray blob;
       - fits smaller than `min_diameter_um` (needs `pix_size_um`) are rejected
@@ -289,9 +291,10 @@ def fit_aperture_circle(image, pix_size_um=None, min_diameter_um=20.0):
         return None
 
     # Otsu alone can split a non-uniformly lit aperture (bright core vs dim
-    # rim) and fit a circle half the true size. Instead threshold halfway
-    # between the dark surround and the typical illuminated level, and require
-    # that step to stand well above pixel noise (else no aperture is visible).
+    # rim) and fit a circle half the true size. Instead threshold just above
+    # the dark surround (15% of the way to the typical illuminated level), and
+    # require that step to stand well above pixel noise (else no aperture is
+    # visible).
     lo = float(np.percentile(finite, 1))
     hi = float(np.median(finite[finite > otsu]))
     noise = 1.4826 * float(np.nanmedian(np.abs(img - ndimage.median_filter(img, size=3))))
@@ -342,6 +345,10 @@ def fit_aperture_circle(image, pix_size_um=None, min_diameter_um=20.0):
 
     def _valid(res):
         if res is None or res["r"] < min_r_px:
+            return False
+        # The field stop always covers the ROI center; a circle that doesn't
+        # is bleed from a neighbouring channel at the crop edge.
+        if np.hypot(res["cx"] - w / 2.0, res["cy"] - h / 2.0) > res["r"]:
             return False
         res["edge"] = _edge_step(res)
         return res["edge"] >= _MIN_EDGE_STEP
