@@ -302,7 +302,7 @@ function App() {
   useEffect(() => {
     if (!viewer || !hostRef.current) return;
     const card = hostRef.current.parentElement.querySelector('.card');
-    viewer.setBottomInset(card ? card.getBoundingClientRect().height + 14 : 0);
+    viewer.setBottomInset(card ? card.getBoundingClientRect().height + 14 : 0, S.sel && S.sel.ids ? S.sel.ids.join(',') : '');
   });
   const file = activeFile();
   return html`<div class=${`app${S.sheet ? ' has-sheet' : ''}`} onDragOver=${(e) => e.preventDefault()} onDrop=${drop}>

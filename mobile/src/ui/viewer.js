@@ -44,9 +44,13 @@ export class Viewer {
     this.edge = 12;               // clearance from the right edge (more beside a notch)
     this.area = { x: 0, y: 0, w: 1, h: 1 };   // the part of the stage the image may occupy
     this.strip = 0;               // width kept free at the right for the colour bar
-    this.inset = 0;               // height kept free at the bottom for an open card
+    this.inset = 0;               // height of the card open at the bottom of the stage
     this.insetWanted = 0;
     this.insetTimer = null;
+    this.insetAt = 0;             // when the card last changed
+    this.movedAt = 0;             // when the user last panned or zoomed
+    this.lift = 0;                // how far the image has been moved up to clear the card
+    this.glide = 0;               // animation frame of that move
     this.cbar = null;             // where the colour bar was last drawn
     this.ramps = new Map();       // LUT -> 1 x 256 canvas
 
@@ -58,9 +62,20 @@ export class Viewer {
     c.addEventListener('pointercancel', this.onUp);
     c.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     c.addEventListener('contextmenu', (e) => e.preventDefault());
-    // A tap here can open a card under the finger. Without this the browser would follow the touch
-    // with a click at the same spot, which would land on that card (and could press its Close).
-    c.addEventListener('touchend', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
+    c.addEventListener('lostpointercapture', this.onUp);
+    // The fingers actually on the image are the truth. A touch can end without the page being told
+    // (the system or the app around the page takes the gesture over); left in our books it would turn
+    // every later one-finger drag into a pinch.
+    const sync = (e) => this.syncTouches(e.targetTouches ? e.targetTouches.length : 0);
+    c.addEventListener('touchstart', sync, { passive: true });
+    c.addEventListener('touchcancel', sync, { passive: true });
+    // A tap here can open a card under the finger. Without preventDefault the browser would follow the
+    // touch with a click at the same spot, which would land on that card (and could press its Close).
+    c.addEventListener('touchend', (e) => { if (e.cancelable) e.preventDefault(); sync(e); }, { passive: false });
+    this.onLeave = () => { if (document.hidden !== false || !document.hasFocus()) this.cancelTouches(); };
+    document.addEventListener('visibilitychange', this.onLeave);
+    window.addEventListener('pagehide', this.onLeave);
+    window.addEventListener('blur', this.onLeave);
     // Stop Safari's own page pinch-zoom from competing with ours.
     for (const t of ['gesturestart', 'gesturechange', 'gestureend']) c.addEventListener(t, (e) => e.preventDefault());
 
@@ -77,7 +92,12 @@ export class Viewer {
     if (this.ro) this.ro.disconnect();
     this.unsub();
     clearTimeout(this.insetTimer);
+    clearTimeout(this.holdTimer);
     cancelAnimationFrame(this.raf);
+    cancelAnimationFrame(this.glide);
+    document.removeEventListener('visibilitychange', this.onLeave);
+    window.removeEventListener('pagehide', this.onLeave);
+    window.removeEventListener('blur', this.onLeave);
     this.canvas.remove();
   }
 
@@ -102,26 +122,109 @@ export class Viewer {
    * is fitted, panned and clipped inside the area, so it never runs under the bar.
    */
   layoutFor(scene) {
-    // An open card (fit details, colour scale) sits at the bottom of the stage: the image stays above it.
-    const h = this.cssH - (this.cssH - this.inset >= 130 ? this.inset : 0);
-    const full = { x: 0, y: 0, w: this.cssW, h };
+    const full = { x: 0, y: 0, w: this.cssW, h: this.cssH };
     if (!scene || !S.display.showColorbar) return { area: full, strip: 0 };
     const strip = this.edge + CBAR_STRIP;
-    if (this.cssW - strip < 120 || h < 80) return { area: full, strip: 0 };
-    return { area: { x: 0, y: 0, w: this.cssW - strip, h }, strip };
+    if (this.cssW - strip < 120 || this.cssH < 80) return { area: full, strip: 0 };
+    return { area: { x: 0, y: 0, w: this.cssW - strip, h: this.cssH }, strip };
   }
 
   /**
-   * Tell the viewer how much of the stage's bottom a card covers. The image
-   * moves a moment later, not at once, so that the second tap of a double-tap
-   * still lands on the spot it was aimed at.
+   * Tell the viewer how much of the stage's bottom a card (fit details,
+   * colour scale) covers. The image then slides up clear of the card as far as
+   * there is room above it, and back when the card goes. Its size never
+   * changes: only two fingers, the fit button or a new layout zoom. The move
+   * waits a moment so that the second tap of a double-tap still lands on the
+   * spot it was aimed at.
    */
-  setBottomInset(px) {
+  setBottomInset(px, selection = '') {
     const want = Math.max(0, Math.round(px));
-    if (want === this.insetWanted) return;
-    this.insetWanted = want;
+    if (want === this.insetWanted && selection === this.insetFor) return;
+    const sameCard = want === this.insetWanted;                 // only what the card is about changed
+    this.insetWanted = want; this.insetFor = selection;
+    if (sameCard && this.movedAt > this.insetAt) return;        // the user has placed the image: leave it there
+    this.insetAt = performance.now();
     clearTimeout(this.insetTimer);
-    this.insetTimer = setTimeout(() => { this.inset = this.insetWanted; this.schedule(); }, want > this.inset ? 380 : 140);
+    this.insetTimer = setTimeout(() => { this.inset = this.insetWanted; this.settleForCard(true); }, want > this.inset || sameCard ? 380 : 140);
+  }
+
+  /**
+   * Vertical extent on screen, with the image at `rest`, of what the open card
+   * is about: the selected fits and, for a Nikon particle, the strip its
+   * spectrum is read from. Null when nothing is selected.
+   */
+  selectionSpan(rest) {
+    if (!S.sel || !S.sel.ids || !this.scene) return null;
+    const dy = rest - this.view.ty;
+    let top = Infinity, bottom = -Infinity;
+    const see = (y) => { if (y + dy < top) top = y + dy; if (y + dy > bottom) bottom = y + dy; };
+    for (const item of this.fits) {
+      if (!S.sel.ids.includes(item.fit.id)) continue;
+      see(this.toScreen(item.X, item.Y)[1]);
+      const L = this.scene.layers[item.layerIndex];
+      const sp = L && !L.inv ? spectrumFor(item.fit) : null;
+      if (sp && sp.status === 'ok' && sp.win.y1 >= L.rect.y && sp.win.y0 <= L.rect.y + L.rect.h - 1) {
+        see(this.toScreen(0, sp.win.y1 - L.rect.y)[1]); see(this.toScreen(0, sp.win.y0 - L.rect.y)[1]);
+      }
+    }
+    return bottom >= top ? [top, bottom] : null;
+  }
+
+  /**
+   * Slide the image clear of the open card, or back. Skipped while a finger is
+   * on the image (it runs when the finger lifts) and once the user has moved
+   * the image themselves since the card changed: the view is theirs then.
+   */
+  settleForCard(animate) {
+    if (!this.scene) return;
+    if (this.fingers().length) { this.settleLater = true; return; }
+    this.settleLater = false;
+    if (this.movedAt > this.insetAt) return;
+    const a = this.area, v = this.view;
+    const rest = v.ty + this.lift;                              // where the image sits without the lift
+    let lift = 0;
+    const free = a.y + a.h - this.inset;                        // bottom of what the card leaves visible
+    if (this.inset && free - a.y >= 100) {
+      // as far as the image has room above it ...
+      lift = Math.min(Math.max(0, rest + this.scene.h * v.z - free), Math.max(0, rest - a.y));
+      // ... and further if what the card is about would still be under it, but never so far that it leaves the top
+      const span = this.selectionSpan(rest);
+      if (span) lift = Math.max(lift, Math.min(span[1] + 22 - free, span[0] - 22 - a.y));
+      lift = Math.max(0, lift);
+    }
+    if (Math.abs(lift - this.lift) < 0.5) return;
+    this.lift = lift;
+    this.glideTo(rest - lift, animate);
+  }
+
+  /** Move the image vertically to `ty`, over a fifth of a second unless told not to. */
+  glideTo(ty, animate) {
+    cancelAnimationFrame(this.glide);
+    const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!animate || reduce) { this.view.ty = ty; this.schedule(); return; }
+    const from = this.view.ty, t0 = performance.now();
+    const step = (now) => {
+      const k = Math.min(1, (now - t0) / 200), e = 1 - (1 - k) * (1 - k);
+      this.view.ty = from + (ty - from) * e;
+      this.draw();
+      this.glide = k < 1 ? requestAnimationFrame(step) : 0;
+    };
+    this.glideEnd = ty;
+    this.glide = requestAnimationFrame(step);
+  }
+
+  /** Finish a glide at once (a finger has come down, or the view is being set). */
+  endGlide() {
+    if (!this.glide) return;
+    cancelAnimationFrame(this.glide);
+    this.glide = 0;
+    this.view.ty = this.glideEnd;
+  }
+
+  /** The user has panned or zoomed: forget the card's lift, so nothing is "put back" later. */
+  userMoved() {
+    this.movedAt = performance.now();
+    this.lift = 0;
   }
 
   /**
@@ -138,6 +241,7 @@ export class Viewer {
     if (this.host.parentElement) this.host.parentElement.style.setProperty('--cbar', `${this.strip}px`);
     if (!this.scene) return;
     if (keep) {
+      this.endGlide();
       const [sx, sy] = this.toScreen(keep[0], keep[1]);
       this.view.tx += this.area.x + this.area.w / 2 - sx; this.view.ty += this.area.y + this.area.h / 2 - sy;
       this.clampView();
@@ -151,8 +255,12 @@ export class Viewer {
 
   applyFit() {
     if (!this.scene) return;
+    this.endGlide();
     const a = this.area, z = this.fitZoom();
     this.view = { z, tx: a.x + (a.w - this.scene.w * z) / 2, ty: a.y + (a.h - this.scene.h * z) / 2 };
+    // A fresh fit is not the user's own placement: let an open card lift it again.
+    this.lift = 0; this.movedAt = 0;
+    if (this.inset) this.settleForCard(false);
   }
 
   fitView() {
@@ -185,6 +293,8 @@ export class Viewer {
 
   zoomAt(sx, sy, factor) {
     if (!this.scene) return;
+    this.endGlide();
+    this.userMoved();
     const v = this.view;
     const ix = (sx - v.tx) / v.z, iy = (sy - v.ty) / v.z;
     v.z *= factor;
@@ -517,7 +627,8 @@ export class Viewer {
     const k = Math.pow(10, Math.floor(Math.log10(target)));
     const um = [5, 2, 1].map((m) => m * k).find((val) => val <= target) || k;
     const len = (um / pix) * z;
-    const x1 = a.x + a.w - (this.strip ? 10 : this.edge + 2), y = a.y + a.h - 16;
+    const covered = this.inset && a.h - this.inset >= 100 ? this.inset : 0;      // keep clear of an open card
+    const x1 = a.x + a.w - (this.strip ? 10 : this.edge + 2), y = a.y + a.h - covered - 16;
     ctx.save();
     ctx.lineCap = 'butt';
     ctx.strokeStyle = 'rgba(8,10,15,0.75)'; ctx.lineWidth = 5;
@@ -567,25 +678,100 @@ export class Viewer {
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
 
+  /** Fingers that count for gestures: every pointer on the image except a resting grip. */
+  fingers() {
+    const out = [];
+    for (const r of this.pointers.values()) if (!r.rest) out.push(r);
+    return out;
+  }
+
+  /**
+   * A finger that has sat still at the side of the stage for a while is a hand
+   * holding the phone, not half of a pinch.
+   */
+  isResting(r, now) {
+    if (r.type === 'mouse') return false;
+    const atSide = r.x0 < 22 || r.x0 > this.cssW - 22 || (this.strip > 0 && r.x0 >= this.cssW - this.strip);
+    return atSide && now - r.t0 > 600 && Math.hypot(r.x - r.x0, r.y - r.y0) <= TAP_SLOP;
+  }
+
+  /** Start the gesture of a single finger: a tap, a hold or a drag, decided as it goes. */
+  beginSingle(r) {
+    clearTimeout(this.holdTimer);
+    // A touch that starts in the colour bar's strip opens its editor if it ends as a tap; a drag still pans.
+    const onBar = this.inColorbar(r.x);
+    this.g = { mode: 'pending', onBar, x0: r.x, y0: r.y, lx: r.x, ly: r.y, t0: performance.now() };
+    if (!onBar) {
+      this.holdTimer = setTimeout(() => {
+        if (this.g && this.g.mode === 'pending') { this.g.mode = 'inspect'; this.inspectAt(this.g.lx, this.g.ly); }
+      }, HOLD_MS);
+    }
+  }
+
+  /** Forget every touch (the page lost focus, or was hidden, mid-gesture). */
+  cancelTouches() {
+    this.pointers.clear();
+    clearTimeout(this.holdTimer);
+    this.g = null;
+    this.clearInspect();
+  }
+
+  /**
+   * Reconcile our pointers with the number of fingers the browser reports on
+   * the image. Any touch we still hold beyond that count ended without a
+   * pointerup or pointercancel; the oldest ones are the ones that are gone.
+   */
+  syncTouches(count) {
+    const held = [];
+    for (const [id, r] of this.pointers) if (r.type !== 'mouse') held.push(id);
+    if (held.length <= count) return;
+    for (const id of held.slice(0, held.length - count)) this.pointers.delete(id);
+    this.regroup();
+  }
+
+  /** Put the gesture in line with the fingers that remain after some were dropped. */
+  regroup() {
+    const f = this.fingers();
+    if (!f.length) {
+      clearTimeout(this.holdTimer);
+      this.g = null;
+      this.clearInspect();
+      this.afterTouch();
+    } else if (f.length === 1 && (!this.g || this.g.mode === 'pinch')) {
+      const r = f[0];
+      // just landed: a fresh single-finger gesture; otherwise it carries on as a drag
+      if (performance.now() - r.t0 < 250) this.beginSingle(r);
+      else this.g = { mode: 'pan', x0: r.x, y0: r.y, lx: r.x, ly: r.y, t0: performance.now() };
+    }
+  }
+
+  /** Every finger is off the image: run what was waiting for that. */
+  afterTouch() {
+    if (this.settleLater) this.settleForCard(true);
+  }
+
   onDown(e) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     try { this.canvas.setPointerCapture(e.pointerId); } catch (err) { /* older WebKit */ }
     // Touching the image finishes any number being typed (and puts the keyboard away).
     const active = document.activeElement;
     if (active && active !== document.body && typeof active.blur === 'function') active.blur();
+    this.endGlide();
+    const now = performance.now();
+    // A primary pointer is the first of its kind in contact: any other of that kind still in our
+    // books ended without telling us.
+    if (e.isPrimary) for (const [id, r] of this.pointers) if (r.type === e.pointerType) this.pointers.delete(id);
+    // A grip resting at the side does not take part in what the new finger does.
+    let rested = false;
+    for (const r of this.pointers.values()) if (!r.rest && this.isResting(r, now)) { r.rest = true; rested = true; }
+    if (rested) { clearTimeout(this.holdTimer); this.g = null; this.clearInspect(); }
     const p = this.pos(e);
-    this.pointers.set(e.pointerId, p);
-    clearTimeout(this.holdTimer);
-    if (this.pointers.size === 1) {
-      // A touch that starts in the colour bar's strip opens its editor if it ends as a tap; a drag still pans.
-      const onBar = this.inColorbar(p.x);
-      this.g = { mode: 'pending', onBar, x0: p.x, y0: p.y, lx: p.x, ly: p.y, t0: performance.now() };
-      if (!onBar) {
-        this.holdTimer = setTimeout(() => {
-          if (this.g && this.g.mode === 'pending') { this.g.mode = 'inspect'; this.inspectAt(this.g.lx, this.g.ly); }
-        }, HOLD_MS);
-      }
-    } else if (this.pointers.size === 2) {
+    const rec = { x: p.x, y: p.y, x0: p.x, y0: p.y, t0: now, type: e.pointerType, rest: false };
+    this.pointers.set(e.pointerId, rec);
+    const n = this.fingers().length;
+    if (n === 1) this.beginSingle(rec);
+    else if (n === 2) {
+      clearTimeout(this.holdTimer);
       this.clearInspect();
       this.startPinch();
     }
@@ -593,7 +779,7 @@ export class Viewer {
   }
 
   startPinch() {
-    const [a, b] = Array.from(this.pointers.values());
+    const [a, b] = this.fingers();
     this.g = {
       mode: 'pinch', d0: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)),
       mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, view0: { ...this.view },
@@ -601,17 +787,21 @@ export class Viewer {
   }
 
   onMove(e) {
-    if (!this.pointers.has(e.pointerId)) return;
+    const rec = this.pointers.get(e.pointerId);
+    if (!rec) return;
     const p = this.pos(e);
-    this.pointers.set(e.pointerId, p);
+    rec.x = p.x; rec.y = p.y;
     const g = this.g;
-    if (!g || !this.scene) return;
-    if (g.mode === 'pinch' && this.pointers.size >= 2) {
-      const [a, b] = Array.from(this.pointers.values());
+    if (rec.rest || !g || !this.scene) return;
+    const f = this.fingers();
+    if (g.mode === 'pinch') {
+      if (f.length < 2) return;
+      const [a, b] = f;
       const d = Math.max(10, Math.hypot(a.x - b.x, a.y - b.y));
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
       const v0 = g.view0;
       const ix = (g.mx - v0.tx) / v0.z, iy = (g.my - v0.ty) / v0.z;
+      this.userMoved();
       this.view.z = v0.z * (d / g.d0);
       this.clampView();
       this.view.tx = mx - ix * this.view.z; this.view.ty = my - iy * this.view.z;
@@ -624,6 +814,7 @@ export class Viewer {
       clearTimeout(this.holdTimer);
     }
     if (g.mode === 'pan') {
+      this.userMoved();
       this.view.tx += p.x - g.lx; this.view.ty += p.y - g.ly;
       this.clampView();
       this.schedule();
@@ -634,24 +825,27 @@ export class Viewer {
   }
 
   onUp(e) {
-    if (!this.pointers.has(e.pointerId)) return;
-    const p = this.pointers.get(e.pointerId);
+    const rec = this.pointers.get(e.pointerId);
+    if (!rec) return;
     this.pointers.delete(e.pointerId);
+    if (rec.rest) { if (!this.pointers.size) this.afterTouch(); return; }
     clearTimeout(this.holdTimer);
     const g = this.g;
-    if (!g) return;
+    const f = this.fingers();
+    if (!g) { if (!f.length) this.afterTouch(); return; }
     if (g.mode === 'pinch') {
-      if (this.pointers.size === 1) {
-        const q = Array.from(this.pointers.values())[0];
+      if (f.length === 1) {
+        const q = f[0];
         this.g = { mode: 'pan', x0: q.x, y0: q.y, lx: q.x, ly: q.y, t0: performance.now() };
-      } else if (this.pointers.size === 0) this.g = null;
+      } else if (!f.length) { this.g = null; this.afterTouch(); }
       return;
     }
     this.g = null;
-    if (g.mode === 'inspect') { this.clearInspect(); return; }
-    if (g.mode === 'pending' && e.type === 'pointerup' && this.scene) {
-      if (g.onBar) { this.lastTap = null; setScaleEditor(!S.scale); } else this.onTap(p.x, p.y);
+    if (g.mode === 'inspect') this.clearInspect();
+    else if (g.mode === 'pending' && e.type === 'pointerup' && this.scene) {
+      if (g.onBar) { this.lastTap = null; setScaleEditor(!S.scale); } else this.onTap(rec.x, rec.y);
     }
+    if (!this.fingers().length) this.afterTouch();
   }
 
   onWheel(e) {
