@@ -390,21 +390,10 @@ def warp_to_reference(img, m, shape):
 # ---------------------------------------------------------------------------
 # Display
 # ---------------------------------------------------------------------------
-def flatten_background(img):
-    """Subtract a smooth background (median at 1/4 scale), so particles sit on black."""
-    filled = np.where(np.isfinite(img), img, np.nanmedian(img))
-    small = ndimage.median_filter(filled[::4, ::4], size=7)
-    bg = ndimage.zoom(small, (img.shape[0] / small.shape[0], img.shape[1] / small.shape[1]),
-                      order=1)
-    out = filled - bg[:img.shape[0], :img.shape[1]]
-    out[~np.isfinite(img)] = np.nan
-    return out
-
-
 def display_limits(imgs, saturate_pct, black_sigma=2.0):
-    """(black, white) for a channel: black `black_sigma` robust noise sigmas above
-    the median background (so noise speckle drops out), white so `saturate_pct` %
-    of pixels clip. Pooled over `imgs` for shared scaling."""
+    """Default (vmin, vmax) in raw pps for a channel: vmin `black_sigma` robust
+    noise sigmas above the median background (so noise speckle drops to black),
+    vmax so `saturate_pct` % of pixels clip. Pooled over `imgs`."""
     vals = np.concatenate([np.asarray(i)[np.isfinite(i)].ravel() for i in imgs])
     if vals.size == 0:
         return 0.0, 1.0
@@ -445,13 +434,42 @@ def _add_scalebar(ax, shape, pix_um, length_um):
             ha="center", va="bottom", fontsize=8)
 
 
-def merge_grid_figure(items, colors, pix_um=None, scalebar_um=None, ncols=4):
-    """Grid of composites; `items` is a list of (title, rgb). Channel legend on top."""
+def _channel_colorbar(fig, cax, ch, color, lo, hi, gamma, unit):
+    """Vertical black -> `color` bar mapping values exactly as composite() does."""
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import LinearSegmentedColormap, PowerNorm
+    from matplotlib.ticker import EngFormatter, MaxNLocator
+    cmap = LinearSegmentedColormap.from_list(ch, ["black", color])
+    cb = fig.colorbar(ScalarMappable(PowerNorm(gamma, vmin=lo, vmax=hi), cmap), cax=cax,
+                      orientation="vertical")
+    cb.locator = MaxNLocator(4)
+    cb.formatter = EngFormatter(sep="")  # 1.5k, 2M: no offset text to collide
+    cb.update_ticks()
+    cb.set_label(f"{ch} ({unit})", color=color, fontsize=7, labelpad=2)
+    cb.outline.set_edgecolor("white")
+    cax.tick_params(colors="white", labelsize=6, length=2, pad=1)
+
+
+# Panel geometry (inches): image width, and the strip each colorbar takes
+# beside it (bar + tick labels + rotated label).
+_PANEL_W, _BAR_STRIP_W, _BAR_W = 3.6, 0.62, 0.11
+
+
+def merge_grid_figure(items, colors, pix_um=None, scalebar_um=None, ncols=4,
+                      limits=None, gamma=1.0, unit="pps"):
+    """
+    Grid of composites; `items` is a list of (title, rgb). With `limits`
+    ({channel: (black, vmax)}, shared by every panel) each panel gets one
+    vertical colorbar per channel beside it; otherwise a channel legend sits on
+    top.
+    """
     n = len(items)
     ncols = min(ncols, max(1, n))
     nrows = int(np.ceil(n / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3.6 * ncols, 4.1 * nrows + 0.5),
-                             squeeze=False, facecolor="black")
+    strip = _BAR_STRIP_W * len(colors) if limits else 0.0
+    legend_h = 0.0 if limits else 0.5
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False, facecolor="black",
+                             figsize=((_PANEL_W + strip) * ncols, 4.1 * nrows + legend_h))
     for ax in axes.flat:
         ax.axis("off")
     for ax, (title, rgb) in zip(axes.flat, items):
@@ -459,12 +477,23 @@ def merge_grid_figure(items, colors, pix_um=None, scalebar_um=None, ncols=4):
         ax.set_title("\n".join(textwrap.wrap(title, 32)), color="white", fontsize=8)
         if pix_um and scalebar_um:
             _add_scalebar(ax, rgb.shape[:2], pix_um, scalebar_um)
-    handles = [plt.Line2D([], [], color=c, lw=6) for c in colors.values()]
-    leg = fig.legend(handles, list(colors), loc="upper center", ncol=len(colors),
-                     frameon=False, fontsize=10, bbox_to_anchor=(0.5, 1.0))
-    for t, c in zip(leg.get_texts(), colors.values()):
-        t.set_color(c)
-    fig.tight_layout(rect=(0, 0, 1, 1 - 0.5 / (4.1 * nrows + 0.5)))
+        if limits:
+            # Bars live in the image's own axes coordinates, so they always span
+            # exactly the image height; the image is pinned left of its cell to
+            # leave the strip on the right for them.
+            ax.set_anchor("W")
+            for j, (ch, col) in enumerate(colors.items()):
+                x = 1 + (0.06 + j * _BAR_STRIP_W) / _PANEL_W
+                lo, hi = limits[ch]
+                _channel_colorbar(fig, ax.inset_axes([x, 0, _BAR_W / _PANEL_W, 1]),
+                                  ch, col, lo, hi, gamma, unit)
+    if not limits:
+        handles = [plt.Line2D([], [], color=c, lw=6) for c in colors.values()]
+        leg = fig.legend(handles, list(colors), loc="upper center", ncol=len(colors),
+                         frameon=False, fontsize=10, bbox_to_anchor=(0.5, 1.0))
+        for t, c in zip(leg.get_texts(), colors.values()):
+            t.set_color(c)
+    fig.tight_layout(rect=(0, 0, 1, 1 - legend_h / (4.1 * nrows + legend_h)))
     return fig
 
 
@@ -550,32 +579,53 @@ def render_inputs():
                 # Keyed on the palette so switching palette resets the pickers.
                 custom[ch] = col.color_picker(ch, base[ch], key=f"mcl_color_{s['palette']}_{ch}")
         s["colors"] = channel_colors(s["palette"], s["channels"], custom)
-        s["flatten"] = st.checkbox("Flatten background", value=True, key="mcl_flatten",
-                                   help="Subtract the smooth illumination/aperture profile "
-                                        "so particles sit on black. Display only; the "
-                                        "exported TIFF stack keeps raw values.")
-        s["saturate_pct"] = st.slider("Saturated pixels (%)", 0.01, 2.0, 0.2, 0.01,
+        s["saturate_pct"] = st.slider("Auto vmax: saturated pixels (%)", 0.01, 2.0, 0.2, 0.01,
                                       key="mcl_saturate",
-                                      help="Share of the brightest pixels per channel "
+                                      help="Sets each channel's default vmax: the share of "
+                                           "its brightest pixels (over the whole batch) "
                                            "drawn at full color. Higher = dim particles "
-                                           "more visible.")
-        s["black_sigma"] = st.slider("Black level (noise σ)", 0.0, 5.0, 2.0, 0.5,
-                                     key="mcl_black",
-                                     help="Background is drawn black up to this many noise "
-                                          "standard deviations above it. Raise to hide "
-                                          "speckle, lower to keep faint signal.")
-        s["gamma"] = st.slider("Gamma", 0.3, 1.5, 0.7, 0.05, key="mcl_gamma",
-                               help="Below 1 lifts dim particles relative to bright ones.")
-        s["shared_scaling"] = st.checkbox("Same contrast for every file", value=False,
-                                          key="mcl_shared",
-                                          help="Pool display limits over the batch so "
-                                               "brightness is comparable across files.")
+                                           "more visible. Changing it refits every vmax to "
+                                           "the current batch; edit them per channel above "
+                                           "the merged images.")
+        s["gamma"] = st.slider("Gamma", 0.3, 1.5, 1.0, 0.05, key="mcl_gamma",
+                               help="1 = linear between vmin and vmax. Below 1 lifts dim "
+                                    "particles (and background noise) relative to bright "
+                                    "ones.")
         sb1, sb2 = st.columns(2)
         s["pix_um"] = sb1.number_input("Pixel size (µm)", value=MCL_PIX_UM, format="%.4f",
                                        key="mcl_pix")
         s["scalebar_um"] = sb2.number_input("Scale bar (µm, 0 = off)", value=5.0,
                                             min_value=0.0, step=1.0, key="mcl_scalebar")
     return s
+
+
+# vmin/vmax per channel, kept for the whole session so every batch is drawn on
+# the same scale. Held under a plain key: Streamlit drops a widget's own state on
+# any run where the widget isn't drawn (e.g. while no files are uploaded).
+_LIMITS_STORE = "mcl_display_limits"
+
+
+def _cached_limit(container, key, auto, label, help, reseed=False):
+    """number_input whose value survives new uploads. Seeded from `auto` only
+    the first time `key` is seen or when `reseed` is set."""
+    store = st.session_state.setdefault(_LIMITS_STORE, {})
+    if key in st.session_state:          # widget alive: pick up any edit
+        store[key] = st.session_state[key]
+    if reseed or key not in store:
+        store[key] = auto
+    st.session_state[key] = store[key]
+    value = container.number_input(label, min_value=0.0, format="%.4g", key=key,
+                                   help=help + " Kept when you upload new files, so "
+                                               "batches stay comparable; use Reset to "
+                                               "auto to fit the current batch.")
+    store[key] = value
+    return value
+
+
+def _reset_limits():
+    st.session_state.pop(_LIMITS_STORE, None)
+    for k in [k for k in st.session_state if k.startswith(("mcl_vmin_", "mcl_vmax_"))]:
+        del st.session_state[k]
 
 
 def _split_upload(f):
@@ -651,21 +701,38 @@ def render_outputs(uploaded_files, s):
     registered = {name: {ch: warp_to_reference(d[ch], file_mats[name][ch], shape)
                          for ch in channels}
                   for name, d in data.items()}
-    shown = {name: ({ch: flatten_background(im) for ch, im in r.items()} if s["flatten"] else r)
-             for name, r in registered.items()}
-
-    if s["shared_scaling"]:
-        pooled = {ch: display_limits([v[ch] for v in shown.values()], s["saturate_pct"],
-                                 s["black_sigma"])
-                  for ch in channels}
-    merges = []
-    for name, chans in shown.items():
-        lim = pooled if s["shared_scaling"] else {
-            ch: display_limits([chans[ch]], s["saturate_pct"], s["black_sigma"])
+    # One display range per channel in raw pps, shared by every file, so each
+    # channel's colorbar holds for every panel.
+    unit = "pps"
+    auto = {ch: display_limits([v[ch] for v in registered.values()], s["saturate_pct"])
             for ch in channels}
-        merges.append((name, composite(chans, s["colors"], lim, s["gamma"])))
+    # Changing the auto-vmax % is an explicit request for new auto vmax values.
+    pct_changed = st.session_state.get("_mcl_auto_pct", s["saturate_pct"]) != s["saturate_pct"]
+    st.session_state["_mcl_auto_pct"] = s["saturate_pct"]
+    st.button("Reset vmin/vmax to auto", key="mcl_reset_limits", on_click=_reset_limits,
+              help="Refit every channel's vmin and vmax to the files uploaded now. "
+                   "Otherwise they are kept across uploads so batches share a scale.")
+    limits = {}
+    for col, ch in zip(st.columns(len(channels)), channels):
+        lo_auto, hi_auto = auto[ch]
+        vmin = _cached_limit(col, f"mcl_vmin_{ch}", lo_auto, f"{ch} vmin ({unit})",
+                             f"Drawn black at or below this. Auto: the background median "
+                             f"+ 2 noise σ ({lo_auto:.4g} for this batch), which hides "
+                             f"camera noise speckle; raise it to hide more.")
+        vmax = _cached_limit(col, f"mcl_vmax_{ch}", hi_auto, f"{ch} vmax ({unit})",
+                             f"Drawn at full color at or above this. Auto: the value "
+                             f"saturating {s['saturate_pct']:g}% of {ch} pixels "
+                             f"({hi_auto:.4g} for this batch).", reseed=pct_changed)
+        if vmax <= vmin:
+            col.caption("vmax must exceed vmin; using vmin + 1.")
+            vmax = vmin + 1.0
+        limits[ch] = (float(vmin), float(vmax))
 
-    fig = merge_grid_figure(merges, s["colors"], s["pix_um"], s["scalebar_um"])
+    merges = [(name, composite(chans, s["colors"], limits, s["gamma"]))
+              for name, chans in registered.items()]
+
+    fig = merge_grid_figure(merges, s["colors"], s["pix_um"], s["scalebar_um"],
+                            limits=limits, gamma=s["gamma"], unit=unit)
     st.pyplot(fig)
 
     fmt = s["export_format"].lower()
@@ -676,7 +743,7 @@ def render_outputs(uploaded_files, s):
     plt.close(fig)
     d2.download_button("Download per-file images + registered stacks (ZIP)",
                        _build_zip(merges, registered, regs, file_mats, s, reference,
-                                  reg_label),
+                                  reg_label, limits, unit),
                        file_name=f"mcl_merge_{today}.zip", mime="application/zip")
 
     with st.expander("Registration details", expanded=bool(unaligned)):
@@ -692,11 +759,7 @@ def _render_before_after(split, regs, channels, reference, shape, s):
     """Before/after composite of the registration source, the visual check."""
     before = {ch: split[ch] for ch in channels}
     after = {ch: warp_to_reference(split[ch], regs[ch].matrix, shape) for ch in channels}
-    if s["flatten"]:
-        before = {ch: flatten_background(v) for ch, v in before.items()}
-        after = {ch: flatten_background(v) for ch, v in after.items()}
-    lim = {ch: display_limits([before[ch]], s["saturate_pct"], s["black_sigma"])
-           for ch in channels}
+    lim = {ch: display_limits([before[ch]], s["saturate_pct"]) for ch in channels}
     fig = merge_grid_figure([("Before registration", composite(before, s["colors"], lim, s["gamma"])),
                              ("After registration", composite(after, s["colors"], lim, s["gamma"]))],
                             s["colors"], ncols=2)
@@ -704,7 +767,7 @@ def _render_before_after(split, regs, channels, reference, shape, s):
     plt.close(fig)
 
 
-def _build_zip(merges, registered, regs, file_mats, s, reference, reg_label):
+def _build_zip(merges, registered, regs, file_mats, s, reference, reg_label, limits, unit):
     import tifffile
     channels = list(s["channels"])
     buf = io.BytesIO()
@@ -733,6 +796,9 @@ def _build_zip(merges, registered, regs, file_mats, s, reference, reg_label):
                               "matrix": np.asarray(r.matrix).tolist(),
                               "color": s["colors"].get(ch)}
                          for ch, r in regs.items()},
+            "display": {"unit": unit, "gamma": s["gamma"],
+                        "channels": {ch: {"vmin": lo, "vmax": hi}
+                                     for ch, (lo, hi) in limits.items()}},
             "per_file_matrices": {name: {ch: np.asarray(m).tolist() for ch, m in mats.items()}
                                   for name, mats in file_mats.items()},
         }
