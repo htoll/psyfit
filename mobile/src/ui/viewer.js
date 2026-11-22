@@ -1,7 +1,7 @@
 // The image canvas: draws the composed scene plus vector overlays (fits, tracks,
-// scale bar, colour bar), and turns touches into pan / pinch-zoom / tap-select /
-// double-tap-fit / press-and-hold pixel read-out. A tap on the colour bar opens
-// the editor for its min and max.
+// scale bar), with the colour bar in its own strip beside the image, and turns
+// touches into pan / pinch-zoom / tap-select / double-tap-fit / press-and-hold
+// pixel read-out. A tap on the colour bar opens the editor for its min and max.
 
 import { composeScene, hueCss, makeNorm } from '../core/render.js';
 import { applyAffine } from '../core/geometry.js';
@@ -15,6 +15,8 @@ import { THEME, fmtBrightness } from './theme.js';
 import { niceTicks, fmtAxis } from './plots.js';
 
 const TAP_SLOP = 9, DOUBLE_MS = 330, DOUBLE_DIST = 30, HOLD_MS = 420;
+/** Width of the colour bar's strip, not counting the page gutter: ramp, tick marks and labels. */
+const CBAR_STRIP = 50;
 
 export class Viewer {
   constructor(host) {
@@ -39,9 +41,11 @@ export class Viewer {
     this.holdTimer = null;
     this.raf = 0;
     this.needCompose = true;
-    this.edge = 12; this.edgeL = 12;   // clearance from the right and left edges (more beside a notch)
+    this.edge = 12;               // clearance from the right edge (more beside a notch)
+    this.area = { x: 0, y: 0, w: 1, h: 1 };   // the part of the stage the image may occupy
+    this.strip = 0;               // width kept free at the right for the colour bar
     this.cbar = null;             // where the colour bar was last drawn
-    this.ramps = new Map();       // LUT -> its strips as small canvases
+    this.ramps = new Map();       // LUT -> 1 x 256 canvas
 
     this.onDown = this.onDown.bind(this); this.onMove = this.onMove.bind(this); this.onUp = this.onUp.bind(this);
     const c = this.canvas;
@@ -79,34 +83,61 @@ export class Viewer {
     const r = this.host.getBoundingClientRect();
     const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
     const dpr = Math.min(3, window.devicePixelRatio || 1);
-    const first = this.cssW <= 1;
-    this.edge = Math.max(12, sideGutter(this.host, 'r') - 4);
-    this.edgeL = Math.max(12, sideGutter(this.host, 'l') - 4);
+    this.edge = Math.max(12, sideGutter(this.host) - 4);
     if (w === this.cssW && h === this.cssH && dpr === this.dpr) return;
-    const cx = this.cssW / 2, cy = this.cssH / 2;
-    // A view showing the whole image keeps showing it; a zoomed view keeps its centre.
-    const keep = this.scene && !first && !this.isFitted() ? this.toScene(cx, cy) : null;
     this.cssW = w; this.cssH = h; this.dpr = dpr;
     this.canvas.width = Math.round(w * dpr); this.canvas.height = Math.round(h * dpr);
     this.canvas.style.width = `${w}px`; this.canvas.style.height = `${h}px`;
-    if (keep && this.scene) {
-      // keep the same image point in the middle of the canvas
-      const [sx, sy] = this.toScreen(keep[0], keep[1]);
-      this.view.tx += w / 2 - sx; this.view.ty += h / 2 - sy;
-      this.clampView();
-    } else if (this.scene) this.fitView();
+    this.relayout();
     this.schedule();
+  }
+
+  /**
+   * How the stage divides: the area the image lives in and, when the colour
+   * bar is on, a strip to its right that belongs to the bar alone. The image
+   * is fitted, panned and clipped inside the area, so it never runs under the bar.
+   */
+  layoutFor(scene) {
+    const full = { x: 0, y: 0, w: this.cssW, h: this.cssH };
+    if (!scene || !S.display.showColorbar) return { area: full, strip: 0 };
+    const strip = this.edge + CBAR_STRIP;
+    if (this.cssW - strip < 120 || this.cssH < 80) return { area: full, strip: 0 };
+    return { area: { x: 0, y: 0, w: this.cssW - strip, h: this.cssH }, strip };
+  }
+
+  /**
+   * Apply the current division of the stage. A view that showed the whole
+   * image still shows it afterwards; a zoomed view keeps its centre.
+   */
+  relayout() {
+    const next = this.layoutFor(this.scene);
+    const old = this.area;
+    if (old.w === next.area.w && old.h === next.area.h && this.strip === next.strip) return;
+    const keep = this.scene && !this.isFitted() ? this.toScene(old.x + old.w / 2, old.y + old.h / 2) : null;
+    this.area = next.area; this.strip = next.strip;
+    // Notices and cards over the stage keep out of the strip too (see --cbar in app.css).
+    if (this.host.parentElement) this.host.parentElement.style.setProperty('--cbar', `${this.strip}px`);
+    if (!this.scene) return;
+    if (keep) {
+      const [sx, sy] = this.toScreen(keep[0], keep[1]);
+      this.view.tx += this.area.x + this.area.w / 2 - sx; this.view.ty += this.area.y + this.area.h / 2 - sy;
+      this.clampView();
+    } else this.applyFit();
   }
 
   fitZoom() {
     if (!this.scene) return 1;
-    return Math.min(this.cssW / this.scene.w, this.cssH / this.scene.h) * 0.985;
+    return Math.min(this.area.w / this.scene.w, this.area.h / this.scene.h) * 0.985;
+  }
+
+  applyFit() {
+    if (!this.scene) return;
+    const a = this.area, z = this.fitZoom();
+    this.view = { z, tx: a.x + (a.w - this.scene.w * z) / 2, ty: a.y + (a.h - this.scene.h * z) / 2 };
   }
 
   fitView() {
-    if (!this.scene) return;
-    const z = this.fitZoom();
-    this.view = { z, tx: (this.cssW - this.scene.w * z) / 2, ty: (this.cssH - this.scene.h * z) / 2 };
+    this.applyFit();
     this.schedule();
   }
 
@@ -126,11 +157,11 @@ export class Viewer {
 
   clampView() {
     if (!this.scene) return;
-    const v = this.view, fit = this.fitZoom();
+    const v = this.view, a = this.area, fit = this.fitZoom();
     v.z = Math.min(Math.max(v.z, fit * 0.5), Math.max(64, fit * 4));
     const w = this.scene.w * v.z, h = this.scene.h * v.z, m = 48;
-    v.tx = Math.min(this.cssW - m, Math.max(m - w, v.tx));
-    v.ty = Math.min(this.cssH - m, Math.max(m - h, v.ty));
+    v.tx = Math.min(a.x + a.w - m, Math.max(a.x + m - w, v.tx));
+    v.ty = Math.min(a.y + a.h - m, Math.max(a.y + m - h, v.ty));
   }
 
   zoomAt(sx, sy, factor) {
@@ -144,7 +175,7 @@ export class Viewer {
     this.schedule();
   }
 
-  zoomBy(factor) { this.zoomAt(this.cssW / 2, this.cssH / 2, factor); }
+  zoomBy(factor) { this.zoomAt(this.area.x + this.area.w / 2, this.area.y + this.area.h / 2, factor); }
 
   // ---- drawing --------------------------------------------------------------
 
@@ -166,18 +197,22 @@ export class Viewer {
     }
     composeScene(scene, this.image.data);
     this.bufCtx.putImageData(this.image, 0, 0);
-    if (prevId !== this.sceneId) this.fitView();
+    if (prevId !== this.sceneId) this.applyFit();
   }
 
   draw() {
     if (this.needCompose) this.compose();
+    this.relayout();          // the colour bar's strip comes and goes with the scene and its setting
     const ctx = this.ctx, dpr = this.dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = THEME.canvas;
     ctx.fillRect(0, 0, this.cssW, this.cssH);
     const scene = this.scene;
+    this.cbar = null;
     if (!scene) return;
-    const v = this.view;
+    const v = this.view, a = this.area;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(a.x, a.y, a.w, a.h); ctx.clip();
     ctx.imageSmoothingEnabled = v.z * dpr < 1;
     ctx.drawImage(this.buf, v.tx, v.ty, scene.w * v.z, scene.h * v.z);
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
@@ -186,126 +221,89 @@ export class Viewer {
     this.fits = S.display.showFits ? sceneFits(scene) : [];
     this.drawFits(ctx, scene);
     if (S.display.showScaleBar) this.drawScaleBar(ctx, scene);
-    this.cbar = S.display.showColorbar ? this.colorbarBox(scene) : null;
-    if (this.cbar) this.drawColorbar(ctx, scene, this.cbar);
+    ctx.restore();
+    if (this.strip) {
+      this.cbar = this.colorbarBox(scene);
+      if (this.cbar) this.drawColorbar(ctx, scene, this.cbar);
+    }
     if (S.inspect) this.drawInspect(ctx);
   }
 
   // ---- colour bar -------------------------------------------------------------
 
   /**
-   * Where the colour bar goes, in CSS pixels: one strip per layer, placed where
-   * the fitted image leaves the stage empty. A frame limited by the stage's
-   * width leaves room above it, so the bar runs across the top; one limited by
-   * the height leaves room beside it, so the bar runs down the right-hand side.
-   * Null when the stage is too small for a bar.
+   * The colour bar inside its strip, in CSS pixels: one vertical ramp per
+   * layer, as tall as the part of the image in view (like the colour bar of a
+   * figure). Null when the strip is too short for one.
    */
   colorbarBox(scene) {
-    const n = scene.layers.length;
-    const horizontal = this.cssW / scene.w <= this.cssH / scene.h;
-    const thick = n > 1 ? (horizontal ? 5 : 7) : 10, gap = n > 1 && horizontal ? 2 : 3;
+    const a = this.area, v = this.view, n = scene.layers.length;
+    const thick = n > 1 ? 7 : 10, gap = 3;
     const span = n * thick + (n - 1) * gap;
-    if (horizontal) {
-      // Overlay strips leave room at the right for the unit, which sits beside them.
-      const x = this.edgeL, len = this.cssW - this.edgeL - this.edge - (n > 1 ? 30 : 0);
-      if (len < 120 || this.cssH < 90) return null;
-      return { horizontal, x, y: 12, len, thick, gap, span, n };
+    const top = a.y + 26, bottom = a.y + a.h - 10;           // room above for the unit
+    let y = Math.max(top, v.ty), end = Math.min(bottom, v.ty + scene.h * v.z);
+    if (end - y < 72) {                                      // little of the image in view: centre a short bar
+      const len = Math.min(200, bottom - top);
+      y = top + (bottom - top - len) / 2; end = y + len;
     }
-    const y = 30, len = Math.min(200, this.cssH - y - 44);      // stays clear of the scale bar
-    if (len < 36) return null;
-    return { horizontal, x: this.cssW - this.edge - span, y, len, thick, gap, span, n };
+    if (end - y < 36) return null;
+    return { x: this.cssW - this.edge - span, y, len: end - y, thick, gap, span, n };
   }
 
-  /** True when a touch at (sx, sy) is on the colour bar or its labels. */
-  inColorbar(sx, sy) {
-    const b = this.cbar;
-    if (!b) return false;
-    if (b.horizontal) return sy <= b.y + b.span + (b.n > 1 ? 8 : 26);
-    return sx >= b.x - 40 && sy >= b.y - 24 && sy <= b.y + b.len + 12;
+  /** True when a touch at (sx, sy) is in the colour bar's strip. */
+  inColorbar(sx) {
+    return this.strip > 0 && sx >= this.cssW - this.strip;
   }
 
-  /** A LUT as a 256-pixel strip, brightest last (horizontal) or first (vertical). */
-  ramp(lut, horizontal) {
-    const key = horizontal ? 'h' : 'v';
-    let pair = this.ramps.get(lut);
-    if (!pair) { pair = {}; this.ramps.set(lut, pair); }
-    if (!pair[key]) {
-      const c = document.createElement('canvas');
-      c.width = horizontal ? 256 : 1; c.height = horizontal ? 1 : 256;
-      const g = c.getContext('2d'), img = g.createImageData(c.width, c.height);
+  /** A LUT as a 1 x 256 strip, brightest at the top. */
+  ramp(lut) {
+    let c = this.ramps.get(lut);
+    if (!c) {
+      c = document.createElement('canvas');
+      c.width = 1; c.height = 256;
+      const g = c.getContext('2d'), img = g.createImageData(1, 256);
       for (let i = 0; i < 256; i++) {
-        const k = (horizontal ? i : 255 - i) * 3;
+        const k = (255 - i) * 3;
         img.data[i * 4] = lut[k]; img.data[i * 4 + 1] = lut[k + 1]; img.data[i * 4 + 2] = lut[k + 2]; img.data[i * 4 + 3] = 255;
       }
       g.putImageData(img, 0, 0);
-      pair[key] = c;
+      this.ramps.set(lut, c);
     }
-    return pair[key];
+    return c;
   }
 
   /**
-   * Colour scale in pps. One image: a strip labelled with its min, its max and
-   * round values between them. An overlay: one strip per layer in the layer's
+   * Colour scale in pps. One image: a ramp labelled with its min, its max and
+   * round values between them. An overlay: one ramp per layer in the layer's
    * colour, without numbers (the editor that a tap opens lists each range).
    */
   drawColorbar(ctx, scene, b) {
     ctx.save();
     ctx.imageSmoothingEnabled = true;
     scene.layers.forEach((L, i) => {
-      const off = i * (b.thick + b.gap);
-      const x = b.horizontal ? b.x : b.x + off, y = b.horizontal ? b.y + off : b.y;
-      const w = b.horizontal ? b.len : b.thick, h = b.horizontal ? b.thick : b.len;
-      ctx.drawImage(this.ramp(L.lut, b.horizontal), x, y, w, h);
+      const x = b.x + i * (b.thick + b.gap);
+      ctx.drawImage(this.ramp(L.lut), x, b.y, b.thick, b.len);
       ctx.lineWidth = 1;
       ctx.strokeStyle = S.scale ? THEME.accent : 'rgba(255,255,255,0.6)';
-      ctx.strokeRect(x - 0.5, y - 0.5, w + 1, h + 1);
+      ctx.strokeRect(x - 0.5, b.y - 0.5, b.thick + 1, b.len + 1);
     });
-    const text = (str, x, y) => {
-      ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(8,10,15,0.8)';
-      ctx.strokeText(str, x, y);
-      ctx.fillStyle = '#ffffff'; ctx.fillText(str, x, y);
-    };
-    const tick = (x0, y0, x1, y1) => {
-      ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-    };
-    const unit = S.display.log ? 'pps, log' : 'pps';
+    ctx.fillStyle = THEME.ink;
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
     ctx.font = `600 10.5px ${THEME.mono}`;
-    ctx.textBaseline = 'middle';
-    const single = scene.layers.length === 1 ? scene.layers[0] : null;
-    const norm = single ? makeNorm(single.lo, single.hi, single.log) : null;
-    const inner = single ? scaleTicks(single.lo, single.hi, single.log, b.len) : [];
-    if (b.horizontal) {
-      const ty = b.y + b.span + 13, x1 = b.x + b.len;
-      if (!single) { ctx.textAlign = 'left'; text('pps', x1 + 7, b.y + b.span / 2); ctx.restore(); return; }
-      const loText = fmtAxis(single.lo), hiText = `${fmtAxis(single.hi)} ${unit}`;
-      ctx.textAlign = 'left'; text(loText, b.x, ty);
-      ctx.textAlign = 'right'; text(hiText, x1, ty);
-      tick(b.x + 0.5, b.y + b.span, b.x + 0.5, b.y + b.span + 4);
-      tick(x1 - 0.5, b.y + b.span, x1 - 0.5, b.y + b.span + 4);
-      const taken = [[b.x, b.x + ctx.measureText(loText).width], [x1 - ctx.measureText(hiText).width, x1]];
-      ctx.textAlign = 'center';
-      for (const v of inner) {
-        const x = b.x + norm.fwd(v) * b.len, str = fmtAxis(v), half = ctx.measureText(str).width / 2 + 7;
-        if (taken.some(([a, c]) => x + half > a && x - half < c)) continue;
-        taken.push([x - half + 7, x + half - 7]);
-        tick(Math.round(x) + 0.5, b.y + b.span, Math.round(x) + 0.5, b.y + b.span + 4);
-        text(str, x, ty);
+    ctx.fillText(S.display.log ? 'pps, log' : 'pps', b.x + b.span + 1, b.y - 13);
+    if (scene.layers.length === 1) {
+      const L = scene.layers[0];
+      const norm = makeNorm(L.lo, L.hi, L.log);
+      const marks = [{ v: L.hi, y: b.y, ty: b.y + 5 }, { v: L.lo, y: b.y + b.len, ty: b.y + b.len - 5 }];
+      for (const val of scaleTicks(L.lo, L.hi, L.log, b.len)) {
+        const y = b.y + (1 - norm.fwd(val)) * b.len;
+        if (marks.every((m) => Math.abs(m.ty - y) >= 15)) marks.push({ v: val, y, ty: y });
       }
-    } else {
-      ctx.textAlign = 'right';
-      text(unit, b.x + b.span + 1, b.y - 12);
-      if (single) {
-        const marks = [{ v: single.hi, y: b.y, ty: b.y + 5 }, { v: single.lo, y: b.y + b.len, ty: b.y + b.len - 5 }];
-        for (const v of inner) {
-          const y = b.y + (1 - norm.fwd(v)) * b.len;
-          if (marks.every((m) => Math.abs(m.ty - y) >= 15)) marks.push({ v, y, ty: y });
-        }
-        for (const m of marks) {
-          const ly = Math.min(b.y + b.len - 0.5, Math.max(b.y + 0.5, Math.round(m.y) + 0.5));
-          tick(b.x - 4, ly, b.x, ly);
-          text(fmtAxis(m.v), b.x - 7, m.ty);
-        }
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 1;
+      for (const m of marks) {
+        const ly = Math.min(b.y + b.len - 0.5, Math.max(b.y + 0.5, Math.round(m.y) + 0.5));
+        ctx.beginPath(); ctx.moveTo(b.x - 4, ly); ctx.lineTo(b.x, ly); ctx.stroke();
+        ctx.fillText(fmtAxis(m.v), b.x - 7, m.ty);
       }
     }
     ctx.restore();
@@ -452,11 +450,12 @@ export class Viewer {
     const pix = scene.baseFile.pixUm;
     if (!(pix > 0)) return;
     const z = this.view.z;
-    const target = (this.cssW * 0.22) / z * pix;                    // micrometres
+    const a = this.area;
+    const target = (a.w * 0.22) / z * pix;                          // micrometres
     const k = Math.pow(10, Math.floor(Math.log10(target)));
     const um = [5, 2, 1].map((m) => m * k).find((val) => val <= target) || k;
     const len = (um / pix) * z;
-    const x1 = this.cssW - this.edge - 2, y = this.cssH - 16;
+    const x1 = a.x + a.w - (this.strip ? 10 : this.edge + 2), y = a.y + a.h - 16;
     ctx.save();
     ctx.lineCap = 'butt';
     ctx.strokeStyle = 'rgba(8,10,15,0.75)'; ctx.lineWidth = 5;
@@ -516,8 +515,8 @@ export class Viewer {
     this.pointers.set(e.pointerId, p);
     clearTimeout(this.holdTimer);
     if (this.pointers.size === 1) {
-      // A touch that starts on the colour bar opens its editor if it ends as a tap; a drag still pans.
-      const onBar = this.inColorbar(p.x, p.y);
+      // A touch that starts in the colour bar's strip opens its editor if it ends as a tap; a drag still pans.
+      const onBar = this.inColorbar(p.x);
       this.g = { mode: 'pending', onBar, x0: p.x, y0: p.y, lx: p.x, ly: p.y, t0: performance.now() };
       if (!onBar) {
         this.holdTimer = setTimeout(() => {
@@ -680,10 +679,10 @@ export class Viewer {
   }
 }
 
-/** The page's left or right gutter in pixels (wider beside a notch in landscape). */
-function sideGutter(host, side) {
+/** The page's right-hand gutter in pixels (wider beside a notch in landscape). */
+function sideGutter(host) {
   const probe = document.createElement('div');
-  probe.style.cssText = `position:absolute;visibility:hidden;height:0;width:var(--gutter-${side}, 16px)`;
+  probe.style.cssText = 'position:absolute;visibility:hidden;height:0;width:var(--gutter-r, 16px)';
   host.appendChild(probe);
   const w = probe.getBoundingClientRect().width;
   probe.remove();

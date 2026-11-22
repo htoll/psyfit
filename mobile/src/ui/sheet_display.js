@@ -77,7 +77,7 @@ export function DisplaySheet({ onSaveImage }) {
         checked=${d.colorBy === 'class'} onChange=${(v) => setDisplay({ colorBy: v ? 'class' : 'none' }, 'overlay')} />
       <${Toggle} id="show-grid" label="Channel outlines" hint="In the All view" checked=${d.showGrid} onChange=${(v) => setDisplay({ showGrid: v }, 'overlay')} />
       <${Toggle} id="show-scale" label="Scale bar" checked=${d.showScaleBar} onChange=${(v) => setDisplay({ showScaleBar: v }, 'overlay')} />
-      <${Toggle} id="show-colorbar" label="Colour bar" hint="In pps. Tap it on the image to set its min and max" checked=${d.showColorbar} onChange=${(v) => setDisplay({ showColorbar: v }, 'overlay')} />
+      <${Toggle} id="show-colorbar" label="Colour bar" hint="In pps, beside the image. Tap it to set min and max" checked=${d.showColorbar} onChange=${(v) => setDisplay({ showColorbar: v }, 'overlay')} />
       <div class="btn-row"><${Btn} icon="save" onClick=${onSaveImage} id="save-image">Save image<//></div>
     <//>
   </div>`;
