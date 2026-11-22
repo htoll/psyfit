@@ -1,12 +1,12 @@
-// App shell: top bar, channel chips, image viewer, selection card, movie bar,
-// the panel area and the tab bar.
+// App shell: top bar, channel chips, image viewer, selection card, colour-scale
+// card, movie bar, the panel area and the tab bar.
 
 import { h, render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { html, Btn, IconBtn, Icon, Facts } from './widgets.js';
+import { html, Btn, IconBtn, Icon, Facts, Seg } from './widgets.js';
 import { Viewer } from './viewer.js';
 import { FilesSheet } from './sheet_files.js';
-import { DisplaySheet } from './sheet_display.js';
+import { DisplaySheet, Contrast } from './sheet_display.js';
 import { FitSheet } from './sheet_fit.js';
 import { OverlaySheet } from './sheet_overlay.js';
 import { MovieSheet } from './sheet_movie.js';
@@ -14,6 +14,7 @@ import { fmtBrightness, fmtNum } from './theme.js';
 import {
   S, subscribe, bump, toast, persist, activeFile, fileById, setSheet, selectChannel, setOverlay, setScope, setFrame, setView,
   togglePlayback, stopPlayback, addPickedFiles, loadDemo, findFit, removeFit, select, locPrecisionNm, runTrace, frameKey,
+  setScaleEditor,
 } from '../store.js';
 import { SCOPES, SCOPE_ORDER, availableChannels, channelInfo } from '../core/layouts.js';
 import { hueCss } from '../core/render.js';
@@ -130,7 +131,27 @@ function TrackCard({ file, track }) {
   </aside>`;
 }
 
+/** Opens from a tap on the colour bar: min and max of every layer shown. */
+function ScaleCard() {
+  const layers = S.layers.filter((l) => l.visible && fileById(l.fileId));
+  if (!layers.length) return null;
+  const multi = layers.length > 1;
+  const setLog = (v) => { S.display.log = v === 'log'; persist(); bump('scene'); };
+  return html`<aside class="card card-scale" aria-label="Colour scale" id="scale-card">
+    <div class="card-head">
+      <span class="card-title">Colour scale</span>
+      <${Seg} label="Intensity scale" value=${S.display.log ? 'log' : 'lin'} onChange=${setLog}
+        options=${[{ value: 'lin', label: 'Linear' }, { value: 'log', label: 'Log' }]} />
+      <${IconBtn} icon="close" title="Close" onClick=${() => setScaleEditor(false)} size=${18} id="scale-close" />
+    </div>
+    <div class="card-scale-body">
+      ${layers.map((l) => html`<${Contrast} key=${l.id} layer=${l} multi=${multi} idPrefix="sc-" compact=${true} />`)}
+    </div>
+  </aside>`;
+}
+
 function SelectionCard() {
+  if (S.scale) return html`<${ScaleCard} />`;
   if (!S.sel) return null;
   if (S.sel.ids) {
     const fits = S.sel.ids.map(findFit).filter(Boolean);

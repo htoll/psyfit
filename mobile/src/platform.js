@@ -269,6 +269,8 @@ export async function saveFile(filename, data, mime = 'application/octet-stream'
       }
     }
   }
+  // Inside an artifact the frame blocks every other way of handing over a file.
+  if (inArtifact()) throw new Error('This view cannot save files. Open the page in claude.ai and try again.');
   try {
     const file = new File([blob], filename, { type: mime });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {

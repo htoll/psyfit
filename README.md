@@ -81,6 +81,7 @@ tools/                 One module per tool, each exposing run()
 tools/crystallography.py   Space-group / d-spacing engine backing FFT Analysis
 tools/roi.py           Shared interactive rectangle-ROI widget
 .streamlit/config.toml Upload limits and theme
+mobile/                PsyFit Mobile: a phone web page for .sif files (see mobile/README.md)
 ```
 
 Adding a tool means dropping a module in `tools/` with a `run()` entry point and adding

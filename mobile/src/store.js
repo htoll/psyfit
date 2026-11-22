@@ -13,7 +13,9 @@ import {
   estimateRegistration, matchPoints, fitApertures, describeAffine,
 } from './core/geometry.js';
 import { linkTracks, trackStats } from './core/tracking.js';
-import { SCOPES, guessScope, pixelSize, channelRect, availableChannels, channelAt, channelInfo, cropRect } from './core/layouts.js';
+import {
+  SCOPES, NIKON_SPLITS, setNikonSplit, guessScope, pixelSize, channelRect, availableChannels, channelAt, channelInfo, cropRect,
+} from './core/layouts.js';
 import { lutRgb, HUE_NAMES } from './core/render.js';
 import { makeDemoImage, makeDemoMovie } from './core/demo.js';
 import { loadPrefs, savePrefs, fileCache, CACHE_MAX_FILE } from './platform.js';
@@ -33,8 +35,9 @@ export const S = {
   layers: [],
   overlay: false,
   scopeDefault: SCOPES[prefs.scopeDefault] ? prefs.scopeDefault : 'mcl',
+  nikonSplit: NIKON_SPLITS[prefs.nikonSplit] ? prefs.nikonSplit : 'lr',
   display: pick(prefs.display, {
-    cmap: 'magma', log: false, showFits: true, showLabels: true, showScaleBar: true, showGrid: true,
+    cmap: 'grey', log: false, showFits: true, showLabels: true, showScaleBar: true, showColorbar: true, showGrid: true,
     useReg: true, perFrameAuto: false, colorBy: 'none',
   }),
   fit: pick(prefs.fit, { threshold: 10, minDistance: 5, sigMaxUm: 0.3, signal: 'UCNP', crowded: false, live: true }),
@@ -51,7 +54,9 @@ export const S = {
   toast: null,          // { text, kind }
   playing: false,
   inspect: null,        // live pixel read-out
+  scale: false,         // colour-scale editor open (tap the colour bar)
 };
+setNikonSplit(S.nikonSplit);
 
 // ---------------------------------------------------------------------------
 // Change notification
@@ -80,7 +85,7 @@ export function persist() {
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     savePrefs({
-      scopeDefault: S.scopeDefault, display: S.display, fit: S.fit, hist: S.hist, movie: S.movie,
+      scopeDefault: S.scopeDefault, nikonSplit: S.nikonSplit, display: S.display, fit: S.fit, hist: S.hist, movie: S.movie,
       track: S.track, registration: S.registration,
     });
   }, 300);
@@ -300,6 +305,25 @@ export function setScope(file, scopeId) {
   S.layers = S.layers.filter((l) => l.fileId !== file.id);
   S.coloc.result = null; S.sel = null;
   if (file.id === S.activeId || !S.layers.length) { S.overlay = S.overlay && S.layers.length > 0; setActive(file.id); }
+  persist();
+  bump('scene');
+}
+
+/** Choose how Nikon frames divide into channels (see NIKON_SPLITS). */
+export function chooseNikonSplit(split) {
+  if (!NIKON_SPLITS[split] || split === S.nikonSplit) return;
+  setNikonSplit(split);
+  S.nikonSplit = split;
+  delete S.registration.nikon;        // measured for the previous split
+  const isNikon = (id) => { const f = fileById(id); return !!f && f.scope === 'nikon'; };
+  for (const f of S.files) {
+    if (f.scope !== 'nikon') continue;
+    f.fits = []; f.fitsKey = null; f.manual = []; f.tracks = null; f.stats = new Map();
+  }
+  S.layers = S.layers.filter((l) => !isNikon(l.fileId));
+  S.coloc.result = null; S.sel = null;
+  const act = activeFile();
+  if (act && (act.scope === 'nikon' || !S.layers.length)) { S.overlay = S.overlay && S.layers.length > 0; setActive(act.id); }
   persist();
   bump('scene');
 }
@@ -1127,6 +1151,13 @@ export function setSheet(name) {
 
 export function select(sel) {
   S.sel = sel;
+  bump('overlay');
+}
+
+/** Open or close the colour-scale editor (the card that sets min and max). */
+export function setScaleEditor(open) {
+  if (S.scale === !!open) return;
+  S.scale = !!open;
   bump('overlay');
 }
 

@@ -10,7 +10,7 @@ import { THEME, fmtNum } from './theme.js';
 
 const html = htm.bind(h);
 
-function niceTicks(lo, hi, count = 5) {
+export function niceTicks(lo, hi, count = 5) {
   if (!(hi > lo)) return [lo];
   const raw = (hi - lo) / Math.max(1, count);
   const mag = Math.pow(10, Math.floor(Math.log10(raw)));
