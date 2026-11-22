@@ -19,39 +19,17 @@ const MCL_CHANNELS = [
   { id: 'nir', label: 'NIR', short: 'NIR', color: '#FF80AC', hue: 'pink', region: '4' },
 ];
 
-/** Side of PsyFit's fixed "Mr Beam" crop on the Nikon: image[-280:, :280]. */
+/** Side of the Nikon's localization image: PsyFit's fixed "Mr Beam" crop, image[-280:, :280]. */
 export const NIKON_BEAM_PX = 280;
+/** Width of the region at the bottom right of a Nikon frame that holds the dispersed spectra. */
+export const NIKON_SPEC_W = 312;
 
-/**
- * Ways the Nikon frame can be divided. `lr` and `tb` are the two halves of an
- * image splitter; `beam` is the single region PsyFit's Nikon tools analyse.
- */
-export const NIKON_SPLITS = {
-  lr: {
-    label: 'Left · Right',
-    note: 'Two emission channels side by side',
-    channels: [
-      { id: 'ch1', label: 'Left', short: 'L', color: '#33FF85', hue: 'green' },
-      { id: 'ch2', label: 'Right', short: 'R', color: '#FF5CE1', hue: 'magenta' },
-    ],
-  },
-  tb: {
-    label: 'Top · Bottom',
-    note: 'Two emission channels, one above the other',
-    channels: [
-      { id: 'ch1', label: 'Top', short: 'T', color: '#33FF85', hue: 'green' },
-      { id: 'ch2', label: 'Bottom', short: 'Bt', color: '#FF5CE1', hue: 'magenta' },
-    ],
-  },
-  beam: {
-    label: 'Mr Beam crop',
-    note: `The ${NIKON_BEAM_PX} px region PsyFit analyses on the Nikon (top left of the frame)`,
-    channels: [
-      { id: 'ch1', label: 'Mr Beam', short: 'MB', color: '#33FF85', hue: 'green' },
-    ],
-  },
-};
-export const NIKON_SPLIT_ORDER = ['lr', 'tb', 'beam'];
+// The Nikon images the field twice on one frame: directly at the top left (where
+// particles are localized) and dispersed by wavelength at the bottom right.
+const NIKON_CHANNELS = [
+  { id: 'loc', label: 'Localization', short: 'Loc', color: '#33FF85', hue: 'green' },
+  { id: 'spec', label: 'Spectra', short: 'Spec', color: '#FFB84D', hue: 'orange' },
+];
 
 export const SCOPES = {
   mcl: {
@@ -60,8 +38,9 @@ export const SCOPES = {
     channels: MCL_CHANNELS,
   },
   nikon: {
-    id: 'nikon', name: 'Nikon', pixUm: 0.107, split: 'lr',
-    note: '', channels: [],
+    id: 'nikon', name: 'Nikon', pixUm: 0.107,
+    note: 'Localization image at the top left, its spectra at the bottom right (100×, 107 nm pixels)',
+    channels: NIKON_CHANNELS,
   },
   full: {
     id: 'full', name: 'Full frame', pixUm: 0.1011,
@@ -70,20 +49,6 @@ export const SCOPES = {
   },
 };
 export const SCOPE_ORDER = ['mcl', 'nikon', 'full'];
-
-/** Choose how Nikon frames are divided. Returns true when the split changed. */
-export function setNikonSplit(split) {
-  const def = NIKON_SPLITS[split];
-  if (!def) return false;
-  const scope = SCOPES.nikon;
-  const changed = scope.split !== split || !scope.channels.length;
-  scope.split = split;
-  scope.channels = def.channels;
-  scope.note = `${def.note} (100×, 107 nm pixels)`;
-  return changed;
-}
-export const nikonSplit = () => SCOPES.nikon.split;
-setNikonSplit('lr');
 
 const ALL = { id: 'all', label: 'All', short: 'All', color: '#aab3c5', hue: 'gray' };
 const BORDER = { id: 'border', label: 'Border', short: '–', color: '#8d97ab', hue: 'gray' };
@@ -154,17 +119,9 @@ export function channelRect(scopeId, channel, src) {
     else if (channel === 'red') r = { x: 0, y: 0, w: mw, h: mh };
     else if (channel === 'nir') r = { x: mw, y: 0, w: W - mw, h: mh };
   } else if (scopeId === 'nikon') {
-    const split = SCOPES.nikon.split;
-    if (split === 'lr') {
-      if (channel === 'ch1') r = { x: 0, y: 0, w: mw, h: H };
-      else if (channel === 'ch2') r = { x: mw, y: 0, w: W - mw, h: H };
-    } else if (split === 'tb') {
-      if (channel === 'ch1') r = { x: 0, y: mh, w: W, h: H - mh };      // shown on top
-      else if (channel === 'ch2') r = { x: 0, y: 0, w: W, h: mh };
-    } else if (channel === 'ch1') {
-      const s = Math.min(NIKON_BEAM_PX, W, H);
-      r = { x: 0, y: H - s, w: s, h: s };
-    }
+    const side = Math.min(NIKON_BEAM_PX, W, H);
+    if (channel === 'loc') r = { x: 0, y: H - side, w: side, h: side };              // high rows are drawn on top
+    else if (channel === 'spec') { const w = Math.min(NIKON_SPEC_W, W); r = { x: W - w, y: 0, w, h: side }; }
   }
   return r && r.w >= 8 && r.h >= 8 ? r : null;
 }

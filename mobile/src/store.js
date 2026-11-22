@@ -13,12 +13,14 @@ import {
   estimateRegistration, matchPoints, fitApertures, describeAffine,
 } from './core/geometry.js';
 import { linkTracks, trackStats } from './core/tracking.js';
+import { SCOPES, guessScope, pixelSize, channelRect, availableChannels, channelAt, channelInfo, cropRect } from './core/layouts.js';
 import {
-  SCOPES, NIKON_SPLITS, setNikonSplit, guessScope, pixelSize, channelRect, availableChannels, channelAt, channelInfo, cropRect,
-} from './core/layouts.js';
+  readCalibrationFiles, calibrationFromJson, calibrationToJson, mapToSpectrum, wavelengthAxis, sampleSpectrum, objectPoint,
+  spectraOverlap, offDetector, spectralWindow, SPEC_NPTS,
+} from './core/spectra.js';
 import { lutRgb, HUE_NAMES } from './core/render.js';
-import { makeDemoImage, makeDemoMovie } from './core/demo.js';
-import { loadPrefs, savePrefs, fileCache, CACHE_MAX_FILE } from './platform.js';
+import { makeDemoImage, makeDemoMovie, makeDemoNikon } from './core/demo.js';
+import { loadPrefs, savePrefs, fileCache, CACHE_MAX_FILE, calStore, drive, driveErrorText, CAL_MAX_BYTES } from './platform.js';
 
 const prefs = loadPrefs();
 const pick = (obj, defaults) => {
@@ -35,7 +37,6 @@ export const S = {
   layers: [],
   overlay: false,
   scopeDefault: SCOPES[prefs.scopeDefault] ? prefs.scopeDefault : 'mcl',
-  nikonSplit: NIKON_SPLITS[prefs.nikonSplit] ? prefs.nikonSplit : 'lr',
   display: pick(prefs.display, {
     cmap: 'grey', log: false, showFits: true, showLabels: true, showScaleBar: true, showColorbar: true, showGrid: true,
     useReg: true, perFrameAuto: false, colorBy: 'none',
@@ -55,8 +56,13 @@ export const S = {
   playing: false,
   inspect: null,        // live pixel read-out
   scale: false,         // colour-scale editor open (tap the colour bar)
+  // Nikon spectra: the calibration in use, Drive search results, and whether possible overlaps are shown
+  spec: { cal: null, busy: '', found: null, showOverlaps: false },
 };
-setNikonSplit(S.nikonSplit);
+{
+  const saved = calStore.all();
+  if (saved.length) S.spec.cal = calibrationFromJson(saved[0]);
+}
 
 // ---------------------------------------------------------------------------
 // Change notification
@@ -85,7 +91,7 @@ export function persist() {
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     savePrefs({
-      scopeDefault: S.scopeDefault, nikonSplit: S.nikonSplit, display: S.display, fit: S.fit, hist: S.hist, movie: S.movie,
+      scopeDefault: S.scopeDefault, display: S.display, fit: S.fit, hist: S.hist, movie: S.movie,
       track: S.track, registration: S.registration,
     });
   }, 300);
@@ -185,6 +191,7 @@ export async function addFiles(items) {
     try {
       const src = await openSif(item.blob, item.name);
       const entry = makeEntry(src, item.origin);
+      if (entry.scope === 'nikon') chooseCalibrationFor(entry);
       const n = entry.isMovie ? Math.min(src.frames, maxFramesFor(entry)) : 1;
       await loadWindow(entry, { start: 0, step: 1, count: n });
       S.files.push(entry);
@@ -226,11 +233,13 @@ export async function openCached(key) {
 }
 
 export async function loadDemo(kind) {
-  const demo = kind === 'movie' ? makeDemoMovie() : makeDemoImage();
+  const demo = kind === 'movie' ? makeDemoMovie() : kind === 'nikon' ? makeDemoNikon() : makeDemoImage();
   const before = S.scopeDefault;
   if (kind === 'movie') S.scopeDefault = 'full';
   const n = await addFiles([{ blob: new Blob([demo.bytes]), name: demo.name, origin: { kind: 'demo' } }]);
   S.scopeDefault = before;
+  // The simulated Nikon frame comes with the calibration it was simulated with.
+  if (n && demo.calibration) setCalibration(demo.calibration);
   return n;
 }
 
@@ -300,30 +309,12 @@ export function setScope(file, scopeId) {
   if (!SCOPES[scopeId] || file.scope === scopeId) return;
   file.scope = scopeId; file.scopeGuessed = true;
   file.pixUm = pixelSize(scopeId, file.name, file.src.info);
+  if (scopeId === 'nikon') chooseCalibrationFor(file);
   file.fits = []; file.manual = []; file.tracks = null; file.stats = new Map();
   S.scopeDefault = scopeId;
   S.layers = S.layers.filter((l) => l.fileId !== file.id);
   S.coloc.result = null; S.sel = null;
   if (file.id === S.activeId || !S.layers.length) { S.overlay = S.overlay && S.layers.length > 0; setActive(file.id); }
-  persist();
-  bump('scene');
-}
-
-/** Choose how Nikon frames divide into channels (see NIKON_SPLITS). */
-export function chooseNikonSplit(split) {
-  if (!NIKON_SPLITS[split] || split === S.nikonSplit) return;
-  setNikonSplit(split);
-  S.nikonSplit = split;
-  delete S.registration.nikon;        // measured for the previous split
-  const isNikon = (id) => { const f = fileById(id); return !!f && f.scope === 'nikon'; };
-  for (const f of S.files) {
-    if (f.scope !== 'nikon') continue;
-    f.fits = []; f.fitsKey = null; f.manual = []; f.tracks = null; f.stats = new Map();
-  }
-  S.layers = S.layers.filter((l) => !isNikon(l.fileId));
-  S.coloc.result = null; S.sel = null;
-  const act = activeFile();
-  if (act && (act.scope === 'nikon' || !S.layers.length)) { S.overlay = S.overlay && S.layers.length > 0; setActive(act.id); }
   persist();
   bump('scene');
 }
@@ -581,6 +572,11 @@ function analysisChannels(file) {
     const act = S.layers.filter((l) => l.visible && l.fileId === S.activeId).map((l) => l.channel);
     chans = act.filter((c) => channelRect(file.scope, c, file.src));
   }
+  if (file.scope === 'nikon') {
+    // Particles are only ever looked for in the localization image (as PsyFit
+    // does); the other region holds their spectra, which are streaks, not PSFs.
+    return channelRect('nikon', 'loc', file.src) ? ['loc'] : [];
+  }
   return chans.length ? Array.from(new Set(chans)) : ['all'];
 }
 
@@ -675,16 +671,25 @@ export function probeAt(X, Y, snap = 4) {
   if (!scene) return [];
   const group = ++fitSeq;
   const made = [];
+  let offLoc = false;
   for (const L of scene.layers) {
     const [lx, ly] = L.inv ? applyAffine(L.inv, X, Y) : [X, Y];
     if (lx < 0 || ly < 0 || lx > L.rect.w - 1 || ly > L.rect.h - 1) continue;
-    const file = L.file, ch = L.layer.channel;
-    const img = ch === 'all' ? L.data : cropRect(L.data, L.sw, L.rect);
-    const [cx, cy] = snapToPeak(img, L.rect.w, L.rect.h, lx, ly, snap);
+    const file = L.file;
+    let ch = L.layer.channel, rect = L.rect, px = lx, py = ly;
+    if (file.scope === 'nikon') {
+      // Fit in the localization image only, in its own frame, whichever view was tapped.
+      const loc = channelRect('nikon', 'loc', file.src);
+      const sx = lx + L.rect.x, sy = ly + L.rect.y;
+      if (!loc || sx < loc.x || sy < loc.y || sx > loc.x + loc.w - 1 || sy > loc.y + loc.h - 1) { offLoc = true; continue; }
+      ch = 'loc'; rect = loc; px = sx - loc.x; py = sy - loc.y;
+    }
+    const img = ch === 'all' ? L.data : cropRect(L.data, L.sw, rect);
+    const [cx, cy] = snapToPeak(img, rect.w, rect.h, px, py, snap);
     const o = fitOptions(file, ch);
-    const res = fitPsf(img, L.rect.w, L.rect.h, cx, cy, o);
+    const res = fitPsf(img, rect.w, rect.h, cx, cy, o);
     if (!res) continue;
-    const rec = toSensorFit(res, L.rect, file, ch, { run: ch, manual: true, group, frame: frameKey(file) });
+    const rec = toSensorFit(res, rect, file, ch, { run: ch, manual: true, group, frame: frameKey(file) });
     if (ch === 'all') rec.channel = channelAt(file.scope, file.src, rec.peakX, rec.peakY) || 'border';
     // Re-probing the same spot replaces the old probe.
     file.manual = file.manual.filter((q) => !(q.run === rec.run && Math.hypot(q.x - rec.x, q.y - rec.y) < 1.5));
@@ -692,7 +697,7 @@ export function probeAt(X, Y, snap = 4) {
     made.push(rec);
   }
   if (made.length) S.sel = { ids: made.map((r) => r.id) };
-  else toast('No peak to fit there.', 'warn', 1800);
+  else toast(offLoc ? 'Double-tap a particle in the localization image (top left). Its spectrum is read from the other region.' : 'No peak to fit there.', 'warn', offLoc ? 3600 : 1800);
   bump('overlay');
   return made;
 }
@@ -1082,6 +1087,204 @@ export function updateTraceSteps(penalty) {
   const drops = st.steps.filter((s) => s.drop > 0).map((s) => s.drop);
   tr.unit = drops.length ? median(drops) : NaN;
   bump();
+}
+
+// ---------------------------------------------------------------------------
+// Nikon spectra: the calibration, and the spectrum of each localization
+// ---------------------------------------------------------------------------
+
+/** Use a calibration (null clears it). Real ones are remembered on this device. */
+export function setCalibration(cal, remember = true) {
+  S.spec.cal = cal;
+  if (cal && remember && !cal.demo) calStore.save(calibrationToJson(cal));
+  bump('overlay');
+}
+
+/** "YYMMDD" of a file's acquisition, as calibration files are dated. */
+function acquisitionDate(file) {
+  const t = file.src.info.ExperimentTime;
+  if (!(t > 0)) return '';
+  const d = new Date(t * 1000);
+  const two = (n) => String(n).padStart(2, '0');
+  return `${two(d.getFullYear() % 100)}${two(d.getMonth() + 1)}${two(d.getDate())}`;
+}
+
+/** Calibrations remembered on this device: [{date, name, fitsName}] newest first. */
+export function rememberedCalibrations() {
+  return calStore.all().map((c) => ({ date: c.date, name: c.name, fitsName: c.fitsName }));
+}
+
+/**
+ * When a Nikon file opens without a (real) calibration in use, take the
+ * remembered one measured most recently before the file was acquired.
+ */
+function chooseCalibrationFor(file) {
+  if (file.origin && file.origin.kind === 'demo') return;
+  if (S.spec.cal && !S.spec.cal.demo) return;
+  const saved = calStore.all();
+  const date = acquisitionDate(file);
+  const pick = saved.find((c) => !date || !c.date || c.date <= date) || saved[saved.length - 1] || null;
+  S.spec.cal = pick ? calibrationFromJson(pick) : null;
+}
+
+export function useRememberedCalibration(date, name) {
+  const hit = calStore.all().find((c) => c.date === date && c.name === name);
+  const cal = hit ? calibrationFromJson(hit) : null;
+  if (cal) { setCalibration(cal, false); toast(`Using the calibration of ${cal.date || cal.name}.`); }
+}
+
+/** Open the two calibration .pkl files chosen with the system picker. */
+export async function openCalibrationFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return false;
+  try {
+    const big = files.find((f) => f.size > CAL_MAX_BYTES);
+    if (big) throw new Error(`${big.name} is ${(big.size / 1048576).toFixed(0)} MB: that is the full recording. Choose the small "..._no_tracking.pkl" file instead.`);
+    const read = await Promise.all(files.map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })));
+    const cal = readCalibrationFiles(read);
+    setCalibration(cal);
+    toast(`Calibration ${cal.date || cal.name} loaded: ${cal.n} points, ${cal.withFit} with a wavelength fit.`);
+    return true;
+  } catch (err) {
+    toast(err && err.message ? err.message : 'Those files could not be read as a calibration.', 'error');
+    return false;
+  }
+}
+
+/** List the calibrations in Drive (S.spec.found). */
+export async function findDriveCalibrations() {
+  S.spec.busy = 'Looking in Drive'; S.spec.found = null; bump();
+  try {
+    S.spec.found = await drive.calibrations();
+    if (!S.spec.found.length) toast('No calibration files were found in Drive (a "saving_info_..._no_tracking.pkl" with its "..._fits.pkl").', 'warn', 5000);
+  } catch (err) {
+    toast(driveErrorText(err), 'error');
+  }
+  S.spec.busy = ''; bump();
+  return S.spec.found;
+}
+
+/** Fetch one of the calibrations listed by findDriveCalibrations and use it. */
+export async function loadDriveCalibration(entry) {
+  S.spec.busy = `Fetching the calibration of ${entry.date}`; bump();
+  try {
+    const grid = await drive.downloadRaw(entry.grid);
+    const fits = await drive.downloadRaw(entry.fits);
+    const cal = readCalibrationFiles([{ name: entry.grid.name, bytes: grid }, { name: entry.fits.name, bytes: fits }]);
+    S.spec.busy = '';
+    setCalibration(cal);
+    toast(`Calibration ${cal.date} loaded: ${cal.n} points, ${cal.withFit} with a wavelength fit.`);
+    return true;
+  } catch (err) {
+    S.spec.busy = '';
+    toast(err && err.code ? driveErrorText(err) : (err && err.message) || 'The calibration could not be read.', 'error');
+    return false;
+  }
+}
+
+/**
+ * One step from "no calibration" to a spectrum: look in Drive and take the
+ * calibration measured most recently before the file was acquired. Without
+ * Drive (or without a match) the Fit panel opens, where files can be chosen.
+ */
+export async function autoCalibrate(file = activeFile()) {
+  const toPanel = () => { if (S.sheet !== 'analyze') setSheet('analyze'); return false; };
+  if (!(await drive.available())) return toPanel();
+  const found = await findDriveCalibrations();
+  if (!found || !found.length) return toPanel();
+  const date = file ? acquisitionDate(file) : '';
+  return loadDriveCalibration(found.find((c) => !date || c.date <= date) || found[found.length - 1]);
+}
+
+/** Every usable localization of a Nikon file in the image shown now (automatic fits, then double-tapped ones). */
+function nikonLocalizations(file) {
+  const auto = file.fitsKey === frameKey(file) ? file.fits.filter((q) => q.ok && q.channel === 'loc') : [];
+  const manual = file.manual.filter((q) => q.channel === 'loc' && q.frame === frameKey(file) && !auto.some((a) => Math.hypot(a.x - q.x, a.y - q.y) < 1.5));
+  return auto.concat(manual);
+}
+
+/** Frames a spectrum is averaged over: the one shown, or five around it in a movie. */
+function spectrumFrames(file) {
+  if (!file.isMovie || file.view !== 'frame' || file.loaded.length < 2) return [frameData(file)];
+  const n = file.loaded.length, half = 2;
+  const first = Math.max(0, Math.min(n - (2 * half + 1), file.cur - half));
+  const out = [];
+  for (let i = first; i < Math.min(n, first + 2 * half + 1); i++) out.push(file.frames.get(file.loaded[i]));
+  return out;
+}
+
+/**
+ * The spectrum that belongs to a localization in a Nikon frame.
+ * @returns null for anything that has no spectrum (another microscope or
+ *   region), else {status} with status 'no-cal' | 'unmapped' | 'edge' | 'ok';
+ *   'ok' adds nm, values (pps, averaged over 5 rows, and over 5 frames in a
+ *   movie), net (minus their minimum), xs/ys, win (sampling window on the
+ *   sensor), frames, leftEdge and overlaps (other localizations whose spectra
+ *   may cross this one, by PsyFit's rule).
+ */
+export function spectrumFor(fit) {
+  const file = fit && fileById(fit.fileId);
+  if (!file || file.scope !== 'nikon' || fit.channel !== 'loc') return null;
+  const cal = S.spec.cal;
+  if (!cal) return { status: 'no-cal' };
+  const W = file.src.width, H = file.src.height;
+  const key = `${fit.id}:${frameKey(file)}:${cal.date}:${cal.name}:${file.fits.length}:${file.manual.length}`;
+  if (!file.specCache) file.specCache = new Map();
+  if (file.specCache.has(key)) return file.specCache.get(key);
+  const compute = () => {
+    const [ox, oy] = objectPoint(fit.x, fit.y, H);
+    const pos = mapToSpectrum(cal, ox, oy);
+    if (!pos) return { status: 'unmapped' };
+    const frames = spectrumFrames(file);
+    const values = new Float64Array(SPEC_NPTS);
+    for (const fr of frames) {
+      const one = fr && sampleSpectrum(fr, W, H, pos[0], pos[1]);
+      if (!one) return { status: 'edge' };
+      for (let i = 0; i < SPEC_NPTS; i++) values[i] += one[i] / frames.length;
+    }
+    const axis = wavelengthAxis(cal, ox, oy);
+    if (!axis) return { status: 'unmapped' };
+    let min = Infinity;
+    for (let i = 0; i < SPEC_NPTS; i++) if (values[i] < min) min = values[i];
+    const overlaps = [];
+    for (const q of nikonLocalizations(file)) {
+      if (q.id === fit.id || Math.hypot(q.x - fit.x, q.y - fit.y) < 1.5) continue;
+      const other = mapToSpectrum(cal, ...objectPoint(q.x, q.y, H));
+      if (other && spectraOverlap(pos, other)) overlaps.push({ id: q.id, win: spectralWindow(other[0], other[1], H) });
+    }
+    return {
+      status: 'ok', xs: pos[0], ys: pos[1], nm: axis.nm, nmPerSample: axis.nmPerSample, values, net: values.map((v) => v - min),
+      win: spectralWindow(pos[0], pos[1], H), frames: frames.length, leftEdge: offDetector(pos[0]), overlaps,
+    };
+  };
+  const out = compute();
+  if (file.specCache.size > 400) file.specCache.clear();
+  file.specCache.set(key, out);
+  return out;
+}
+
+/** Spectra of every localization of a Nikon file: [{fit, sp}] for those that have one. */
+export function spectraOf(file = activeFile()) {
+  if (!file || file.scope !== 'nikon' || !S.spec.cal) return [];
+  const out = [];
+  for (const fit of nikonLocalizations(file)) {
+    const sp = spectrumFor(fit);
+    if (sp && sp.status === 'ok') out.push({ fit, sp });
+  }
+  return out;
+}
+
+/** Spectra as a table PsyFit's Process Spectra reads (Get Spectra's columns, plus two flags). */
+export function spectraCsv(file = activeFile()) {
+  const cal = S.spec.cal;
+  const rows = [];
+  spectraOf(file).forEach(({ fit, sp }, n) => {
+    const [ox, oy] = objectPoint(fit.x, fit.y, file.src.height);
+    for (let i = 0; i < SPEC_NPTS; i++) {
+      rows.push([file.name, n, g6(sp.nm[i]), g6(sp.net[i]), g6(ox), g6(oy), g6(fit.brightness), sp.overlaps.length ? 1 : 0, sp.leftEdge ? 1 : 0, cal.name, cal.fitsName]);
+    }
+  });
+  return csv(['File', 'Particle_ID', 'Wavelength_nm', 'Intensity', 'Particle_X', 'Particle_Y', 'Brightness_pps', 'Possible_Overlap', 'Off_Detector', 'Calibration_File', 'Calibration_Fits'], rows);
 }
 
 // ---------------------------------------------------------------------------

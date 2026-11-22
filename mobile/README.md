@@ -7,11 +7,13 @@ runs as a Claude artifact or in any browser.
 What it does: opens `.sif` images and movies (from the Files picker, or from
 Google Drive through the Drive connector when it runs as an artifact), fits
 PSF brightness in pps the way PsyFit does, shows brightness histograms and
-aggregation classes, restricts analysis to channels (MCL: four quadrants;
-Nikon: see below), overlays channels and files with registration and
-colocalization, plays movies, tracks particles and plots intensity traces with
-step detection. Pan, pinch to zoom, double-tap a spot to fit it, hold for pixel
-values, tap the colour bar to set its min and max.
+aggregation classes, restricts analysis to channels (MCL: four quadrants),
+overlays channels and files with registration and colocalization, plays
+movies, tracks particles and plots intensity traces with step detection. On
+Nikon frames it reads each particle's emission spectrum through the spectral
+calibration and flags spectra that may overlap. Pan, pinch to zoom, double-tap
+a spot to fit it, hold for pixel values, tap the colour bar to set its min and
+max.
 
 ## Build and test
 
@@ -36,7 +38,8 @@ src/platform.js    Drive connector, saving files, on-device file cache, preferen
 src/core/          No DOM: sif.js (reader/writer), numeric.js (detection, PSF fits),
                    stats.js, geometry.js (registration, colocalization), tracking.js,
                    layouts.js (microscopes and channels), render.js (colormaps,
-                   compositing), demo.js (simulated files)
+                   compositing), spectra.js (Nikon spectra), pickle.js (reads the
+                   calibration .pkl files), demo.js (simulated files)
 src/ui/            Preact components; viewer.js is the image canvas and gestures
 test/              Node tests on the core modules and the simulated data
 ```
@@ -51,7 +54,16 @@ test/              Node tests on the core modules and the simulated data
   (same peaks, brightness to a few parts per million).
 - MCL channels are the quadrants PsyFit calls regions 1 to 4 (Blue, Green, Red,
   NIR). Pixel size 0.1011 µm.
-- Nikon frames can be divided three ways, chosen under Display: left/right
-  halves (the default), top/bottom halves, or the 280 px "Mr Beam" region that
-  PsyFit's Nikon tools analyse. Pixel size 0.107 µm at 100×, scaled by a
-  magnification in the file name.
+- A Nikon frame holds the localization image at the top left (PsyFit's 280 px
+  "Mr Beam" region, the only place particles are looked for) and the same
+  field dispersed by wavelength at the bottom right. Pixel size 0.107 µm at
+  100×, scaled by a magnification in the file name.
+- Nikon spectra follow `tools/get_spectra.py` and `utils.get_image`: the
+  calibration (a `saving_info_<date>_no_tracking.pkl` grid and its
+  `<date>_fits.pkl`, loaded from Drive or Files and remembered on the device)
+  maps a localization to its streak; the spectrum is 100 samples from 90 px
+  left to 9 px right of that point, averaged over 5 rows (and over 5 frames in
+  a movie), minus its minimum. Two spectra "may overlap" when they are less
+  than 99 px apart along the streak and within 4 rows, PsyFit's own rule. On a
+  real Nikon frame with its real calibration the app and PsyFit give the same
+  particles, spectra, wavelengths and overlap flags.

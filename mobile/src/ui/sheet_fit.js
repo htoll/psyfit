@@ -1,18 +1,102 @@
 // Fit panel: detection settings, per-channel brightness summary, histograms,
-// aggregation classes, cross-channel comparison and the fit table.
+// aggregation classes, cross-channel comparison, the fit table and, for the
+// Nikon, the spectral calibration and every particle's spectrum.
 
-import { useState } from 'preact/hooks';
-import { html, Btn, Seg, Slider, Stepper, Toggle, Section, Num } from './widgets.js';
+import { useEffect, useRef, useState } from 'preact/hooks';
+import { html, Btn, Seg, Slider, Stepper, Toggle, Section, Num, Icon } from './widgets.js';
 import { Chart, Legend } from './plots.js';
 import { THEME, fmtBrightness, fmtNum } from './theme.js';
 import {
   S, bump, persist, toast, activeFile, setFitParam, runDetection, clearFits, brightnessSets, summarize, classify,
   CLASS_NAMES, CLASS_COLORS, fitsCsv, frameKey, select, fitsForChannel, buildScene,
+  spectraOf, spectraCsv, rememberedCalibrations, useRememberedCalibration, openCalibrationFiles, findDriveCalibrations, loadDriveCalibration,
 } from '../store.js';
 import { autoBinCount, histogram, gmmPdf, linregress } from '../core/stats.js';
 import { matchPoints, applyAffine } from '../core/geometry.js';
 import { channelInfo, channelRect } from '../core/layouts.js';
-import { saveFile } from '../platform.js';
+import { saveFile, drive } from '../platform.js';
+
+export const SPECTRUM_COLOR = '#FFB84D';
+
+/** Mean of several spectra on a common wavelength grid (each has its own, slightly different, axis). */
+function meanSpectrum(rows, points = 110) {
+  if (!rows.length) return [];
+  let lo = -Infinity, hi = Infinity;
+  for (const { sp } of rows) { lo = Math.max(lo, sp.nm[0]); hi = Math.min(hi, sp.nm[sp.nm.length - 1]); }
+  if (!(hi > lo)) return [];
+  const out = [];
+  for (let k = 0; k < points; k++) {
+    const x = lo + (hi - lo) * k / (points - 1);
+    let sum = 0;
+    for (const { sp } of rows) {
+      let i = 1;
+      while (i < sp.nm.length - 1 && sp.nm[i] < x) i++;
+      const t = (x - sp.nm[i - 1]) / (sp.nm[i] - sp.nm[i - 1]);
+      sum += sp.net[i - 1] + t * (sp.net[i] - sp.net[i - 1]);
+    }
+    out.push({ x, y: sum / rows.length });
+  }
+  return out;
+}
+
+/** Nikon only: which calibration is in use, where to get one, and the spectra of the fitted particles. */
+function SpectraSection({ file }) {
+  const cal = S.spec.cal;
+  const inputRef = useRef(null);
+  const [driveOk, setDriveOk] = useState(null);
+  useEffect(() => { let alive = true; drive.available().then((ok) => { if (alive) setDriveOk(ok); }); return () => { alive = false; }; }, []);
+  const remembered = rememberedCalibrations().filter((c) => !cal || cal.demo || c.date !== cal.date || c.name !== cal.name);
+  const rows = cal ? spectraOf(file) : [];
+  const flagged = rows.filter((r) => r.sp.overlaps.length || r.sp.leftEdge);
+  const clean = rows.filter((r) => !r.sp.overlaps.length && !r.sp.leftEdge);
+  const shown = (S.spec.showOverlaps ? rows : clean).slice(0, 80);
+  const exportCsv = async () => {
+    try {
+      const r = await saveFile(`${file.name.replace(/\.sif$/i, '')}_spectra.csv`, spectraCsv(file), 'text/csv');
+      if (r !== 'declined') toast('Spectra saved as CSV.');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+  const series = shown.map(({ fit, sp }) => ({
+    name: `Particle at ${fit.lx.toFixed(0)}, ${fit.ly.toFixed(0)}`, hit: false, width: 1,
+    color: sp.overlaps.length || sp.leftEdge ? 'rgba(240,195,106,0.35)' : 'rgba(255,184,77,0.4)',
+    points: Array.from(sp.nm, (x, i) => ({ x, y: sp.net[i] })),
+  }));
+  const mean = meanSpectrum(clean);
+  if (mean.length) series.push({ name: 'Mean', color: THEME.ink, width: 2, points: mean });
+  return html`<${Section} title="Spectra" id="spectra-section" aside=${rows.length ? html`<${Btn} small=${true} icon="save" onClick=${exportCsv} id="export-spectra">CSV<//>` : null}>
+    <p class="hint" id="cal-status">${cal
+      ? `${cal.demo ? 'Simulated demo calibration' : `Calibration ${cal.date || cal.name}`}: ${cal.n} grid points, ${cal.withFit} with a wavelength fit${cal.demo ? '' : ` (${cal.name})`}.`
+      : 'No calibration loaded. A particle’s spectrum is found through the calibration measured for that date: the “saving_info_…_no_tracking.pkl” file and its “…_fits.pkl”.'}</p>
+    <div class="btn-row">
+      ${driveOk ? html`<${Btn} icon="drive" onClick=${() => findDriveCalibrations()} id="cal-drive" disabled=${!!S.spec.busy}>Find in Drive<//>` : null}
+      <${Btn} icon="files" onClick=${() => inputRef.current && inputRef.current.click()} id="cal-files">Open the two .pkl files<//>
+      <input ref=${inputRef} class="visually-hidden" id="cal-input" type="file" multiple tabindex="-1" aria-hidden="true"
+        onChange=${async (e) => { const input = e.currentTarget; await openCalibrationFiles(input.files); input.value = ''; }} />
+    </div>
+    ${S.spec.busy ? html`<p class="hint" role="status">${S.spec.busy}…</p>` : null}
+    ${S.spec.found && S.spec.found.length ? html`<ul class="list" id="cal-found">
+      ${S.spec.found.slice(0, 12).map((c) => html`<li key=${c.date} class=${`row${cal && !cal.demo && cal.date === c.date ? ' is-on' : ''}`}>
+        <button type="button" class="row-main" disabled=${!!S.spec.busy} onClick=${() => loadDriveCalibration(c)}>
+          <${Icon} name="drive" size=${18} />
+          <span class="row-text"><span class="row-title">Calibration ${c.date}</span><span class="row-meta">${c.grid.name} · ${c.fits.name}</span></span>
+        </button></li>`)}
+    </ul>` : null}
+    ${remembered.length ? html`<div class="pill-row" role="group" aria-label="Calibrations on this device">
+      ${remembered.map((c) => html`<button type="button" key=${`${c.date}${c.name}`} class="pill" onClick=${() => useRememberedCalibration(c.date, c.name)}>On this device: ${c.date || c.name}</button>`)}
+    </div>` : null}
+    ${cal && !rows.length ? html`<p class="hint">Fit the particles above (or double-tap one) to read their spectra.</p>` : null}
+    ${rows.length ? html`<figure class="plot">
+      <figcaption><span class="dot" style=${{ background: SPECTRUM_COLOR }}></span><strong>${rows.length} ${rows.length === 1 ? 'spectrum' : 'spectra'}</strong>
+        <span class="num">${flagged.length} may overlap or leave the detector · ${clean.length} clean</span></figcaption>
+      <${Legend} items=${mean.length ? [{ name: S.spec.showOverlaps ? 'Each particle' : 'Each clean particle', color: SPECTRUM_COLOR, line: true }, { name: 'Mean of the clean ones', color: THEME.ink, line: true }] : []} />
+      ${series.length ? html`<${Chart} height=${190} spec=${{ aria: 'Emission spectra of the fitted particles', xLabel: 'Wavelength (nm)', yLabel: 'pps', xName: 'λ', xUnit: 'nm', yUnit: 'pps', yZero: true, series }} />`
+        : html`<p class="hint">Every spectrum here may overlap another. Turn on “Show possible overlaps” to see them, or tap a particle for its own.</p>`}
+      <${Toggle} id="spec-overlaps" label="Show possible overlaps" hint="Spectra that another fitted particle’s spectrum may run into" checked=${S.spec.showOverlaps}
+        onChange=${(v) => { S.spec.showOverlaps = v; bump(); }} />
+    </figure>
+    <p class="hint">Each spectrum is the 5-row average along the particle’s streak, minus its minimum, as PsyFit’s Get Spectra reads it${file.isMovie ? ', averaged over 5 frames around the one shown' : ''}. The CSV opens in Process Spectra.</p>` : null}
+  <//>`;
+}
 
 function setHist(patch) {
   Object.assign(S.hist, patch);
@@ -203,6 +287,7 @@ export function FitSheet() {
           <span class="num">${s.values.length}</span><span class="num">${sm ? fmtBrightness(sm.mu) : '–'}${sm && Number.isFinite(sm.sigma) ? html` <small>± ${fmtBrightness(sm.sigma)}</small>` : ''}</span></li>`;
       })}</ul>` : null}
     <//>
+    ${file.scope === 'nikon' ? html`<${SpectraSection} file=${file} />` : null}
     <${Section} title="Results" aside=${html`<${Btn} small=${true} icon="save" onClick=${exportCsv} id="export-fits">CSV<//>`}>
       <${Seg} label="Result view" value=${view} onChange=${setView}
         options=${[{ value: 'hist', label: 'Histogram' }, { value: 'cross', label: 'Channel vs channel' }, { value: 'table', label: 'Table' }]} />

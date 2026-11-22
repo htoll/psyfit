@@ -6,6 +6,7 @@
 // Plus an on-device cache of opened files (IndexedDB).
 
 import { SIF_MAGIC } from './core/sif.js';
+import { calibrationKind, calibrationDate } from './core/spectra.js';
 
 const DRIVE = 'Google Drive';
 export const DRIVE_TOOLS = ['search_files', 'download_file_content', 'get_file_metadata', 'list_shared_drives'];
@@ -62,6 +63,7 @@ export function driveErrorText(err) {
     case 'unavailable': return 'Drive browsing is not available in this view. Use "Open from Files" and pick Google Drive there.';
     case 'too_large': return (err && err.message) || 'That file is too large to fetch through the connector.';
     case 'not_sif': return (err && err.message) || 'Drive returned data that is not a .sif file.';
+    case 'no_content': return (err && err.message) || 'Drive returned no content for that file.';
     case 'tool_error': return `Google Drive reported an error: ${(err && err.message) || 'unknown'}`;
     default: return `Google Drive request failed (${code || 'error'}): ${(err && err.message) || 'no details'}`;
   }
@@ -133,14 +135,22 @@ export const drive = {
       query = "title contains '.sif'";
     }
     for (const t of terms) query += ` and title contains '${q(t)}'`;
-    const input = { query, pageSize: 50, excludeContentSnippets: true, orderBy: 'modifiedTime desc' };
-    if (o.pageToken) input.pageToken = o.pageToken;
-    const res = await driveCall('search_files', input, { cache: { staleTime: 20000, gcTime: 300000 } });
-    const p = payloadOf(res) || {};
-    const files = Array.isArray(p.files) ? p.files : (Array.isArray(p) ? p : []);
-    const items = files.map(normalizeFile).filter((f) => f.id && (f.isFolder || f.isSif));
+    // Drive often answers with pages of ten or fewer whatever is asked for, so
+    // gather a few of them before showing the list.
+    const items = [];
+    let token = o.pageToken || null;
+    for (let page = 0; page < 4; page++) {
+      const input = { query, pageSize: 50, excludeContentSnippets: true, orderBy: 'modifiedTime desc' };
+      if (token) input.pageToken = token;
+      const res = await driveCall('search_files', input, { cache: { staleTime: 20000, gcTime: 300000 } });
+      const p = payloadOf(res) || {};
+      const files = Array.isArray(p.files) ? p.files : (Array.isArray(p) ? p : []);
+      items.push(...files.map(normalizeFile).filter((f) => f.id && (f.isFolder || f.isSif)));
+      token = p.nextPageToken || null;
+      if (!token || items.length >= 24) break;
+    }
     items.sort((a, b) => (Number(b.isFolder) - Number(a.isFolder)) || 0);
-    return { items, nextPageToken: p.nextPageToken || null };
+    return { items, nextPageToken: token };
   },
 
   async sharedDrives() {
@@ -156,17 +166,55 @@ export const drive = {
     return p ? normalizeFile(p) : null;
   },
 
-  /** Download a file's bytes. Throws DriveError('not_sif') if they are not an Andor file. */
+  /** Download a file's bytes, whatever they are. */
+  async downloadRaw(file) {
+    const res = await driveCall('download_file_content', { fileId: file.id }, { cache: false });
+    const b64 = extractBase64(res);
+    if (!b64) throw new DriveError('no_content', `Drive returned no content for ${file.name}.`);
+    return decodeBase64(b64);
+  },
+
+  /** Download a .sif file's bytes. Throws DriveError('not_sif') if they are not an Andor file. */
   async download(file) {
     if (file.size > DRIVE_MAX_BYTES) {
       throw new DriveError('too_large', `${file.name} is ${(file.size / 1048576).toFixed(0)} MB. The Drive connector hands over whole files, so movies this size have to be opened with "Open from Files" (Google Drive appears there as a location).`);
     }
-    const res = await driveCall('download_file_content', { fileId: file.id }, { cache: false });
-    const b64 = extractBase64(res);
-    if (!b64) throw new DriveError('not_sif', 'Drive returned no file content for this item.');
-    const bytes = decodeBase64(b64);
+    const bytes = await this.downloadRaw(file);
     if (!looksLikeSif(bytes)) throw new DriveError('not_sif', 'Drive returned data that is not an Andor .sif file.');
     return bytes;
+  },
+
+  /**
+   * Spectral calibrations in Drive, newest first: pairs of a
+   * "saving_info_<date>_no_tracking.pkl" grid and its "<date>_fits.pkl".
+   * @returns {Promise<Array<{date: string, grid: object, fits: object}>>}
+   */
+  async calibrations() {
+    const find = async (query) => {
+      const out = [];
+      let token = null;
+      for (let page = 0; page < 4; page++) {
+        const input = { query, pageSize: 50, excludeContentSnippets: true, orderBy: 'modifiedTime desc' };
+        if (token) input.pageToken = token;
+        const p = payloadOf(await driveCall('search_files', input, { cache: { staleTime: 60000, gcTime: 300000 } })) || {};
+        out.push(...(Array.isArray(p.files) ? p.files : []).map(normalizeFile).filter((f) => f.id && !f.isFolder && /\.pkl$/i.test(f.name)));
+        token = p.nextPageToken || null;
+        if (!token) break;
+      }
+      return out;
+    };
+    const grids = await find("title contains 'saving_info' and title contains 'no_tracking'");
+    const fits = await find("title contains 'fits' and title contains 'pkl'");
+    const pairs = [];
+    for (const g of grids) {
+      const date = calibrationDate(g.name);
+      if (calibrationKind(g.name) !== 'grid' || !date || g.size > CAL_MAX_BYTES || pairs.some((x) => x.date === date)) continue;
+      const mine = fits.filter((f) => calibrationKind(f.name) === 'fits' && calibrationDate(f.name) === date);
+      if (!mine.length) continue;
+      mine.sort((a, b) => (Number(b.name === `${date}_fits.pkl`) - Number(a.name === `${date}_fits.pkl`)) || (a.name.length - b.name.length));
+      pairs.push({ date, grid: g, fits: mine[0] });
+    }
+    return pairs.sort((a, b) => (a.date < b.date ? 1 : -1));
   },
 
   async permissionState() {
@@ -187,6 +235,9 @@ function looksLikeSif(bytes) {
   for (let i = 0; i < SIF_MAGIC.length - 1; i++) if (bytes[i] !== SIF_MAGIC.charCodeAt(i)) return false;
   return true;
 }
+
+/** Calibration files are a few hundred kB; the full-size "saving_info" files (hundreds of MB) are not for this. */
+export const CAL_MAX_BYTES = 8 * 1024 * 1024;
 
 const PLACEHOLDER = /^\(file sent separately\)$/i;
 const B64_KEYS = ['blob', 'base64Content', 'content', 'data', 'contents', 'base64', 'bytes'];
@@ -384,3 +435,26 @@ export function loadPrefs() {
 export function savePrefs(obj) {
   try { localStorage.setItem(PREF_KEY, JSON.stringify(obj)); } catch (e) { /* storage unavailable */ }
 }
+
+// ---------------------------------------------------------------------------
+// Spectral calibrations remembered on this device (small JSON, newest first)
+// ---------------------------------------------------------------------------
+
+const CAL_KEY = 'psyfit-mobile:cal:v1';
+const CAL_KEEP = 4;
+export const calStore = {
+  all() {
+    try { const raw = localStorage.getItem(CAL_KEY); const list = raw ? JSON.parse(raw) : []; return Array.isArray(list) ? list : []; } catch (e) { return []; }
+  },
+  save(json) {
+    try {
+      const rest = this.all().filter((c) => !(c.date === json.date && c.name === json.name));
+      const list = [json, ...rest].sort((a, b) => (String(a.date) < String(b.date) ? 1 : -1)).slice(0, CAL_KEEP);
+      localStorage.setItem(CAL_KEY, JSON.stringify(list));
+      return true;
+    } catch (e) { return false; }
+  },
+  remove(date, name) {
+    try { localStorage.setItem(CAL_KEY, JSON.stringify(this.all().filter((c) => !(c.date === date && c.name === name)))); } catch (e) { /* storage unavailable */ }
+  },
+};

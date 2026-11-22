@@ -136,6 +136,10 @@ function DriveBrowser() {
       ${tabs.map(([mode, label]) => html`<button type="button" key=${mode} class=${`pill${st.mode === mode && !st.folder ? ' is-on' : ''}`}
         onClick=${() => load({ mode, folder: null, trail: [], text: mode === 'recent' ? st.text : '' })}>${label}</button>`)}
     </div>
+    ${chosen.length ? html`<div class="drive-open-bar">
+      <${Btn} kind="btn-primary" icon="files" onClick=${openChosen} id="drive-open">Open ${chosen.length} ${chosen.length === 1 ? 'file' : 'files'}<//>
+      <${Btn} small=${true} kind="btn-quiet" onClick=${() => setPicked({})}>Clear<//>
+    </div>` : html`<p class="hint">Tick the files to open. The Open button appears here.</p>`}
     ${st.folder ? html`<div class="crumb"><${IconBtn} icon="up" title="Up one folder" onClick=${up} size=${18} /><${Icon} name="folder" size=${16} /><span>${st.folder.name}</span></div>` : null}
     ${st.error ? html`<div class="note is-error" role="alert">
         <p>${driveErrorText(st.error)}</p>
@@ -163,10 +167,7 @@ function DriveBrowser() {
     </ul>
     ${st.loading ? html`<p class="hint" role="status">Asking Google Drive…</p>` : null}
     ${!st.loading && !st.error && !st.items.length ? html`<p class="hint">No .sif files here.</p>` : null}
-    <div class="btn-row">
-      ${st.next && !st.loading ? html`<${Btn} small=${true} onClick=${() => load({}, true)}>More results<//>` : null}
-      ${chosen.length ? html`<${Btn} kind="btn-primary" onClick=${openChosen} id="drive-open">Open ${chosen.length} ${chosen.length === 1 ? 'file' : 'files'}<//>` : null}
-    </div>
+    ${st.next && !st.loading ? html`<div class="btn-row"><${Btn} small=${true} onClick=${() => load({}, true)}>More results<//></div>` : null}
   </div>`;
 }
 
@@ -188,11 +189,12 @@ export function FilesSheet() {
   return html`<div class="sheet-body">
     <${Section}>
       <input ref=${inputRef} class="visually-hidden" id="file-input" type="file" multiple tabindex="-1" aria-hidden="true"
-        onChange=${async (e) => { const files = e.currentTarget.files; const n = await addPickedFiles(files); e.currentTarget.value = ''; if (n) setSheet(null); }} />
+        onChange=${async (e) => { const input = e.currentTarget; const n = await addPickedFiles(input.files); input.value = ''; if (n) setSheet(null); }} />
       <div class="btn-row">
         <${Btn} kind="btn-primary" icon="files" onClick=${() => inputRef.current && inputRef.current.click()} id="open-files">Open from Files<//>
         <${Btn} onClick=${() => demo('image')} id="demo-image">Demo image<//>
         <${Btn} onClick=${() => demo('movie')} id="demo-movie">Demo movie<//>
+        <${Btn} onClick=${() => demo('nikon')} id="demo-nikon">Demo Nikon<//>
       </div>
       <p class="hint">On iPhone the picker lists Google Drive under Browse once the Drive app is installed. Movies of any size open this way: only the frames you ask for are read.</p>
     <//>

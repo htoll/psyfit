@@ -9,7 +9,7 @@ import { SCOPES, channelRect, channelInfo } from '../core/layouts.js';
 import { trackColor } from '../core/tracking.js';
 import {
   S, subscribe, bump, buildScene, sceneFits, probeAt, select, frameKey, classify, CLASS_COLORS, summarize, brightnessSets,
-  setScaleEditor,
+  setScaleEditor, findFit, spectrumFor,
 } from '../store.js';
 import { THEME, fmtBrightness } from './theme.js';
 import { niceTicks, fmtAxis } from './plots.js';
@@ -44,6 +44,9 @@ export class Viewer {
     this.edge = 12;               // clearance from the right edge (more beside a notch)
     this.area = { x: 0, y: 0, w: 1, h: 1 };   // the part of the stage the image may occupy
     this.strip = 0;               // width kept free at the right for the colour bar
+    this.inset = 0;               // height kept free at the bottom for an open card
+    this.insetWanted = 0;
+    this.insetTimer = null;
     this.cbar = null;             // where the colour bar was last drawn
     this.ramps = new Map();       // LUT -> 1 x 256 canvas
 
@@ -73,6 +76,7 @@ export class Viewer {
   destroy() {
     if (this.ro) this.ro.disconnect();
     this.unsub();
+    clearTimeout(this.insetTimer);
     cancelAnimationFrame(this.raf);
     this.canvas.remove();
   }
@@ -98,11 +102,26 @@ export class Viewer {
    * is fitted, panned and clipped inside the area, so it never runs under the bar.
    */
   layoutFor(scene) {
-    const full = { x: 0, y: 0, w: this.cssW, h: this.cssH };
+    // An open card (fit details, colour scale) sits at the bottom of the stage: the image stays above it.
+    const h = this.cssH - (this.cssH - this.inset >= 130 ? this.inset : 0);
+    const full = { x: 0, y: 0, w: this.cssW, h };
     if (!scene || !S.display.showColorbar) return { area: full, strip: 0 };
     const strip = this.edge + CBAR_STRIP;
-    if (this.cssW - strip < 120 || this.cssH < 80) return { area: full, strip: 0 };
-    return { area: { x: 0, y: 0, w: this.cssW - strip, h: this.cssH }, strip };
+    if (this.cssW - strip < 120 || h < 80) return { area: full, strip: 0 };
+    return { area: { x: 0, y: 0, w: this.cssW - strip, h }, strip };
+  }
+
+  /**
+   * Tell the viewer how much of the stage's bottom a card covers. The image
+   * moves a moment later, not at once, so that the second tap of a double-tap
+   * still lands on the spot it was aimed at.
+   */
+  setBottomInset(px) {
+    const want = Math.max(0, Math.round(px));
+    if (want === this.insetWanted) return;
+    this.insetWanted = want;
+    clearTimeout(this.insetTimer);
+    this.insetTimer = setTimeout(() => { this.inset = this.insetWanted; this.schedule(); }, want > this.inset ? 380 : 140);
   }
 
   /**
@@ -220,6 +239,7 @@ export class Viewer {
     if (S.movie.showTracks) this.drawTracks(ctx, scene);
     this.fits = S.display.showFits ? sceneFits(scene) : [];
     this.drawFits(ctx, scene);
+    this.drawSpectralWindows(ctx, scene);
     if (S.display.showScaleBar) this.drawScaleBar(ctx, scene);
     ctx.restore();
     if (this.strip) {
@@ -395,6 +415,48 @@ export class Viewer {
       }
     }
     ctx.restore();
+  }
+
+  /**
+   * For a selected particle of a Nikon frame: outline the strip its spectrum is
+   * read from, join the two with a line, and outline (dashed) the strips of
+   * other particles whose spectra may run into it.
+   */
+  drawSpectralWindows(ctx, scene) {
+    if (!S.sel || !S.sel.ids) return;
+    for (const id of S.sel.ids) {
+      const fit = findFit(id);
+      const sp = fit ? spectrumFor(fit) : null;
+      if (!sp || sp.status !== 'ok') continue;
+      const L = scene.layers.find((x) => x.file.id === fit.fileId && !x.inv);
+      if (!L) continue;
+      const strip = (win) => {
+        const left = this.toScreen(win.x0 - L.rect.x, 0)[0], right = this.toScreen(win.x1 - L.rect.x, 0)[0];
+        const top = this.toScreen(0, win.y1 - L.rect.y + 0.5)[1], bottom = this.toScreen(0, win.y0 - L.rect.y - 0.5)[1];
+        return { left, right, top, bottom, inView: win.x1 >= L.rect.x && win.x0 <= L.rect.x + L.rect.w - 1 && win.y1 >= L.rect.y && win.y0 <= L.rect.y + L.rect.h - 1 };
+      };
+      ctx.save();
+      ctx.lineWidth = 1.25;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = '#f0c36a';
+      for (const o of sp.overlaps) {
+        const r = strip(o.win);
+        if (r.inView) ctx.strokeRect(r.left, r.top - 1, r.right - r.left, r.bottom - r.top + 2);
+      }
+      ctx.setLineDash([]);
+      const r = strip(sp.win);
+      if (r.inView) {
+        ctx.strokeStyle = THEME.accent; ctx.lineWidth = 1.75;
+        ctx.strokeRect(r.left, r.top - 1.5, r.right - r.left, r.bottom - r.top + 3);
+        const px = fit.x - L.rect.x, py = fit.y - L.rect.y;
+        if (px >= 0 && py >= 0 && px <= L.rect.w - 1 && py <= L.rect.h - 1) {
+          const [fx, fy] = this.toScreen(px, py);
+          ctx.strokeStyle = 'rgba(242,184,75,0.45)'; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(fx, fy); ctx.lineTo(r.left, (r.top + r.bottom) / 2); ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
   }
 
   drawTracks(ctx, scene) {

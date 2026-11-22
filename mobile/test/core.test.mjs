@@ -9,8 +9,7 @@ import assert from 'node:assert/strict';
 
 import { writeSif, openSif, parseSifHeader, ppsScale } from '../src/core/sif.js';
 import {
-  SCOPES, channelRect, availableChannels, channelAt, channelInfo, cropRect, guessScope, pixelSize, setNikonSplit,
-  NIKON_BEAM_PX,
+  SCOPES, channelRect, availableChannels, channelAt, channelInfo, cropRect, guessScope, pixelSize, NIKON_BEAM_PX,
 } from '../src/core/layouts.js';
 import { COLORMAPS, HUE_NAMES, lutRgb, makeNorm, composeScene } from '../src/core/render.js';
 import { detectAndFit } from '../src/core/numeric.js';
@@ -70,24 +69,19 @@ test('layouts: MCL quadrants are the array slices PsyFit uses', () => {
   assert.deepEqual(Array.from(cropRect(img, 6, { x: 1, y: 2, w: 3, h: 2 })), [13, 14, 15, 19, 20, 21]);
 });
 
-test('layouts: Nikon splits, scope guessing and pixel sizes', () => {
+test('layouts: Nikon regions, scope guessing and pixel sizes', () => {
   const src = { width: 512, height: 512 };
-  setNikonSplit('lr');
-  assert.deepEqual(channelRect('nikon', 'ch1', src), { x: 0, y: 0, w: 256, h: 512 });
-  assert.deepEqual(channelRect('nikon', 'ch2', src), { x: 256, y: 0, w: 256, h: 512 });
-  assert.deepEqual(SCOPES.nikon.channels.map((c) => c.label), ['Left', 'Right']);
-  setNikonSplit('tb');
-  assert.deepEqual(channelRect('nikon', 'ch1', src), { x: 0, y: 256, w: 512, h: 256 });      // high rows are drawn on top
-  assert.deepEqual(channelRect('nikon', 'ch2', src), { x: 0, y: 0, w: 512, h: 256 });
-  setNikonSplit('beam');
-  // PsyFit's "Mr Beam" region: image[-280:, :280]
-  assert.deepEqual(channelRect('nikon', 'ch1', src), { x: 0, y: 512 - NIKON_BEAM_PX, w: NIKON_BEAM_PX, h: NIKON_BEAM_PX });
-  assert.equal(channelRect('nikon', 'ch2', src), null);
-  assert.equal(channelAt('nikon', src, 400, 100), null);
-  setNikonSplit('lr');
+  // Localization image: PsyFit's "Mr Beam" region image[-280:, :280] (drawn at the top left). Spectra: bottom right.
+  assert.deepEqual(channelRect('nikon', 'loc', src), { x: 0, y: 512 - NIKON_BEAM_PX, w: NIKON_BEAM_PX, h: NIKON_BEAM_PX });
+  assert.deepEqual(channelRect('nikon', 'spec', src), { x: 200, y: 0, w: 312, h: 280 });
+  assert.deepEqual(SCOPES.nikon.channels.map((c) => c.label), ['Localization', 'Spectra']);
+  assert.equal(channelAt('nikon', src, 100, 400), 'loc');
+  assert.equal(channelAt('nikon', src, 400, 100), 'spec');
+  assert.equal(channelAt('nikon', src, 100, 100), null);
+  assert.equal(channelRect('nikon', 'blue', src), null);
 
   assert.equal(guessScope('Demo_simulated_MCL_976nm_4channel.sif', {}), 'mcl');
-  assert.equal(guessScope('sample3.sif', { OriginalFilename: 'D:\\Nikon\\2026\\sample3.sif' }), 'nikon');
+  assert.equal(guessScope('sample3.sif', { OriginalFilename: 'D:\\20261117_Nikon\\sample3\\sample3.sif' }), 'nikon');
   assert.equal(guessScope('MrBeam_fov2.sif', {}), 'nikon');
   assert.equal(guessScope('emclass_test.sif', {}), '');
   assert.equal(pixelSize('mcl', 'a.sif', {}), 0.1011);

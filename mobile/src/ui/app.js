@@ -7,14 +7,15 @@ import { html, Btn, IconBtn, Icon, Facts, Seg } from './widgets.js';
 import { Viewer } from './viewer.js';
 import { FilesSheet } from './sheet_files.js';
 import { DisplaySheet, Contrast } from './sheet_display.js';
-import { FitSheet } from './sheet_fit.js';
+import { FitSheet, SPECTRUM_COLOR } from './sheet_fit.js';
+import { Chart } from './plots.js';
 import { OverlaySheet } from './sheet_overlay.js';
 import { MovieSheet } from './sheet_movie.js';
 import { fmtBrightness, fmtNum } from './theme.js';
 import {
   S, subscribe, bump, toast, persist, activeFile, fileById, setSheet, selectChannel, setOverlay, setScope, setFrame, setView,
   togglePlayback, stopPlayback, addPickedFiles, loadDemo, findFit, removeFit, select, locPrecisionNm, runTrace, frameKey,
-  setScaleEditor,
+  setScaleEditor, spectrumFor, autoCalibrate,
 } from '../store.js';
 import { SCOPES, SCOPE_ORDER, availableChannels, channelInfo } from '../core/layouts.js';
 import { hueCss } from '../core/render.js';
@@ -50,7 +51,7 @@ function TopBar() {
     <${IconBtn} icon="expand" title="Fit the image to the screen" onClick=${() => viewer && viewer.fitView()} id="fit-view" />
     <${IconBtn} icon="plus" title="Open files" onClick=${() => { const el = document.getElementById('quick-file-input'); if (el) el.click(); }} id="quick-open" />
     <input class="visually-hidden" id="quick-file-input" type="file" multiple tabindex="-1" aria-hidden="true"
-      onChange=${async (e) => { const files = e.currentTarget.files; await addPickedFiles(files); e.currentTarget.value = ''; }} />
+      onChange=${async (e) => { const input = e.currentTarget; await addPickedFiles(input.files); input.value = ''; }} />
   </header>`;
 }
 
@@ -69,6 +70,36 @@ function ChannelBar() {
     </div>
     ${chans.length > 1 || S.files.length > 1 ? html`<button type="button" class=${`chip chip-overlay${S.overlay ? ' is-on' : ''}`} aria-pressed=${String(S.overlay)}
       title="Overlay several channels" aria-label="Overlay several channels" onClick=${() => setOverlay(!S.overlay)} id="chip-overlay"><${Icon} name="layers" size=${17} /><span class="chip-overlay-text">Overlay</span></button>` : null}
+  </div>`;
+}
+
+/** For a particle in a Nikon frame: the line trace of its spectrum, and what may be wrong with it. */
+function SpectrumBlock({ fit, file }) {
+  const sp = spectrumFor(fit);
+  if (!sp) return null;
+  if (sp.status === 'no-cal') {
+    return html`<div class="spec-block" id="fit-spectrum">
+      <p class="hint">${S.spec.busy ? `${S.spec.busy}…` : 'Load the spectral calibration to see this particle’s spectrum.'}</p>
+      <${Btn} small=${true} disabled=${!!S.spec.busy} onClick=${() => autoCalibrate(file)} id="spec-calibrate">Load calibration<//>
+    </div>`;
+  }
+  if (sp.status !== 'ok') {
+    return html`<div class="spec-block" id="fit-spectrum"><p class="warn">${sp.status === 'edge'
+      ? 'This particle’s spectrum falls on the edge of the frame, so it cannot be read.'
+      : 'The calibration does not cover this position, so its spectrum cannot be located.'}</p></div>`;
+  }
+  const points = Array.from(sp.nm, (x, i) => ({ x, y: sp.net[i] }));
+  let peak = 0;
+  for (let i = 1; i < points.length; i++) if (points[i].y > points[peak].y) peak = i;
+  const n = sp.overlaps.length;
+  return html`<div class="spec-block" id="fit-spectrum">
+    <div class="spec-head"><span class="dot" style=${{ background: SPECTRUM_COLOR }}></span><strong>Spectrum</strong>
+      <span class="num">peak ${points[peak].x.toFixed(0)} nm · 5-row average${sp.frames > 1 ? ` over ${sp.frames} frames` : ''}</span></div>
+    <${Chart} height=${112} spec=${{ aria: 'Emission spectrum of the selected particle', xLabel: 'Wavelength (nm)', xName: 'λ', xUnit: 'nm', yUnit: 'pps', yZero: true,
+      series: [{ name: 'Intensity', color: SPECTRUM_COLOR, width: 1.75, points }] }} />
+    ${n ? html`<p class="warn" id="spec-overlap">May be mixed: the ${n === 1 ? 'spectrum of 1 other fitted particle runs' : `spectra of ${n} other fitted particles run`} through the same rows (outlined on the image).</p>` : null}
+    ${sp.leftEdge ? html`<p class="warn">Runs off the left edge of the detector, so its short-wavelength end is missing.</p>` : null}
+    ${!n && !sp.leftEdge ? html`<p class="hint">No other fitted particle’s spectrum crosses it. Dimmer, unfitted particles could still contribute.</p>` : null}
   </div>`;
 }
 
@@ -96,6 +127,7 @@ function FitCard({ fits }) {
       })}</tbody></table>`
       : html`<div class="card-main">
         <div class="hero"><span class="hero-num" id="fit-brightness">${fmtBrightness(first.brightness)}</span><span class="hero-label">brightness, background removed</span></div>
+        <${SpectrumBlock} fit=${first} file=${file} />
         <${Facts} rows=${[
           ['σx / σy', `${(first.sx * p * 1000).toFixed(0)} / ${(first.sy * p * 1000).toFixed(0)} nm (${first.sx.toFixed(2)} / ${first.sy.toFixed(2)} px)`],
           ['FWHM', `${(2.3548 * Math.sqrt(first.sx * first.sy) * p * 1000).toFixed(0)} nm`],
@@ -266,6 +298,12 @@ function App() {
     e.preventDefault();
     if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) addPickedFiles(e.dataTransfer.files);
   };
+  // Keep the image above whichever card is open at the bottom of the stage.
+  useEffect(() => {
+    if (!viewer || !hostRef.current) return;
+    const card = hostRef.current.parentElement.querySelector('.card');
+    viewer.setBottomInset(card ? card.getBoundingClientRect().height + 14 : 0);
+  });
   const file = activeFile();
   return html`<div class=${`app${S.sheet ? ' has-sheet' : ''}`} onDragOver=${(e) => e.preventDefault()} onDrop=${drop}>
     <${TopBar} />

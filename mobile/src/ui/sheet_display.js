@@ -3,9 +3,9 @@
 import { html, Btn, Seg, Num, Toggle, Section, ContrastBar } from './widgets.js';
 import { fmtNum } from './theme.js';
 import {
-  S, bump, persist, activeFile, setScope, chooseNikonSplit, setPixelSize, updateLayer, layerStats, autoRange, layerLabel,
+  S, bump, persist, activeFile, setScope, setPixelSize, updateLayer, layerStats, autoRange, layerLabel,
 } from '../store.js';
-import { SCOPES, SCOPE_ORDER, NIKON_SPLITS, NIKON_SPLIT_ORDER, channelInfo } from '../core/layouts.js';
+import { SCOPES, SCOPE_ORDER, channelInfo } from '../core/layouts.js';
 import { COLORMAPS, lutCss, hueCss } from '../core/render.js';
 
 function setDisplay(patch, kind = 'scene') {
@@ -51,8 +51,6 @@ export function DisplaySheet({ onSaveImage }) {
       <${Seg} label="Microscope" value=${file.scope} onChange=${(v) => setScope(file, v)}
         options=${SCOPE_ORDER.map((id) => ({ value: id, label: SCOPES[id].name }))} />
       <p class="hint">${SCOPES[file.scope].note}${file.scopeGuessed ? '' : '. Not named in the file, so the last choice is used'}.</p>
-      ${file.scope === 'nikon' ? html`<${Seg} label="How the Nikon frame is divided" id="nikon-split" value=${S.nikonSplit} onChange=${(v) => chooseNikonSplit(v)}
-        options=${NIKON_SPLIT_ORDER.map((id) => ({ value: id, label: NIKON_SPLITS[id].label }))} />` : null}
       <div class="field-row">
         <${Num} id="pix-size" label="Pixel size" unit="µm" value=${file.pixUm} min=${0.005} max=${10} digits=${4} onChange=${(v) => setPixelSize(file, v)} />
       </div>
