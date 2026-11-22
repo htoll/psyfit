@@ -64,6 +64,9 @@ test/              Node tests on the core modules and the simulated data
   maps a localization to its streak; the spectrum is 100 samples from 90 px
   left to 9 px right of that point, averaged over 5 rows (and over 5 frames in
   a movie), minus its minimum. Two spectra "may overlap" when they are less
-  than 99 px apart along the streak and within 4 rows, PsyFit's own rule. On a
-  real Nikon frame with its real calibration the app and PsyFit give the same
-  particles, spectra, wavelengths and overlap flags.
+  than 99 px apart along the streak and within 4 rows, PsyFit's own rule. The
+  app tests each spectrum against every particle found at 3 σ (or the fit
+  threshold if that is lower), not only the fitted ones, so a neighbour too dim
+  to fit still raises the flag. On a real Nikon frame with its real calibration
+  the app and PsyFit give the same particles, spectra and wavelengths, and at
+  the same threshold the same overlap flags.

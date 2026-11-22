@@ -95,11 +95,11 @@ function SpectrumBlock({ fit, file }) {
   return html`<div class="spec-block" id="fit-spectrum">
     <div class="spec-head"><span class="dot" style=${{ background: SPECTRUM_COLOR }}></span><strong>Spectrum</strong>
       <span class="num">peak ${points[peak].x.toFixed(0)} nm · 5-row average${sp.frames > 1 ? ` over ${sp.frames} frames` : ''}</span></div>
+    ${n ? html`<p class="warn" id="spec-overlap">May be mixed: the ${n === 1 ? 'spectrum of 1 other particle runs' : `spectra of ${n} other particles run`} through the same rows (dashed on the image).</p>` : null}
+    ${sp.leftEdge ? html`<p class="warn">Runs off the left edge of the detector, so its short-wavelength end is missing.</p>` : null}
+    ${!n && !sp.leftEdge ? html`<p class="hint" id="spec-clean">No other particle’s spectrum crosses it (particles searched for down to ${sp.sigma} σ).</p>` : null}
     <${Chart} height=${112} spec=${{ aria: 'Emission spectrum of the selected particle', xLabel: 'Wavelength (nm)', xName: 'λ', xUnit: 'nm', yUnit: 'pps', yZero: true,
       series: [{ name: 'Intensity', color: SPECTRUM_COLOR, width: 1.75, points }] }} />
-    ${n ? html`<p class="warn" id="spec-overlap">May be mixed: the ${n === 1 ? 'spectrum of 1 other fitted particle runs' : `spectra of ${n} other fitted particles run`} through the same rows (outlined on the image).</p>` : null}
-    ${sp.leftEdge ? html`<p class="warn">Runs off the left edge of the detector, so its short-wavelength end is missing.</p>` : null}
-    ${!n && !sp.leftEdge ? html`<p class="hint">No other fitted particle’s spectrum crosses it. Dimmer, unfitted particles could still contribute.</p>` : null}
   </div>`;
 }
 

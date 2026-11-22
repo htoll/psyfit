@@ -1203,6 +1203,32 @@ function nikonLocalizations(file) {
   return auto.concat(manual);
 }
 
+/**
+ * Threshold (in σ) of the search for particles whose spectra could run into
+ * another's. Lower than the usual fit threshold on purpose: a neighbour too
+ * dim to be worth fitting still adds its light to a spectrum.
+ */
+export const NEIGHBOUR_SIGMA = 3;
+
+/**
+ * Every particle of the localization image found at min(fit threshold,
+ * NEIGHBOUR_SIGMA): sensor positions, used only to judge overlap. Cached per
+ * image; during playback the last list is kept rather than refitted each frame.
+ */
+function nikonNeighbours(file) {
+  const sigma = Math.min(S.fit.threshold, NEIGHBOUR_SIGMA);
+  const key = `${frameKey(file)}:${sigma}:${S.fit.minDistance}:${S.fit.signal}:${S.fit.sigMaxUm}:${file.pixUm}`;
+  if (file.neighbours && (file.neighbours.key === key || S.playing)) return file.neighbours;
+  const loc = channelRect('nikon', 'loc', file.src), data = frameData(file);
+  let list = [];
+  if (loc && data) {
+    const found = detectAndFit(cropRect(data, file.src.width, loc), loc.w, loc.h, { ...fitOptions(file, 'loc'), threshold: sigma, maxPeaks: 800 });
+    list = found.fits.map((q) => ({ x: q.x + loc.x, y: q.y + loc.y }));
+  }
+  file.neighbours = { key, list, sigma };
+  return file.neighbours;
+}
+
 /** Frames a spectrum is averaged over: the one shown, or five around it in a movie. */
 function spectrumFrames(file) {
   if (!file.isMovie || file.view !== 'frame' || file.loaded.length < 2) return [frameData(file)];
@@ -1219,8 +1245,9 @@ function spectrumFrames(file) {
  *   region), else {status} with status 'no-cal' | 'unmapped' | 'edge' | 'ok';
  *   'ok' adds nm, values (pps, averaged over 5 rows, and over 5 frames in a
  *   movie), net (minus their minimum), xs/ys, win (sampling window on the
- *   sensor), frames, leftEdge and overlaps (other localizations whose spectra
- *   may cross this one, by PsyFit's rule).
+ *   sensor), frames, leftEdge and overlaps (other particles whose spectra may
+ *   cross this one by PsyFit's rule, searched for at NEIGHBOUR_SIGMA so that
+ *   dim ones count too).
  */
 export function spectrumFor(fit) {
   const file = fit && fileById(fit.fileId);
@@ -1228,7 +1255,8 @@ export function spectrumFor(fit) {
   const cal = S.spec.cal;
   if (!cal) return { status: 'no-cal' };
   const W = file.src.width, H = file.src.height;
-  const key = `${fit.id}:${frameKey(file)}:${cal.date}:${cal.name}:${file.fits.length}:${file.manual.length}`;
+  const near = nikonNeighbours(file);
+  const key = `${fit.id}:${cal.date}:${cal.name}:${near.key}:${file.manual.length}`;
   if (!file.specCache) file.specCache = new Map();
   if (file.specCache.has(key)) return file.specCache.get(key);
   const compute = () => {
@@ -1246,15 +1274,21 @@ export function spectrumFor(fit) {
     if (!axis) return { status: 'unmapped' };
     let min = Infinity;
     for (let i = 0; i < SPEC_NPTS; i++) if (values[i] < min) min = values[i];
+    // Other particles whose spectra may run into this one: everything found by the
+    // sensitive search, plus any spot the user fitted by hand that it missed.
+    const others = near.list.slice();
+    for (const q of file.manual) {
+      if (q.channel === 'loc' && q.frame === frameKey(file) && !others.some((o) => Math.hypot(o.x - q.x, o.y - q.y) < 2)) others.push({ x: q.x, y: q.y });
+    }
     const overlaps = [];
-    for (const q of nikonLocalizations(file)) {
-      if (q.id === fit.id || Math.hypot(q.x - fit.x, q.y - fit.y) < 1.5) continue;
+    for (const q of others) {
+      if (Math.hypot(q.x - fit.x, q.y - fit.y) < 2) continue;          // the particle itself
       const other = mapToSpectrum(cal, ...objectPoint(q.x, q.y, H));
-      if (other && spectraOverlap(pos, other)) overlaps.push({ id: q.id, win: spectralWindow(other[0], other[1], H) });
+      if (other && spectraOverlap(pos, other)) overlaps.push({ x: q.x, y: q.y, win: spectralWindow(other[0], other[1], H) });
     }
     return {
       status: 'ok', xs: pos[0], ys: pos[1], nm: axis.nm, nmPerSample: axis.nmPerSample, values, net: values.map((v) => v - min),
-      win: spectralWindow(pos[0], pos[1], H), frames: frames.length, leftEdge: offDetector(pos[0]), overlaps,
+      win: spectralWindow(pos[0], pos[1], H), frames: frames.length, leftEdge: offDetector(pos[0]), overlaps, sigma: near.sigma,
     };
   };
   const out = compute();

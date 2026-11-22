@@ -91,7 +91,7 @@ function SpectraSection({ file }) {
       <${Legend} items=${mean.length ? [{ name: S.spec.showOverlaps ? 'Each particle' : 'Each clean particle', color: SPECTRUM_COLOR, line: true }, { name: 'Mean of the clean ones', color: THEME.ink, line: true }] : []} />
       ${series.length ? html`<${Chart} height=${190} spec=${{ aria: 'Emission spectra of the fitted particles', xLabel: 'Wavelength (nm)', yLabel: 'pps', xName: 'λ', xUnit: 'nm', yUnit: 'pps', yZero: true, series }} />`
         : html`<p class="hint">Every spectrum here may overlap another. Turn on “Show possible overlaps” to see them, or tap a particle for its own.</p>`}
-      <${Toggle} id="spec-overlaps" label="Show possible overlaps" hint="Spectra that another fitted particle’s spectrum may run into" checked=${S.spec.showOverlaps}
+      <${Toggle} id="spec-overlaps" label="Show possible overlaps" hint="Spectra that another particle’s spectrum may run into, dim neighbours included" checked=${S.spec.showOverlaps}
         onChange=${(v) => { S.spec.showOverlaps = v; bump(); }} />
     </figure>
     <p class="hint">Each spectrum is the 5-row average along the particle’s streak, minus its minimum, as PsyFit’s Get Spectra reads it${file.isMovie ? ', averaged over 5 frames around the one shown' : ''}. The CSV opens in Process Spectra.</p>` : null}
